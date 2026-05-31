@@ -3,6 +3,7 @@ import { DiscoveryConnector } from "./connector.js";
 import { inferIntent } from "./agent-router.js";
 import { invokePaidServiceWithLocalWallet } from "./local-invoke.js";
 import { verifyServiceResult } from "./verifier.js";
+import { createCompactResult } from "./compact-result.js";
 
 export async function routeTaskWithLocalWallet({ baseUrl, task, constraints = {}, budget = {} }) {
   const connector = new DiscoveryConnector({ baseUrl });
@@ -63,10 +64,18 @@ export async function routeTaskWithLocalWallet({ baseUrl, task, constraints = {}
     intent: resolved.intent,
     constraints
   }));
+  const compactResult = createCompactResult({
+    result: invocation.result,
+    verification,
+    quote: resolved.quote,
+    feedback: invocation.feedback,
+    evidence: invocation.evidence_recording?.evidence
+  });
 
   return {
     ...resolved,
     result: invocation.result,
+    compact_result: compactResult,
     local_payment: invocation.local_payment,
     evidence_recording: invocation.evidence_recording,
     consumer_feedback_request: invocation.evidence_recording?.consumer_feedback_request || null,
@@ -176,6 +185,13 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
     intent: requested.params || {},
     constraints: requested.constraints || {}
   }));
+  const compactResult = createCompactResult({
+    result: invocation.result,
+    verification,
+    quote: quoted.quote,
+    feedback: invocation.feedback,
+    evidence: invocation.evidence_recording?.evidence
+  });
 
   return {
     ...quoted,
@@ -187,6 +203,7 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
       router_responsibility: "schema_validation_routing_quote_local_payment_invocation_verification_evidence"
     },
     result: invocation.result,
+    compact_result: compactResult,
     local_payment: invocation.local_payment,
     evidence_recording: invocation.evidence_recording,
     consumer_feedback_request: invocation.evidence_recording?.consumer_feedback_request || null,

@@ -5,6 +5,7 @@ import { createEvidenceEnvelope } from "./evidence.js";
 import { anchorEvidenceOnArc } from "./arc-anchor.js";
 import { summarizeHealth, summarizeProvenance, summarizeTrust } from "./store.js";
 import { writePersistentServiceEvent } from "./persistence.js";
+import { createCompactResult } from "./compact-result.js";
 
 export const ROUTER_STATUSES = {
   READY: "ready_to_route",
@@ -327,10 +328,17 @@ export async function routeCapabilityRequest(store, {
 } = {}) {
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
+    const request = { capability, params, constraints, consumer_context: consumerContext };
     return {
       ok: false,
       status: "invalid_request",
-      ...validation
+      ...validation,
+      request,
+      retry_plan: createRetryPlan({
+        status: "invalid_request",
+        request,
+        error: validation
+      })
     };
   }
 
@@ -353,7 +361,12 @@ export async function routeCapabilityRequest(store, {
       status: tokenResolution.status,
       request,
       observation,
-      token_resolution: tokenResolution
+      token_resolution: tokenResolution,
+      retry_plan: createRetryPlan({
+        status: tokenResolution.status,
+        request,
+        error: tokenResolution
+      })
     };
   }
   if (tokenResolution?.intent) intent = tokenResolution.intent;
@@ -374,7 +387,12 @@ export async function routeCapabilityRequest(store, {
       candidates_considered: 0,
       observation,
       message: diagnostics.message,
-      diagnostics
+      diagnostics,
+      retry_plan: createRetryPlan({
+        status: ROUTER_STATUSES.NO_MATCH,
+        request,
+        error: diagnostics
+      })
     };
   }
 
@@ -413,7 +431,15 @@ export async function routeCapabilityRequest(store, {
       quote,
       observation,
       error,
-      failure_explanation: explainRouteFailure({ error, selected, input })
+      failure_explanation: explainRouteFailure({ error, selected, input }),
+      retry_plan: createRetryPlan({
+        status: "route_failed",
+        request,
+        selected,
+        input,
+        error,
+        candidates
+      })
     };
   }
 
@@ -459,10 +485,27 @@ export async function routeCapabilityRequest(store, {
     result: invocation.body.result,
     verification
   });
+  const compactResult = createCompactResult({
+    result: invocation.body.result,
+    feedback: invocation.body.feedback,
+    verification,
+    quote,
+    evidence
+  });
+  const retryPlan = verification.sanity_valid === false || verification.data_non_empty === false
+    ? createRetryPlan({
+        status: "data_quality_failed",
+        request,
+        selected,
+        input,
+        verification,
+        candidates
+      })
+    : null;
 
   return {
     ok: true,
-    status: "routed",
+    status: retryPlan ? "routed_with_quality_warning" : "routed",
     protocol: {
       protocol_version: "agent_router_request_v1",
       semantic_parser: "external_main_agent",
@@ -476,11 +519,13 @@ export async function routeCapabilityRequest(store, {
     quote,
     input,
     result: invocation.body.result,
+    compact_result: compactResult,
     feedback: invocation.body.feedback,
     verification,
     consumer_feedback_request,
     evidence,
-    observation
+    observation,
+    retry_plan: retryPlan
   };
 }
 
@@ -1406,6 +1451,93 @@ function explainRouteFailure({ error, selected, input }) {
       "Validate the provider secret in Provider Studio.",
       "Compare the input_sent body with the upstream API documentation.",
       "If the upstream returns 403/401, verify the provider account entitlement."
+    ]
+  };
+}
+
+function createRetryPlan({
+  status,
+  request = {},
+  selected = null,
+  input = null,
+  error = null,
+  verification = null,
+  candidates = []
+} = {}) {
+  const code = error?.code || error?.error?.code || error?.error || status || "UNKNOWN";
+  const providerInputRejected = /PREPAY_VALIDATION|UNRECOGNIZED_FIELD|INVALID_REQUEST|422/.test(String(code)) ||
+    /unrecognized field|invalid request|validation/i.test(JSON.stringify(error || {}));
+  const dataQualityFailed = status === "data_quality_failed" || verification?.sanity_valid === false || verification?.data_non_empty === false;
+  const noMatch = status === ROUTER_STATUSES.NO_MATCH;
+  const excluded = selected?.service_id ? [selected.service_id] : [];
+  const alternateCandidates = candidates
+    .filter((candidate) => candidate.service_id && !excluded.includes(candidate.service_id))
+    .slice(0, 3)
+    .map((candidate) => candidate.service_id);
+
+  if (providerInputRejected) {
+    return {
+      retry_plan_version: "agent_router_retry_plan_v1",
+      retryable: true,
+      reason_code: "provider_input_rejected",
+      exclude_service_ids: excluded,
+      alternate_service_ids: alternateCandidates,
+      adjusted_request: input
+        ? { ...request, constraints: { ...(request.constraints || {}), exclude_service_ids: excluded } }
+        : request,
+      suggested_next_actions: [
+        "Retry with the same structured capability while excluding the failed service.",
+        "If no alternate service exists, inspect the provider input schema and remove fields rejected by the upstream API.",
+        "Do not reuse cached data as a substitute for this paid request."
+      ]
+    };
+  }
+
+  if (dataQualityFailed) {
+    return {
+      retry_plan_version: "agent_router_retry_plan_v1",
+      retryable: true,
+      reason_code: "data_quality_failed",
+      exclude_service_ids: excluded,
+      alternate_service_ids: alternateCandidates,
+      adjusted_request: { ...request, constraints: { ...(request.constraints || {}), exclude_service_ids: excluded } },
+      quality_issues: [
+        ...(verification?.data_quality_issues || []),
+        ...(verification?.issues || []).filter((issue) => issue.code === "EMPTY_RESULT" || issue.code === "DATA_QUALITY_SANITY_FAILED")
+      ].map((issue) => issue.code).filter(Boolean),
+      suggested_next_actions: [
+        "Retry against the next ranked service if one is available.",
+        "Ask for a narrower asset, venue, chain, or time window if the task was underspecified.",
+        "Record consumer feedback marking the returned data as not useful or partial."
+      ]
+    };
+  }
+
+  if (noMatch) {
+    return {
+      retry_plan_version: "agent_router_retry_plan_v1",
+      retryable: false,
+      reason_code: "no_registered_service_matched",
+      exclude_service_ids: [],
+      alternate_service_ids: [],
+      suggested_next_actions: [
+        "Search available services by provider, domain, or capability before invoking.",
+        "Register a provider service that exposes this capability.",
+        "Ask the user whether a nearby capability is acceptable."
+      ]
+    };
+  }
+
+  return {
+    retry_plan_version: "agent_router_retry_plan_v1",
+    retryable: Boolean(error?.retryable || status === "route_failed"),
+    reason_code: String(code).toLowerCase(),
+    exclude_service_ids: excluded,
+    alternate_service_ids: alternateCandidates,
+    suggested_next_actions: [
+      "Retry later if the provider is unavailable.",
+      "Try the next ranked service if available.",
+      "Return the failure reason to the user instead of fabricating an answer."
     ]
   };
 }

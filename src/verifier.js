@@ -29,6 +29,13 @@ export function verifyServiceResult({ result, manifest, intent = {}, constraints
       message: "Provider returned a structurally valid response, but the data payload is empty."
     });
   }
+  const dataQuality = assessDataQuality(result?.data);
+  if (!dataQuality.sanity_valid) {
+    issues.push({
+      code: "DATA_QUALITY_SANITY_FAILED",
+      message: "Provider result passed envelope checks but failed deterministic data-quality sanity checks."
+    });
+  }
   const confidence = Number(result?.metadata?.confidence);
   if (Number.isFinite(confidence) && constraints.min_confidence && confidence < Number(constraints.min_confidence)) {
     issues.push({
@@ -43,7 +50,8 @@ export function verifyServiceResult({ result, manifest, intent = {}, constraints
     statusSuccess: result?.status === "success",
     freshnessValid,
     coverageValid: coverageIssues.length === 0,
-    dataNonEmpty: !dataShape.empty
+    dataNonEmpty: !dataShape.empty,
+    sanityValid: dataQuality.sanity_valid
   });
   const overallScore = Number((deterministicScore * 0.8 + agentFriendlyScore * 0.2).toFixed(2));
   return {
@@ -51,6 +59,8 @@ export function verifyServiceResult({ result, manifest, intent = {}, constraints
     freshness_valid: freshnessValid,
     coverage_valid: coverageIssues.length === 0,
     data_non_empty: !dataShape.empty,
+    sanity_valid: dataQuality.sanity_valid,
+    data_quality_issues: dataQuality.issues,
     agent_friendly_score: agentFriendlyScore,
     deterministic_score: deterministicScore,
     overall_quality_score: overallScore,
@@ -277,12 +287,81 @@ function inspectDataShape(data) {
   return { type: typeof data, empty: data === "", top_level_keys: [] };
 }
 
-function computeDeterministicScore({ schemaValid, statusSuccess, freshnessValid, coverageValid, dataNonEmpty }) {
+function assessDataQuality(data) {
+  const issues = [];
+  const objects = flattenDataObjects(data);
+  const abnormalTimestamp = objects.find((object) =>
+    Object.entries(object).some(([key, value]) => isTimestampKey(key) && isAbnormalTimestamp(value))
+  );
+  if (abnormalTimestamp) {
+    issues.push({
+      code: "ABNORMAL_TIMESTAMP",
+      message: "Data contains a timestamp/date field with an impossible or suspicious value."
+    });
+  }
+
+  const numericMetrics = [];
+  for (const object of objects) {
+    for (const [key, value] of Object.entries(object)) {
+      if (isMetricKey(key) && typeof value === "number" && Number.isFinite(value)) {
+        numericMetrics.push(value);
+      }
+    }
+  }
+  if (numericMetrics.length >= 2 && numericMetrics.every((value) => value === 0)) {
+    issues.push({
+      code: "ALL_ZERO_NUMERIC_METRICS",
+      message: "All numeric metric fields are zero, which is suspicious for a paid market/data result."
+    });
+  }
+
+  return {
+    sanity_valid: issues.length === 0,
+    issues
+  };
+}
+
+function flattenDataObjects(value, out = []) {
+  if (!value || typeof value !== "object") return out;
+  if (Array.isArray(value)) {
+    for (const item of value) flattenDataObjects(item, out);
+    return out;
+  }
+  out.push(value);
+  for (const child of Object.values(value)) flattenDataObjects(child, out);
+  return out;
+}
+
+function isTimestampKey(key) {
+  return /(^|_)(timestamp|time|date|created_at|updated_at|generated_at)$/i.test(String(key));
+}
+
+function isAbnormalTimestamp(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return true;
+    if (value < 0) return true;
+    if (value > 0 && value < 946684800) return true;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed < Date.UTC(2000, 0, 1);
+  }
+  return false;
+}
+
+function isMetricKey(key) {
+  const normalized = String(key).toLowerCase();
+  if (/id$|rank|page|limit|timestamp|time|date|decimals|chain_id/.test(normalized)) return false;
+  return /amount|value|price|volume|flow|inflow|outflow|net|balance|count|ratio|pct|percent|rate|usd|notional|open_interest|oi|pain|liquidation/.test(normalized);
+}
+
+function computeDeterministicScore({ schemaValid, statusSuccess, freshnessValid, coverageValid, dataNonEmpty, sanityValid = true }) {
   const score =
-    Number(schemaValid) * 0.3 +
+    Number(schemaValid) * 0.25 +
     Number(statusSuccess) * 0.2 +
     Number(freshnessValid) * 0.2 +
     Number(coverageValid) * 0.2 +
-    Number(dataNonEmpty) * 0.1;
+    Number(dataNonEmpty) * 0.1 +
+    Number(sanityValid) * 0.05;
   return Number(score.toFixed(2));
 }

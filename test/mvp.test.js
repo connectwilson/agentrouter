@@ -32,6 +32,7 @@ const { sendArcUsdcTransfer } = await import("../src/arc-payment.js");
 const { getRequestBaseUrl, normalizeEndpoint } = await import("../src/http-utils.js");
 const { createMemoryStore } = await import("../src/store.js");
 const { quoteCapabilityRequest } = await import("../src/router.js");
+const { verifyServiceResult } = await import("../src/verifier.js");
 const { keccak256Hex } = await import("../src/keccak.js");
 const { currentPaymentBackend } = await import("../src/payment-adapter.js");
 const { invokePaidServiceWithLocalWallet } = await import("../src/local-invoke.js");
@@ -858,6 +859,13 @@ test("AgentRouter capability catalog and structured request route deterministica
     assert.equal(routed.quote.would_pay, true);
     assert.equal(routed.quote.payment_backend.backend, "circle_arc");
     assert.equal(routed.verification.schema_valid, true);
+    assert.equal(routed.verification.sanity_valid, true);
+    assert.equal(routed.compact_result.answer_ready, true);
+    assert.equal(routed.compact_result.request_id, routed.result.request_id);
+    assert.equal(routed.compact_result.quality.schema_valid, true);
+    assert.equal(routed.compact_result.quality.data_non_empty, true);
+    assert.equal(routed.compact_result.quality.sanity_valid, true);
+    assert.equal(routed.compact_result.payment.price.amount, "0.02");
     assert.equal(routed.feedback.settlement_receipt.protocol, "x402");
     assert.equal(routed.protocol.semantic_parser, "external_main_agent");
     assert.equal(routed.consumer_feedback_request.endpoint, "/agent-router/feedback");
@@ -1374,8 +1382,11 @@ test("AgentRouter MCP server exposes Claude-callable tools", async () => {
       assert.equal(routed.selected_service, undefined);
       assert.equal(routed.service_match.matched, true);
       assert.equal(routed.request.capability, "perp_liquidation_max_pain");
+      assert.equal(routed.compact_result.answer_ready, true);
+      assert.equal(routed.compact_result.data.max_liquidation_pain_price, 103500);
       assert.equal(routed.result.data.max_liquidation_pain_price, 103500);
       assert.match(routed.result.request_id, /^req_/);
+      assert.equal(routed.evidence, undefined);
       assert.equal(JSON.stringify(routed).includes("btc_liquidation_max_pain_demo"), false);
       assert.equal(routed.presentation_policy.hide_provider_details, true);
     } finally {
@@ -1472,6 +1483,74 @@ test("AgentRouter structured request returns machine-readable validation errors"
     assert.deepEqual(body.missing, ["market_type"]);
     assert.equal(body.expected_schema.type, "object");
   });
+});
+
+test("AgentRouter structured request failure includes an actionable retry plan", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "perp_liquidation_max_pain",
+        params: {
+          asset: "BTC",
+          window: "current"
+        },
+        constraints: {
+          max_price_usdc: "0.05"
+        }
+      })
+    });
+    assert.equal(response.status, 422);
+    const routed = await response.json();
+    assert.equal(routed.ok, false);
+    assert.equal(routed.status, "invalid_request");
+    assert.equal(routed.retry_plan.retryable, false);
+    assert.equal(routed.retry_plan.reason_code, "missing_required_param");
+    assert.ok(routed.retry_plan.suggested_next_actions.length > 0);
+  });
+});
+
+test("deterministic verifier flags abnormal timestamps and all-zero metric payloads", () => {
+  const manifest = {
+    output_schema: {
+      type: "object",
+      required: ["status", "data", "metadata"],
+      properties: {
+        status: { type: "string" },
+        data: { type: "object" },
+        metadata: { type: "object" }
+      }
+    },
+    freshness: { max_data_lag_seconds: 300 }
+  };
+  const verification = verifyServiceResult({
+    manifest,
+    intent: { capability: "onchain_fund_flow", asset: "ETH" },
+    constraints: { freshness_seconds: 300 },
+    result: {
+      status: "success",
+      query: { asset: "ETH" },
+      data: {
+        asset: "ETH",
+        rows: [
+          { timestamp: -86400000, inflow_usd: 0, outflow_usd: 0, net_flow_usd: 0 }
+        ]
+      },
+      metadata: {
+        generated_at: new Date().toISOString(),
+        freshness_seconds: 60,
+        confidence: 0.9,
+        data_sources: ["test"]
+      },
+      agent_hints: { preferred_summary_fields: ["net_flow_usd"] }
+    }
+  });
+  assert.equal(verification.data_non_empty, true);
+  assert.equal(verification.sanity_valid, false);
+  assert.ok(verification.data_quality_issues.some((issue) => issue.code === "ABNORMAL_TIMESTAMP"));
+  assert.ok(verification.data_quality_issues.some((issue) => issue.code === "ALL_ZERO_NUMERIC_METRICS"));
+  assert.ok(verification.issues.some((issue) => issue.code === "DATA_QUALITY_SANITY_FAILED"));
 });
 
 test("AgentRouter ask wrapper returns clarification for ambiguous max pain", async () => {

@@ -5,6 +5,7 @@ import { getArcUsdcBalance } from "../src/arc-payment.js";
 import { submitErc8004Feedback } from "../src/erc8004.js";
 import { invokePaidServiceWithLocalWallet } from "../src/local-invoke.js";
 import { routeTaskWithLocalWallet } from "../src/local-route.js";
+import { createCompactResult } from "../src/compact-result.js";
 import { currentPaymentBackend } from "../src/payment-adapter.js";
 import { initSessionWallet, initWallet, readWallet, walletStatus } from "../src/wallet.js";
 
@@ -493,6 +494,13 @@ async function requestWithLocalWallet(args) {
     input: quote.input,
     quote: quote.quote,
     result: invocation.result,
+    compact_result: createCompactResult({
+      result: invocation.result,
+      verification: invocation.evidence_recording?.verification || {},
+      quote: quote.quote,
+      feedback: invocation.feedback,
+      evidence: invocation.evidence_recording?.evidence
+    }),
     feedback: invocation.feedback,
     local_payment: invocation.local_payment,
     evidence_recording: invocation.evidence_recording,
@@ -856,7 +864,13 @@ function sanitizeProviderFields(value) {
     "provider_id",
     "selected_service_id",
     "resolver_service_id",
-    "data_sources"
+    "data_sources",
+    "evidence",
+    "evidence_recording",
+    "local_payment",
+    "routing_event",
+    "observation",
+    "candidates"
   ]);
   const output = {};
   for (const [key, item] of Object.entries(value)) {

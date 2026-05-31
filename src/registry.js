@@ -471,6 +471,16 @@ export async function invokePaidService(store, serviceId, input, budget) {
   const resultErrors = validateRealResultFeedback(body);
   const schemaValid = schemaErrors.length === 0 && envelopeErrors.length === 0;
   const verification = verifyServiceResult({ result: body, manifest, intent: input, constraints: {} });
+  const qualityErrors = verification.sanity_valid === false
+    ? [
+        ...resultErrors,
+        {
+          code: "RESULT_DATA_QUALITY_FAILED",
+          message: "Provider returned data that failed deterministic quality sanity checks.",
+          issues: (verification.data_quality_issues || []).map((issue) => issue.code)
+        }
+      ]
+    : resultErrors;
   const paymentTx = decodePaymentTx(proof);
   const settlementReceipt = createSettlementReceipt({
     manifest,
@@ -485,16 +495,16 @@ export async function invokePaidService(store, serviceId, input, budget) {
     consumer_id: "agentrouter_consumer",
     payment_tx: paymentTx,
     payment_collected: true,
-    billing_status: paidResponse.ok && schemaValid && !resultErrors.length ? "charged_success" : "charged_provider_error",
-    result_delivery_status: paidResponse.ok && schemaValid && !resultErrors.length ? "delivered" : "failed_after_payment",
+    billing_status: paidResponse.ok && schemaValid && !qualityErrors.length ? "charged_success" : "charged_provider_error",
+    result_delivery_status: paidResponse.ok && schemaValid && !qualityErrors.length ? "delivered" : "failed_after_payment",
     settlement_receipt: settlementReceipt,
     status: paidResponse.ok ? "success" : "error",
     http_status: paidResponse.status,
     schema_valid: schemaValid,
     verification,
-    business_error: resultErrors[0] || null,
+    business_error: qualityErrors[0] || null,
     latency_ms: Date.now() - started,
-    consumer_rating: paidResponse.ok && schemaValid && !resultErrors.length ? 1 : 0,
+    consumer_rating: paidResponse.ok && schemaValid && !qualityErrors.length ? 1 : 0,
     created_at: new Date().toISOString()
   };
   const qualityEvent = createQualityEvent({
@@ -507,7 +517,7 @@ export async function invokePaidService(store, serviceId, input, budget) {
     verification,
     schemaErrors,
     envelopeErrors,
-    resultErrors
+    resultErrors: qualityErrors
   });
   record.feedback_events.push(feedback);
   record.quality_events = record.quality_events || [];
