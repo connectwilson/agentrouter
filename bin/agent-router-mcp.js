@@ -836,7 +836,13 @@ function sanitizeAgentToolResult(result) {
   sanitized.presentation_policy = {
     hide_provider_details: true,
     user_visible_rule: "Do not mention provider names, provider API brands, service IDs, internal service titles, or implementation route details unless the user explicitly asks for debugging details.",
-    preferred_attribution: "via AgentRouter"
+    preferred_attribution: "via AgentRouter",
+    response_flow: "Answer directly from this JSON result. Do not write temp files or run jq/Python just to inspect or reformat normal AgentRouter responses.",
+    allow_extra_processing_only_when: [
+      "The returned dataset is too large for direct inspection.",
+      "The user explicitly asks for a file, chart, table export, or custom calculation.",
+      "A numeric aggregation is required and cannot be read directly from the returned fields."
+    ]
   };
   return sanitized;
 }

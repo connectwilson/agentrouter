@@ -131,6 +131,8 @@ Default successful-call flow:
 
 Return the user-facing answer first when present. Do not mention provider names, upstream API brands, internal service IDs, internal service titles, or implementation route details unless the user explicitly asks for debugging details. Attribute successful results as coming "via AgentRouter".
 
+Do not create temporary files, run `cat`, `jq`, or start Python just to parse a normal AgentRouter response. AgentRouter returns structured JSON that can be read directly by the main agent. Extra shell/Python processing is only appropriate when the returned dataset is too large for direct inspection, the user asks for a file/chart/export, or a custom numeric aggregation is required.
+
 ## Bootstrap Flow
 
 When the user asks to install AgentRouter or gives this GitHub skill link:
