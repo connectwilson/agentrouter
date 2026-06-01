@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-05-25
+Last updated: 2026-06-01
 
 ## Current MVP
 
@@ -15,7 +15,7 @@ Last updated: 2026-05-25
 - Local provider configs using `/provider/custom/...` are rebound to the current server port at startup, so old generated JSON does not pin the app to a stale local port.
 - Wallet/payment defaults to dev-mode x402-style proof. `circle_arc` mode now supports local-wallet Arc Testnet USDC transfers to provider payout wallets with provider-side tx verification.
 - Agora hackathon positioning is captured in `docs/PRD_AGORA_HACKATHON.md`: AgentRouter Markets, a paid market-intelligence routing layer for trading agents.
-- The PRD now treats `/agent-router/request` as the formal structured protocol endpoint and `/agent-router/ask` as a demo/fallback wrapper.
+- The PRD now treats `agentrouter_fetch` / `/agent-router/request` as the agent-facing execution path: main agents can pass either a natural-language task or structured data requirements, while discovery, routing, payment, invocation, verification, evidence, and feedback stay internal to AgentRouter.
 - Implemented `GET /capabilities` for a machine-readable capability catalog.
 - Implemented `POST /agent-router/request` for deterministic structured routing.
 - Implemented `/agent-router/demo` as the demand-side hackathon console.
@@ -31,7 +31,7 @@ Last updated: 2026-05-25
 - Product positioning updated: AgentRouter is not a payment SDK; OmniAgentPay/Circle/x402 can be payment execution backends.
 - Added `bin/agent-router-mcp.js`, a zero-dependency MCP stdio server for Claude/Desktop-style clients. This is now the preferred Claude integration because hosted Claude may block outbound access to `trycloudflare.com` and `railway.app`.
 - Updated the AgentRouter skill into a GitHub-distributable bootstrap skill: it checks for existing AgentRouter MCP tools, chooses the best client-specific install path, and falls back to HTTP only when appropriate.
-- Tightened protocol boundaries: `/agent-router/request` and MCP `agentrouter_request` are the preferred production-like paths; `/agent-router/ask` is only a demo/fallback natural-language wrapper.
+- Tightened protocol boundaries: MCP `agentrouter_fetch` is the preferred one-call user-facing path; `agentrouter_request`, `agentrouter_quote`, and `agentrouter_capabilities` are advanced/debug integration tools.
 - Structured requests now return `agent_router_evidence_v1`, including `manifest_hash`, `config_hash`, `input_hash`, `output_hash`, `payment_tx`, `verification_report`, `trace_hash`, and Arc anchor metadata.
 - Added `GET /agent-router/evidence` and `GET /agent-router/trust` so the MVP shows where offchain trust state lives and what can later be anchored on Arc.
 - Added lightweight `agent_router_route_observation_v1` records and `GET /agent-router/observations` so structured routing accumulates candidate, score, selection, verification, and feedback data for future learned routing without adding a heavy training system.

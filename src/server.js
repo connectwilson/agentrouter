@@ -35,8 +35,35 @@ const brandLogoPath = new URL("../public/assets/brand/logo.png", import.meta.url
 const agentRouterSkillPath = new URL("../claude-skills/agent-router/SKILL.md", import.meta.url);
 const remoteMcpTools = [
   {
+    name: "agentrouter_fetch",
+    description: "Default AgentRouter entrypoint. Use this single tool for data/API questions: AgentRouter handles discovery, routing, quote/payment boundary, provider invocation when available, verification, evidence, and feedback request internally. Pass either the user's natural-language task, or structured data_requirements when the main agent can parse them. Do not call capabilities/quote/request first unless debugging or the user asks to inspect routing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string" },
+        data_requirements: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              capability: { type: "string" },
+              type: { type: "string" },
+              params: { type: "object" },
+              constraints: { type: "object" }
+            }
+          }
+        },
+        constraints: { type: "object" },
+        budget: { type: "object" },
+        max_price: { type: "string", default: "0.05" },
+        currency: { type: "string", default: "USDC" },
+        consumer_context: { type: "object" }
+      }
+    }
+  },
+  {
     name: "agentrouter_request",
-    description: "Use when the main agent needs specialized, real-time, paid, or verifiable external data/API access and can fill a structured capability request. AgentRouter is the payment and trust boundary: route paid/provider-specific data through this tool instead of bypassing with provider MCP tools such as mcp__market-data__*. AgentRouter routes, invokes, verifies, and returns evidence metadata.",
+    description: "Advanced structured route call. Prefer agentrouter_fetch for normal user questions. Use this only when the caller intentionally wants to invoke exactly one structured capability request.",
     inputSchema: {
       type: "object",
       required: ["capability", "params"],
@@ -51,7 +78,7 @@ const remoteMcpTools = [
   },
   {
     name: "agentrouter_quote",
-    description: "Preview AgentRouter service selection, request input, price, payment guard result, auto-invoke policy, and why paid data is justified without invoking the provider.",
+    description: "Advanced/debug only. Preview service selection and price without invoking. Normal user data questions should use agentrouter_fetch.",
     inputSchema: {
       type: "object",
       required: ["capability", "params"],
@@ -81,7 +108,7 @@ const remoteMcpTools = [
   },
   {
     name: "agentrouter_capabilities",
-    description: "List AgentRouter capability schemas for external data/API routing. Call this before agentrouter_request when the main agent has a data need but is unsure which structured capability or params to use.",
+    description: "Advanced/debug only. List capability schemas for integrations. Normal user data questions should use agentrouter_fetch.",
     inputSchema: { type: "object", properties: {} }
   },
   {
@@ -99,7 +126,7 @@ const remoteMcpTools = [
   },
   {
     name: "agentrouter_ask",
-    description: "Natural-language AgentRouter helper for specialized, real-time, paid, or verifiable external data/API requests. Prefer agentrouter_capabilities plus agentrouter_request when the main agent can produce a structured request. Do not use web search or provider MCP tools as a fallback when this returns payment_required, quote_blocked, or wallet funding instructions.",
+    description: "Compatibility alias for natural-language fetch. Prefer agentrouter_fetch for new clients.",
     inputSchema: {
       type: "object",
       required: ["task"],
@@ -647,6 +674,15 @@ async function routeRequest(req, res, store, baseUrl) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/agent-router/fetch") {
+    const body = await readJson(req);
+    const result = await runRemoteAgentRouterFetch(store, body, {
+      invoke: localServerPaidInvocationsAllowed(baseUrl)
+    });
+    sendJson(res, paymentBoundaryStatusCode(result), result);
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/agent-router/quote") {
     const body = await readJson(req);
     const result = quoteCapabilityRequest(store, body);
@@ -972,14 +1008,23 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl) {
 
 async function callRemoteMcpTool(name, args, store, baseUrl) {
   await loadProviderConfigs(store, baseUrl, { validate: false });
+  if (name === "agentrouter_fetch") {
+    return runRemoteAgentRouterFetch(store, args, {
+      invoke: localServerPaidInvocationsAllowed(baseUrl)
+    });
+  }
   if (name === "agentrouter_request") {
-    return routeCapabilityRequest(store, {
+    const request = {
       capability: args.capability,
       params: args.params || {},
       constraints: args.constraints || {},
       budget: args.budget || {},
       consumer_context: args.consumer_context || { source: "remote_mcp" }
-    });
+    };
+    if (!localServerPaidInvocationsAllowed(baseUrl)) {
+      return requestPaymentRequired(quoteCapabilityRequest(store, request));
+    }
+    return routeCapabilityRequest(store, request);
   }
   if (name === "agentrouter_quote") {
     return quoteCapabilityRequest(store, {
@@ -1018,7 +1063,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl) {
       task: args.task || args.query || "",
       max_price: args.max_price || args.maxPrice || "0.05",
       currency: args.currency || "USDC",
-      invoke: true
+      invoke: localServerPaidInvocationsAllowed(baseUrl)
     });
   }
   return {
@@ -1026,6 +1071,89 @@ async function callRemoteMcpTool(name, args, store, baseUrl) {
     status: "unknown_tool",
     tool: name,
     available_tools: remoteMcpTools.map((tool) => tool.name)
+  };
+}
+
+async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true } = {}) {
+  const requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
+  const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
+  const currency = args.currency || args.budget?.currency || "USDC";
+
+  if (!requirements.length) {
+    return askAgentRouter(store, {
+      task: args.task || args.query || "",
+      max_price: maxPrice,
+      currency,
+      invoke
+    });
+  }
+
+  const results = [];
+  for (const requirement of requirements) {
+    const request = requirementToCapabilityRequest(requirement, args, { maxPrice, currency });
+    if (!request.capability) {
+      results.push({
+        ok: false,
+        status: "invalid_requirement",
+        requirement,
+        message: "Each data requirement needs capability or type."
+      });
+      continue;
+    }
+    if (invoke) {
+      results.push(await routeCapabilityRequest(store, request));
+    } else {
+      results.push(requestPaymentRequired(quoteCapabilityRequest(store, request)));
+    }
+  }
+  const successful = results.filter((result) => result?.ok !== false && result?.result);
+  const failed = results.filter((result) => result?.ok === false);
+  const allPaymentRequired = failed.length === results.length && failed.every((result) => result?.status === "payment_required");
+  return {
+    ok: failed.length === 0,
+    status: allPaymentRequired ? "payment_required" : failed.length ? (successful.length ? "partial_data_returned" : "no_data_returned") : "data_returned",
+    protocol: {
+      protocol_version: "agentrouter_fetch_v1",
+      external_contract: "single_agent_data_call",
+      internal_steps: "discovery_routing_quote_payment_invocation_verification_evidence_feedback"
+    },
+    task: args.task || args.query || null,
+    data_requirements_count: requirements.length,
+    data_returned_count: successful.length,
+    results,
+    compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
+    feedback_required: results.some((result) => result?.consumer_feedback_request),
+    next_required_action: results.some((result) => result?.consumer_feedback_request)
+      ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
+      : null
+  };
+}
+
+function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice, currency }) {
+  const { capability, type, params, constraints, budget, consumer_context: consumerContext, ...inlineParams } = requirement;
+  const cleanInlineParams = {};
+  for (const [key, value] of Object.entries(inlineParams)) {
+    if (value !== undefined && value !== null) cleanInlineParams[key] = value;
+  }
+  return {
+    capability: capability || type,
+    params: params && typeof params === "object" ? params : cleanInlineParams,
+    constraints: {
+      ...(args.constraints || {}),
+      ...(constraints || {}),
+      max_price_usdc: constraints?.max_price_usdc || args.constraints?.max_price_usdc || maxPrice
+    },
+    budget: {
+      ...(args.budget || {}),
+      ...(budget || {}),
+      max_amount: budget?.max_amount || args.budget?.max_amount || maxPrice,
+      currency: budget?.currency || args.budget?.currency || currency
+    },
+    consumer_context: {
+      ...(args.consumer_context || {}),
+      ...(consumerContext || {}),
+      source: consumerContext?.source || args.consumer_context?.source || "agentrouter_fetch_remote_mcp"
+    }
   };
 }
 

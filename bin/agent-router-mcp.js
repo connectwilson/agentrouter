@@ -13,8 +13,36 @@ const baseUrl = (process.env.AGENT_ROUTER_URL || process.env.ADN_REGISTRY_URL ||
 
 const tools = [
   {
+    name: "agentrouter_fetch",
+    description: "Default AgentRouter entrypoint. Use this single tool for data/API questions: AgentRouter handles discovery, routing, quote, Arc payment, provider invocation, verification, evidence, and feedback request internally. Pass either the user's natural-language task, or structured data_requirements when the main agent can parse them. Do not call capabilities/quote/request first unless debugging or the user asks to inspect routing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "The user's original data/API request. Use this for normal questions." },
+        data_requirements: {
+          type: "array",
+          description: "Optional structured requirements parsed by the main agent. Each item may include capability/type plus params.",
+          items: {
+            type: "object",
+            properties: {
+              capability: { type: "string", description: "Structured capability, for example perp_liquidation_max_pain." },
+              type: { type: "string", description: "Alias for capability." },
+              params: { type: "object", description: "Capability-specific parameters." },
+              constraints: { type: "object", description: "Requirement-specific routing constraints." }
+            }
+          }
+        },
+        constraints: { type: "object", description: "Global routing and payment constraints, for example max_price_usdc." },
+        budget: { type: "object", description: "Optional global budget object." },
+        max_price: { type: "string", description: "Maximum USDC price per provider call unless overridden.", default: "0.05" },
+        currency: { type: "string", description: "Payment currency.", default: "USDC" },
+        consumer_context: { type: "object", description: "Optional caller context." }
+      }
+    }
+  },
+  {
     name: "agentrouter_request",
-    description: "Use this first for AgentRouter data/API calls. The main agent parses the user request into a structured capability request; AgentRouter validates, routes, pays, invokes, records payment verification/evidence, and returns a feedback request. After using the result in the final answer, call agentrouter_feedback with the returned request_id. Do not use agentrouter_ask when you can fill this schema.",
+    description: "Advanced structured route call. Prefer agentrouter_fetch for normal user questions. Use this only when the caller intentionally wants to invoke exactly one structured capability request.",
     inputSchema: {
       type: "object",
       required: ["capability", "params"],
@@ -29,7 +57,7 @@ const tools = [
   },
   {
     name: "agentrouter_quote",
-    description: "Preview AgentRouter service selection, request input, price, payment guard result, auto-invoke policy, and why paid data is justified without invoking the provider.",
+    description: "Advanced/debug only. Preview service selection and price without invoking. Normal user data questions should use agentrouter_fetch.",
     inputSchema: {
       type: "object",
       required: ["capability", "params"],
@@ -59,7 +87,7 @@ const tools = [
   },
   {
     name: "agentrouter_capabilities",
-    description: "List AgentRouter capability schemas. Call this before agentrouter_request when you are unsure which structured capability or params to use.",
+    description: "Advanced/debug only. List capability schemas when building an integration. Normal user data questions should use agentrouter_fetch.",
     inputSchema: {
       type: "object",
       properties: {}
@@ -92,7 +120,7 @@ const tools = [
   },
   {
     name: "agentrouter_ask",
-    description: "Last-resort natural-language helper: send the user's task to AgentRouter for lightweight parsing. Prefer agentrouter_capabilities plus agentrouter_request whenever the main agent can produce a structured request. If this returns a successful paid result with a request_id, call agentrouter_feedback after answering.",
+    description: "Compatibility alias for natural-language fetch. Prefer agentrouter_fetch for new clients.",
     inputSchema: {
       type: "object",
       required: ["task"],
@@ -236,6 +264,10 @@ async function handleMessage(message) {
 }
 
 async function callTool(name, args) {
+  if (name === "agentrouter_fetch") {
+    return fetchWithLocalWallet(args);
+  }
+
   if (name === "agentrouter_ask") {
     if (["x402", "circle_arc"].includes(currentPaymentBackend())) {
       return routeTaskWithLocalWallet({
@@ -360,6 +392,92 @@ async function callTool(name, args) {
     status: "unknown_tool",
     tool: name,
     available_tools: tools.map((tool) => tool.name)
+  };
+}
+
+async function fetchWithLocalWallet(args = {}) {
+  const requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
+  const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
+  const currency = args.currency || args.budget?.currency || "USDC";
+
+  if (!requirements.length) {
+    return routeTaskWithLocalWallet({
+      baseUrl,
+      task: args.task || args.query || "",
+      constraints: {
+        ...(args.constraints || {}),
+        max_price_usdc: maxPrice
+      },
+      budget: {
+        ...(args.budget || {}),
+        max_amount: maxPrice,
+        currency
+      }
+    });
+  }
+
+  const results = [];
+  for (const requirement of requirements) {
+    const request = requirementToCapabilityRequest(requirement, args, { maxPrice, currency });
+    if (!request.capability) {
+      results.push({
+        ok: false,
+        status: "invalid_requirement",
+        requirement,
+        message: "Each data requirement needs capability or type."
+      });
+      continue;
+    }
+    results.push(await requestWithLocalWallet(request));
+  }
+
+  const successful = results.filter((result) => result?.ok !== false && result?.result);
+  const failed = results.filter((result) => result?.ok === false);
+  return {
+    ok: failed.length === 0,
+    status: failed.length ? (successful.length ? "partial_data_returned" : "no_data_returned") : "data_returned",
+    protocol: {
+      protocol_version: "agentrouter_fetch_v1",
+      external_contract: "single_agent_data_call",
+      internal_steps: "discovery_routing_quote_payment_invocation_verification_evidence_feedback"
+    },
+    task: args.task || args.query || null,
+    data_requirements_count: requirements.length,
+    data_returned_count: successful.length,
+    results,
+    compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
+    feedback_required: results.some((result) => result?.feedback_required),
+    next_required_action: results.some((result) => result?.feedback_required)
+      ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
+      : null
+  };
+}
+
+function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice, currency }) {
+  const { capability, type, params, constraints, budget, consumer_context: consumerContext, ...inlineParams } = requirement;
+  const cleanInlineParams = {};
+  for (const [key, value] of Object.entries(inlineParams)) {
+    if (value !== undefined && value !== null) cleanInlineParams[key] = value;
+  }
+  return {
+    capability: capability || type,
+    params: params && typeof params === "object" ? params : cleanInlineParams,
+    constraints: {
+      ...(args.constraints || {}),
+      ...(constraints || {}),
+      max_price_usdc: constraints?.max_price_usdc || args.constraints?.max_price_usdc || maxPrice
+    },
+    budget: {
+      ...(args.budget || {}),
+      ...(budget || {}),
+      max_amount: budget?.max_amount || args.budget?.max_amount || maxPrice,
+      currency: budget?.currency || args.budget?.currency || currency
+    },
+    consumer_context: {
+      ...(args.consumer_context || {}),
+      ...(consumerContext || {}),
+      source: consumerContext?.source || args.consumer_context?.source || "agentrouter_fetch"
+    }
   };
 }
 

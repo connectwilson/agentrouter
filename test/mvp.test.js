@@ -1201,6 +1201,33 @@ test("public AgentRouter HTTP routes do not invoke paid services without protoco
       assert.equal("result" in naturalPayload, false);
       assert.match(naturalPayload.next_step, /payment-capable backend/);
 
+      const fetched = await fetch(`${baseUrl}/agent-router/fetch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task: "BTC liquidation max pain",
+          data_requirements: [
+            {
+              capability: "perp_liquidation_max_pain",
+              params: {
+                asset: "BTC",
+                market_type: "perpetual_futures",
+                window: "current"
+              }
+            }
+          ],
+          constraints: {
+            max_price_usdc: "0.05"
+          }
+        })
+      });
+      assert.equal(fetched.status, 402);
+      const fetchedPayload = await fetched.json();
+      assert.equal(fetchedPayload.status, "payment_required");
+      assert.equal(fetchedPayload.protocol.external_contract, "single_agent_data_call");
+      assert.equal(fetchedPayload.data_requirements_count, 1);
+      assert.equal("result" in fetchedPayload.results[0], false);
+
       const connector = await fetch(`${baseUrl}/connector/invoke_paid_service`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1277,6 +1304,8 @@ test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async (
     });
     assert.equal(listed.status, 200);
     const listPayload = await listed.json();
+    assert.equal(listPayload.result.tools[0].name, "agentrouter_fetch");
+    assert.ok(/single tool/.test(listPayload.result.tools[0].description));
     assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_request"));
     assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_ask"));
 
@@ -1320,6 +1349,36 @@ test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async (
     assert.equal(quoteResult.service_match.matched, true);
     assert.equal(quoteResult.presentation_policy.hide_provider_details, true);
     assert.equal(JSON.stringify(quoteResult).includes("btc_liquidation_max_pain_demo"), false);
+
+    const fetchCall = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "agentrouter_fetch",
+          arguments: {
+            task: "BTC liquidation max pain",
+            data_requirements: [
+              {
+                capability: "perp_liquidation_max_pain",
+                params: { asset: "BTC", market_type: "perpetual_futures", window: "current" }
+              }
+            ],
+            constraints: { max_price_usdc: "0.05" }
+          }
+        }
+      })
+    });
+    assert.equal(fetchCall.status, 200);
+    const fetchCallPayload = await fetchCall.json();
+    const fetchCallResult = JSON.parse(fetchCallPayload.result.content[0].text);
+    assert.equal(fetchCallResult.status, "data_returned");
+    assert.equal(fetchCallResult.data_returned_count, 1);
+    assert.equal(fetchCallResult.results[0].result.data.max_liquidation_pain_price, 103500);
+    assert.equal(fetchCallResult.results[0].selected_service, undefined);
   });
 });
 
@@ -1341,6 +1400,7 @@ test("AgentRouter MCP server exposes Claude-callable tools", async () => {
       assert.match(initialized.agentrouter.auto_wallet.address, /^0x[0-9a-f]{40}$/);
 
       const listed = await client.request("tools/list", {});
+      assert.equal(listed.tools[0].name, "agentrouter_fetch");
       assert.ok(listed.tools.some((tool) => tool.name === "agentrouter_ask"));
       assert.ok(listed.tools.some((tool) => tool.name === "agentrouter_request"));
       assert.ok(listed.tools.some((tool) => tool.name === "agentrouter_quote"));
@@ -1389,6 +1449,35 @@ test("AgentRouter MCP server exposes Claude-callable tools", async () => {
       assert.equal(routed.evidence, undefined);
       assert.equal(JSON.stringify(routed).includes("btc_liquidation_max_pain_demo"), false);
       assert.equal(routed.presentation_policy.hide_provider_details, true);
+
+      const fetched = await client.request("tools/call", {
+        name: "agentrouter_fetch",
+        arguments: {
+          task: "BTC current liquidation max pain",
+          data_requirements: [
+            {
+              capability: "perp_liquidation_max_pain",
+              params: {
+                asset: "BTC",
+                market_type: "perpetual_futures",
+                window: "current"
+              }
+            }
+          ],
+          constraints: {
+            max_price_usdc: "0.05",
+            freshness_seconds: 300
+          }
+        }
+      });
+      const fetchPayload = JSON.parse(fetched.content[0].text);
+      assert.equal(fetchPayload.ok, true);
+      assert.equal(fetchPayload.protocol.external_contract, "single_agent_data_call");
+      assert.equal(fetchPayload.data_requirements_count, 1);
+      assert.equal(fetchPayload.data_returned_count, 1);
+      assert.equal(fetchPayload.compact_results[0].answer_ready, true);
+      assert.equal(fetchPayload.results[0].selected_service, undefined);
+      assert.equal(fetchPayload.presentation_policy.response_flow.includes("Do not write temp files"), true);
     } finally {
       client.close();
     }
