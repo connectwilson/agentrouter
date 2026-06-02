@@ -11,7 +11,19 @@ if (!process.env.ADN_DIR) process.env.ADN_DIR = defaultAdnDir;
 const { args: commandArgs, localWalletRequested, quoteOnlyRequested } = parseRuntimeFlags(args);
 
 try {
-  if (command === "ask" || command === "find") {
+  if (command === "fetch") {
+    const payload = parseFetchPayload(commandArgs);
+    if (!quoteOnlyRequested) {
+      const readiness = localPaymentReadiness();
+      if (!readiness.ready && !localWalletRequested) {
+        print(localPaymentNotReadyResponse(readiness));
+      } else {
+        print(sanitizeAgentCliResult(await fetchWithLocalWalletCli(payload)));
+      }
+    } else {
+      print(await post("/agent-router/fetch", payload));
+    }
+  } else if (command === "ask" || command === "find") {
     const task = commandArgs.join(" ");
     if (!quoteOnlyRequested) {
       const readiness = localPaymentReadiness();
@@ -98,6 +110,8 @@ try {
   } else {
     print({
       usage: [
+        'agent-router fetch "查询 LAB 近 24 小时聪明钱动向"',
+        'agent-router fetch \'{"task":"Analyze AZTEC smart-money activity","data_requirements":[{"capability":"token_smart_money_activity","params":{"token_symbol":"AZTEC","chain":"ethereum","window":"24h"}}],"constraints":{"max_price_usdc":"0.05"}}\'',
         'agent-router ask "查询标记为 Matrixport 的地址"',
         'agent-router ask --local-wallet "BTC 当前最大爆仓痛点是多少"',
         'agent-router ask --quote-only "BTC 当前最大爆仓痛点是多少"',
@@ -140,6 +154,124 @@ function parseRuntimeFlags(values) {
   return parsed;
 }
 
+function parseFetchPayload(values) {
+  const raw = values.join(" ").trim();
+  if (!raw) return { task: "" };
+  if (values.length === 1) {
+    try {
+      const parsed = JSON.parse(values[0]);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return { task: raw };
+}
+
+async function fetchWithLocalWalletCli(payload = {}) {
+  const requirements = Array.isArray(payload.data_requirements) ? payload.data_requirements : [];
+  const maxPrice = payload.max_price || payload.constraints?.max_price_usdc || payload.budget?.max_amount || process.env.AGENT_ROUTER_MAX_PRICE || "0.05";
+  const currency = payload.currency || payload.budget?.currency || "USDC";
+
+  if (!requirements.length) {
+    const { routeTaskWithLocalWallet } = await import("../src/local-route.js");
+    const routed = await routeTaskWithLocalWallet({
+      baseUrl,
+      task: payload.task || payload.query || "",
+      constraints: {
+        ...(payload.constraints || {}),
+        max_price_usdc: maxPrice
+      },
+      budget: {
+        ...(payload.budget || {}),
+        max_amount: maxPrice,
+        currency
+      }
+    });
+    return {
+      ...routed,
+      protocol: {
+        ...(routed.protocol || {}),
+        protocol_version: routed.protocol?.protocol_version || "agentrouter_fetch_v1",
+        external_contract: "single_agent_data_call",
+        internal_steps: routed.protocol?.internal_steps || "discovery_routing_quote_payment_invocation_verification_evidence_feedback"
+      },
+      data_returned: routed.data_returned ?? (routed.result?.status === "success"),
+      feedback_required: routed.feedback_required ?? Boolean(routed.consumer_feedback_request),
+      next_required_action: routed.next_required_action || (routed.consumer_feedback_request
+        ? "After using this result in the final answer, submit AgentRouter feedback for the returned request_id."
+        : null)
+    };
+  }
+
+  const { routeCapabilityRequestWithLocalWallet } = await import("../src/local-route.js");
+  const results = [];
+  for (const requirement of requirements) {
+    const request = requirementToCapabilityRequest(requirement, payload, { maxPrice, currency });
+    if (!request.capability) {
+      results.push({
+        ok: false,
+        status: "invalid_requirement",
+        requirement,
+        message: "Each data requirement needs capability or type."
+      });
+      continue;
+    }
+    results.push(await routeCapabilityRequestWithLocalWallet({
+      baseUrl,
+      request,
+      budget: request.budget
+    }));
+  }
+
+  const successful = results.filter((result) => result?.ok !== false && result?.result);
+  const failed = results.filter((result) => result?.ok === false);
+  return {
+    ok: failed.length === 0,
+    status: failed.length ? (successful.length ? "partial_data_returned" : "no_data_returned") : "data_returned",
+    protocol: {
+      protocol_version: "agentrouter_fetch_v1",
+      external_contract: "single_agent_data_call",
+      internal_steps: "discovery_routing_quote_payment_invocation_verification_evidence_feedback"
+    },
+    task: payload.task || payload.query || null,
+    data_requirements_count: requirements.length,
+    data_returned_count: successful.length,
+    results,
+    compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
+    feedback_required: results.some((result) => result?.feedback_required || result?.consumer_feedback_request),
+    next_required_action: results.some((result) => result?.feedback_required || result?.consumer_feedback_request)
+      ? "After using these results in the final answer, submit AgentRouter feedback for each returned request_id."
+      : null
+  };
+}
+
+function requirementToCapabilityRequest(requirement = {}, payload = {}, { maxPrice, currency }) {
+  const { capability, type, params, constraints, budget, consumer_context: consumerContext, ...inlineParams } = requirement;
+  const cleanInlineParams = {};
+  for (const [key, value] of Object.entries(inlineParams)) {
+    if (value !== undefined && value !== null) cleanInlineParams[key] = value;
+  }
+  return {
+    capability: capability || type,
+    params: params && typeof params === "object" ? params : cleanInlineParams,
+    constraints: {
+      ...(payload.constraints || {}),
+      ...(constraints || {}),
+      max_price_usdc: constraints?.max_price_usdc || payload.constraints?.max_price_usdc || maxPrice
+    },
+    budget: {
+      ...(payload.budget || {}),
+      ...(budget || {}),
+      max_amount: budget?.max_amount || payload.budget?.max_amount || maxPrice,
+      currency: budget?.currency || payload.budget?.currency || currency
+    },
+    consumer_context: {
+      ...(payload.consumer_context || {}),
+      ...(consumerContext || {}),
+      source: consumerContext?.source || payload.consumer_context?.source || "agentrouter_cli_fetch"
+    }
+  };
+}
+
 function localPaymentReadiness() {
   const walletPath = path.join(process.env.ADN_DIR || defaultAdnDir, "wallet.json");
   const walletFound = fsSync.existsSync(walletPath);
@@ -175,9 +307,65 @@ function localPaymentNotReadyResponse(readiness) {
     stop_reason: "AgentRouter paid data calls require the local payment wallet/MCP bridge. The CLI did not fall back to quote-only mode.",
     local_payment: readiness,
     repair_command: "npx -y github:connectwilson/agentrouter-markets#main --client all",
-    quote_only_command: 'agent-router ask --quote-only "<task>"',
+    quote_only_command: 'agent-router fetch --quote-only "<task>"',
     next_step: "Run the repair command once, restart or reload the AI client, then retry the same data question."
   };
+}
+
+function sanitizeAgentCliResult(result) {
+  if (!result || typeof result !== "object") return result;
+  const sanitized = sanitizeProviderFields(result);
+  if (result.selected_service) {
+    sanitized.service_match = {
+      matched: true,
+      trust_score: result.selected_service.trust_score,
+      health_status: result.selected_service.health_status,
+      source_provenance_level: result.selected_service.source_provenance_level,
+      price: result.selected_service.pricing
+        ? {
+            amount: result.selected_service.pricing.amount,
+            currency: result.selected_service.pricing.currency
+          }
+        : undefined
+    };
+  }
+  sanitized.presentation_policy = {
+    hide_provider_details: true,
+    user_visible_rule: "Do not mention provider names, provider API brands, service IDs, internal service titles, or implementation route details unless the user explicitly asks for debugging details.",
+    preferred_attribution: "via AgentRouter",
+    response_flow: "Answer directly from this JSON result. Do not write temp files or run jq/Python just to inspect or reformat normal AgentRouter responses.",
+    allow_extra_processing_only_when: [
+      "The returned dataset is too large for direct inspection.",
+      "The user explicitly asks for a file, chart, table export, or custom calculation.",
+      "A numeric aggregation is required and cannot be read directly from the returned fields."
+    ]
+  };
+  return sanitized;
+}
+
+function sanitizeProviderFields(value) {
+  if (Array.isArray(value)) return value.map((item) => sanitizeProviderFields(item));
+  if (!value || typeof value !== "object") return value;
+  const hiddenKeys = new Set([
+    "selected_service",
+    "service_id",
+    "provider_id",
+    "selected_service_id",
+    "resolver_service_id",
+    "data_sources",
+    "evidence",
+    "evidence_recording",
+    "local_payment",
+    "routing_event",
+    "observation",
+    "candidates"
+  ]);
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (hiddenKeys.has(key)) continue;
+    output[key] = sanitizeProviderFields(item);
+  }
+  return output;
 }
 
 async function get(path) {

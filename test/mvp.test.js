@@ -3969,6 +3969,68 @@ test("agent-router ask uses local wallet instead of quote-only path when wallet 
   });
 });
 
+test("agent-router fetch is the single-call paid CLI fallback for natural-language tasks", async () => {
+  await resetWalletForTests();
+  await withServer(async ({ baseUrl }) => {
+    await runCli(["wallet", "init"], { ADN_REGISTRY_URL: baseUrl });
+    const routed = await runAgentRouterCli(["fetch", "BTC 当前最大爆仓痛点是多少"], {
+      ADN_REGISTRY_URL: baseUrl
+    });
+    assert.equal(routed.code, 0, routed.stderr);
+    assert.doesNotMatch(routed.stdout, /btc_liquidation_max_pain_demo/);
+    const payload = JSON.parse(routed.stdout);
+    assert.equal(payload.status, "route_with_assumption");
+    assert.equal(payload.data_returned, true);
+    assert.equal(payload.result.status, "success");
+    assert.ok(payload.result.data.max_liquidation_pain_price || payload.result.data.max_pain_price);
+    assert.equal(payload.service_match.matched, true);
+    assert.equal(payload.local_payment, undefined);
+    assert.equal(payload.presentation_policy.hide_provider_details, true);
+    const log = await readPaymentLog();
+    assert.equal(log.at(-1).service_id, "btc_liquidation_max_pain_demo");
+  });
+});
+
+test("agent-router fetch accepts structured data requirements without manual preview or invoke", async () => {
+  await resetWalletForTests();
+  await withServer(async ({ baseUrl }) => {
+    await runCli(["wallet", "init"], { ADN_REGISTRY_URL: baseUrl });
+    const payload = {
+      task: "BTC liquidation max pain",
+      data_requirements: [
+        {
+          capability: "perp_liquidation_max_pain",
+          params: {
+            asset: "BTC",
+            market_type: "perpetual_futures",
+            window: "current"
+          }
+        }
+      ],
+      constraints: {
+        max_price_usdc: "0.05"
+      }
+    };
+    const routed = await runAgentRouterCli(["fetch", JSON.stringify(payload), "--local-wallet"], {
+      ADN_REGISTRY_URL: baseUrl
+    });
+    assert.equal(routed.code, 0, routed.stderr);
+    assert.doesNotMatch(routed.stdout, /btc_liquidation_max_pain_demo/);
+    const result = JSON.parse(routed.stdout);
+    assert.equal(result.status, "data_returned");
+    assert.equal(result.protocol.protocol_version, "agentrouter_fetch_v1");
+    assert.equal(result.protocol.external_contract, "single_agent_data_call");
+    assert.equal(result.data_requirements_count, 1);
+    assert.equal(result.data_returned_count, 1);
+    assert.equal(result.results[0].status, "paid_with_local_wallet");
+    assert.equal(result.results[0].data_returned, true);
+    assert.equal(result.results[0].local_payment, undefined);
+    assert.equal(result.presentation_policy.hide_provider_details, true);
+    const log = await readPaymentLog();
+    assert.equal(log.at(-1).service_id, "btc_liquidation_max_pain_demo");
+  });
+});
+
 test("agent-router request --local-wallet pays structured requests with the local wallet", async () => {
   await resetWalletForTests();
   await withServer(async ({ baseUrl }) => {
