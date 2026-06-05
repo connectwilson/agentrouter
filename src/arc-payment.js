@@ -78,12 +78,21 @@ export async function getArcUsdcBalance(address) {
     chain: ARC_TESTNET,
     transport: http(ARC_TESTNET.rpcUrls.default.http[0])
   });
-  const amountAtomic = await client.readContract({
-    address: ARC_USDC_ADDRESS,
-    abi: ERC20_ABI,
-    functionName: "balanceOf",
-    args: [address]
-  });
+  let amountAtomic;
+  try {
+    amountAtomic = await client.readContract({
+      address: ARC_USDC_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: "balanceOf",
+      args: [address]
+    });
+  } catch (error) {
+    throw classifyArcRpcError(error, {
+      stage: "balance_check",
+      rpc_url: ARC_TESTNET.rpcUrls.default.http[0],
+      wallet_address: address
+    });
+  }
   return {
     address,
     chain_id: ARC_TESTNET.id,
@@ -148,12 +157,23 @@ export async function sendArcUsdcTransfer({ wallet, payment }) {
     transport: http(ARC_TESTNET.rpcUrls.default.http[0])
   });
   const amountAtomic = arcAmountAtomic(payment.amount);
-  const txHash = await client.writeContract({
-    address: ARC_USDC_ADDRESS,
-    abi: ERC20_ABI,
-    functionName: "transfer",
-    args: [payment.pay_to, amountAtomic]
-  });
+  let txHash;
+  try {
+    txHash = await client.writeContract({
+      address: ARC_USDC_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: "transfer",
+      args: [payment.pay_to, amountAtomic]
+    });
+  } catch (error) {
+    throw classifyArcRpcError(error, {
+      stage: "transfer",
+      rpc_url: ARC_TESTNET.rpcUrls.default.http[0],
+      wallet_address: wallet.address,
+      pay_to: payment.pay_to,
+      amount: payment.amount
+    });
+  }
   return {
     tx_hash: txHash,
     chain_id: ARC_TESTNET.id,
@@ -189,12 +209,22 @@ export async function verifyArcUsdcTransfer({ txHash, expected }) {
     chain: ARC_TESTNET,
     transport: http(ARC_TESTNET.rpcUrls.default.http[0])
   });
-  const receipt = await client.waitForTransactionReceipt({
-    hash: txHash,
-    confirmations: 1,
-    timeout: Number(process.env.ADN_ARC_RECEIPT_TIMEOUT_MS || 30000)
-  });
-  const tx = await client.getTransaction({ hash: txHash });
+  let receipt;
+  let tx;
+  try {
+    receipt = await client.waitForTransactionReceipt({
+      hash: txHash,
+      confirmations: 1,
+      timeout: Number(process.env.ADN_ARC_RECEIPT_TIMEOUT_MS || 30000)
+    });
+    tx = await client.getTransaction({ hash: txHash });
+  } catch (error) {
+    throw classifyArcRpcError(error, {
+      stage: "verify_transfer",
+      rpc_url: ARC_TESTNET.rpcUrls.default.http[0],
+      tx_hash: txHash
+    });
+  }
   if (receipt.status !== "success") {
     return { ok: false, error: "ARC_TX_NOT_SUCCESS", receipt_status: receipt.status };
   }
@@ -227,4 +257,45 @@ export async function verifyArcUsdcTransfer({ txHash, expected }) {
     block_number: receipt.blockNumber.toString(),
     explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/${txHash}`
   };
+}
+
+export function classifyArcRpcError(error, context = {}) {
+  const root = rootCause(error);
+  const errorCode = root?.code || error?.code || "";
+  const details = root?.message || error?.details || error?.shortMessage || error?.message || "Arc RPC request failed.";
+  const classified = new Error(`Arc Testnet RPC unavailable during ${context.stage || "payment"}: ${details}`);
+  classified.code = errorCode === "ENOTFOUND" ? "ARC_RPC_DNS_FAILED" : "ARC_RPC_UNAVAILABLE";
+  classified.status = "arc_payment_unavailable";
+  classified.retryable = true;
+  classified.arc_rpc = {
+    stage: context.stage || "payment",
+    rpc_url: context.rpc_url || ARC_TESTNET.rpcUrls.default.http[0],
+    hostname: root?.hostname || hostFromUrl(context.rpc_url || ARC_TESTNET.rpcUrls.default.http[0]),
+    error_code: errorCode || null,
+    details,
+    wallet_address: context.wallet_address || null,
+    pay_to: context.pay_to || null,
+    amount: context.amount || null,
+    tx_hash: context.tx_hash || null
+  };
+  classified.cause = error;
+  return classified;
+}
+
+function rootCause(error) {
+  let current = error;
+  const seen = new Set();
+  while (current?.cause && !seen.has(current.cause)) {
+    seen.add(current);
+    current = current.cause;
+  }
+  return current || error;
+}
+
+function hostFromUrl(value) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return null;
+  }
 }

@@ -128,12 +128,65 @@ try {
     });
   }
 } catch (error) {
-  console.error(JSON.stringify({
+  console.error(JSON.stringify(formatCliError(error), null, 2));
+  process.exitCode = 1;
+}
+
+function formatCliError(error) {
+  const root = rootCause(error);
+  if (error.status === "arc_payment_unavailable") {
+    return {
+      ok: false,
+      status: "arc_payment_unavailable",
+      code: error.code || "ARC_RPC_UNAVAILABLE",
+      error: error.message,
+      arc_rpc: error.arc_rpc || null,
+      retryable: Boolean(error.retryable),
+      payload: error.payload || null,
+      hint: "AgentRouter could not complete the local Arc payment step. Check ADN_ARC_RPC_URL, DNS/VPN/proxy, then retry. Do not answer from cached data."
+    };
+  }
+  if (root?.code === "ENOTFOUND") {
+    return {
+      ok: false,
+      status: "transport_dns_failed",
+      code: "DNS_ENOTFOUND",
+      error: error.message,
+      transport: {
+        hostname: root.hostname || null,
+        error_code: root.code,
+        details: root.message
+      },
+      payload: error.payload || null,
+      hint: "The local Node.js process cannot resolve this host. Check DNS/VPN/proxy or set AGENT_ROUTER_URL/ADN_ARC_RPC_URL to a reachable endpoint."
+    };
+  }
+  if (root?.name === "AbortError" || error.name === "AbortError" || /timeout/i.test(String(error.message || ""))) {
+    return {
+      ok: false,
+      status: "transport_timeout",
+      error: error.message,
+      payload: error.payload || null,
+      hint: "The network request timed out. Retry after confirming the AgentRouter URL and Arc RPC are reachable."
+    };
+  }
+  return {
     ok: false,
+    status: error.status || "transport_error",
+    code: error.code || null,
     error: error.message,
     payload: error.payload || null
-  }, null, 2));
-  process.exitCode = 1;
+  };
+}
+
+function rootCause(error) {
+  let current = error;
+  const seen = new Set();
+  while (current?.cause && !seen.has(current.cause)) {
+    seen.add(current);
+    current = current.cause;
+  }
+  return current || error;
 }
 
 function parseRuntimeFlags(values) {

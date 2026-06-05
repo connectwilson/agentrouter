@@ -251,7 +251,7 @@ async function handleMessage(message) {
               text: JSON.stringify(presentation, null, 2)
             }
           ],
-          isError: result?.ok === false && ["transport_error", "http_error", "wallet_needs_funding"].includes(result.status)
+          isError: result?.ok === false && ["transport_error", "http_error", "wallet_needs_funding", "arc_payment_unavailable"].includes(result.status)
         }
       });
       return;
@@ -555,6 +555,9 @@ async function requestWithLocalWallet(args) {
     if (error.code === "WALLET_INSUFFICIENT_ARC_USDC") {
       return fundingRequiredResponse({ error, selectedService: tokenResolution?.resolver_service || null, quote: null });
     }
+    if (error.status === "arc_payment_unavailable") {
+      return arcPaymentUnavailableResponse({ error, selectedService: tokenResolution?.resolver_service || null, quote: null });
+    }
     throw error;
   }
 
@@ -600,6 +603,9 @@ async function requestWithLocalWallet(args) {
   } catch (error) {
     if (error.code === "WALLET_INSUFFICIENT_ARC_USDC") {
       return fundingRequiredResponse({ error, selectedService: quote.selected_service, quote: quote.quote });
+    }
+    if (error.status === "arc_payment_unavailable") {
+      return arcPaymentUnavailableResponse({ error, selectedService: quote.selected_service, quote: quote.quote });
     }
     throw error;
   }
@@ -819,6 +825,39 @@ function fundingRequiredResponse({ error, selectedService, quote }) {
     },
     user_message: `AgentRouter needs funding before it can fetch fresh paid data. Send at least ${error.wallet?.required || "0.01"} Arc Testnet USDC to ${error.wallet?.address} on Arc Testnet, then retry the same request.`,
     next_step: "Show the funding_instruction to the user and stop. Do not answer with old validation samples, cached provider results, web search, or unrelated data."
+  };
+}
+
+function arcPaymentUnavailableResponse({ error, selectedService, quote }) {
+  const arcRpc = error.arc_rpc || {};
+  return {
+    ok: false,
+    status: "arc_payment_unavailable",
+    action_required: "fix_arc_rpc_or_retry",
+    final_answer_available: false,
+    data_returned: false,
+    do_not_use_cached_or_previous_results: true,
+    stop_reason: "AgentRouter selected a paid provider, but the local Arc payment step could not read or submit through the configured Arc RPC. No paid data was returned.",
+    message: error.message,
+    selected_service: selectedService,
+    quote,
+    arc_rpc: error.arc_rpc || null,
+    retryable: true,
+    troubleshooting: {
+      likely_cause: error.code === "ARC_RPC_DNS_FAILED"
+        ? "The local Node.js or MCP process cannot resolve the Arc RPC hostname."
+        : "The Arc RPC request failed during local payment.",
+      configured_rpc_url: arcRpc.rpc_url || process.env.ADN_ARC_RPC_URL || "https://rpc.testnet.arc.network",
+      failed_stage: arcRpc.stage || "payment",
+      error_code: arcRpc.error_code || error.code || null,
+      suggested_actions: [
+        "Check whether the AI client or MCP process can resolve and POST to the Arc RPC URL.",
+        "Restart Claude Desktop or the AI client after DNS, VPN, or proxy changes.",
+        "Set ADN_ARC_RPC_URL to a reachable Arc Testnet RPC endpoint and restart the MCP server.",
+        "Retry the same AgentRouter request after the RPC is reachable."
+      ]
+    },
+    next_step: "Show this troubleshooting object to the user and stop. Do not answer from cached data."
   };
 }
 

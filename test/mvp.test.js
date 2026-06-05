@@ -28,7 +28,7 @@ const { discoverApiServices } = await import("../src/openapi-import.js");
 const { readPaymentLog, resetWalletForTests } = await import("../src/wallet.js");
 const { initSessionWallet, readWallet } = await import("../src/wallet.js");
 const { createArcPaymentProof } = await import("../src/payment.js");
-const { sendArcUsdcTransfer } = await import("../src/arc-payment.js");
+const { classifyArcRpcError, sendArcUsdcTransfer } = await import("../src/arc-payment.js");
 const { getRequestBaseUrl, normalizeEndpoint } = await import("../src/http-utils.js");
 const { createMemoryStore } = await import("../src/store.js");
 const { quoteCapabilityRequest } = await import("../src/router.js");
@@ -3803,6 +3803,26 @@ test("hosted HTTP provider preflights upstream failures before payment", async (
     const afterLog = await readPaymentLog();
     assert.equal(afterLog.length, beforeLog.length);
   });
+});
+
+test("Arc RPC failures are classified for payment troubleshooting", () => {
+  const root = Object.assign(new Error("getaddrinfo ENOTFOUND rpc.testnet.arc.network"), {
+    code: "ENOTFOUND",
+    hostname: "rpc.testnet.arc.network"
+  });
+  const wrapped = new Error("fetch failed", { cause: root });
+  const classified = classifyArcRpcError(wrapped, {
+    stage: "balance_check",
+    rpc_url: "https://rpc.testnet.arc.network",
+    wallet_address: "0xe3cbf7e987157348616024f9e9a438bab73a23e4"
+  });
+
+  assert.equal(classified.status, "arc_payment_unavailable");
+  assert.equal(classified.code, "ARC_RPC_DNS_FAILED");
+  assert.equal(classified.retryable, true);
+  assert.equal(classified.arc_rpc.stage, "balance_check");
+  assert.equal(classified.arc_rpc.hostname, "rpc.testnet.arc.network");
+  assert.equal(classified.arc_rpc.wallet_address, "0xe3cbf7e987157348616024f9e9a438bab73a23e4");
 });
 
 test("Provider Studio rejects JSON application-level upstream errors", async () => {

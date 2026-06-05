@@ -49,10 +49,12 @@ export async function routeTaskWithLocalWallet({ baseUrl, task, constraints = {}
     return {
       ...resolved,
       ok: false,
-      status: error.code || "local_paid_invocation_failed",
+      status: error.status || error.code || "local_paid_invocation_failed",
       data_returned: false,
       error: error.message,
       retryable: Boolean(error.retryable),
+      arc_rpc: error.arc_rpc || null,
+      action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
       upstream_status: error.upstreamStatus || null,
       timing: timing.snapshot()
     };
@@ -114,9 +116,11 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
   } catch (error) {
     return {
       ok: false,
-      status: error.code || "structured_route_failed",
+      status: error.status || error.code || "structured_route_failed",
       data_returned: false,
       error: error.message,
+      arc_rpc: error.arc_rpc || null,
+      action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
       payload: error.payload || null,
       timing: timing.snapshot()
     };
@@ -168,10 +172,12 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
     return {
       ...quoted,
       ok: false,
-      status: error.code || "local_paid_invocation_failed",
+      status: error.status || error.code || "local_paid_invocation_failed",
       data_returned: false,
       error: error.message,
       retryable: Boolean(error.retryable),
+      arc_rpc: error.arc_rpc || null,
+      action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
       upstream_status: error.upstreamStatus || null,
       payload: error.payload || null,
       timing: timing.snapshot()
@@ -298,9 +304,10 @@ async function routeTokenSmartMoneyActivityWithLocalWallet({ baseUrl, connector,
     } catch (error) {
       const failure = {
         service_id: serviceId,
-        status: error.code || "local_paid_invocation_failed",
+        status: error.status || error.code || "local_paid_invocation_failed",
         error: error.message,
         retryable: Boolean(error.retryable),
+        arc_rpc: error.arc_rpc || null,
         upstream_status: error.upstreamStatus || null
       };
       attempted.push(failure);
@@ -315,6 +322,8 @@ async function routeTokenSmartMoneyActivityWithLocalWallet({ baseUrl, connector,
           data_returned: false,
           error: error.message,
           retryable: Boolean(error.retryable),
+          arc_rpc: error.arc_rpc || null,
+          action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
           upstream_status: error.upstreamStatus || null,
           timing: timing.snapshot()
         };
@@ -422,12 +431,14 @@ async function resolveTokenWithLocalWallet({ connector, baseUrl, task, intent, m
   } catch (error) {
     return {
       ok: false,
-      status: error.code || "token_resolution_failed",
+      status: error.status || error.code || "token_resolution_failed",
       token_symbol: tokenSymbol,
       resolver_service_id: resolver.service_id,
       resolver_input: resolverInput,
       error: error.message,
       retryable: Boolean(error.retryable),
+      arc_rpc: error.arc_rpc || null,
+      action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
       upstream_status: error.upstreamStatus || null
     };
   }
