@@ -1075,7 +1075,12 @@ test("AgentRouter quote simulates route and payment guards without invoking prov
     const quoted = await response.json();
     assert.equal(quoted.ok, true);
     assert.equal(quoted.status, "quoted");
+    assert.equal(quoted.exact_match, true);
     assert.equal(quoted.selected_service.service_id, "btc_liquidation_max_pain_demo");
+    assert.equal(quoted.preflight_validation.ok, true);
+    assert.equal(quoted.route_decision.next_action, "pay_and_invoke_with_local_wallet");
+    assert.equal(quoted.route_decision.main_agent_policy.payment_required_is_not_failure, true);
+    assert.equal(quoted.route_decision.main_agent_policy.do_not_blind_invoke_alternatives, true);
     assert.equal(quoted.quote.would_pay, true);
     assert.equal(quoted.quote.guard_result, "pass");
     assert.equal(quoted.quote.payment_backend.backend, "circle_arc");
@@ -1089,6 +1094,37 @@ test("AgentRouter quote simulates route and payment guards without invoking prov
     assert.equal(quoted.result, undefined);
     const feedback = await fetch(`${baseUrl}/services/btc_liquidation_max_pain_demo/feedback`).then((res) => res.json());
     assert.equal(feedback.length, 0);
+  });
+});
+
+test("AgentRouter quote returns capability boundary instead of blind alternative invocation", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/quote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "ethereum_net_unrealized_profit_loss",
+        params: {
+          asset: "ETH",
+          metric: "NUPL",
+          window: "current"
+        },
+        constraints: {
+          max_price_usdc: "0.05"
+        }
+      })
+    });
+    assert.equal(response.status, 200);
+    const quoted = await response.json();
+    assert.equal(quoted.ok, false);
+    assert.equal(quoted.status, "no_match");
+    assert.equal(quoted.exact_match, false);
+    assert.equal(quoted.route_decision.exact_match, false);
+    assert.equal(quoted.route_decision.main_agent_policy.do_not_guess_service_names, true);
+    assert.equal(quoted.route_decision.main_agent_policy.do_not_blind_invoke_alternatives, true);
+    assert.ok(["report_no_exact_match", "ask_user_to_confirm_alternative"].includes(quoted.route_decision.next_action));
+    assert.equal(quoted.result, undefined);
+    assert.equal(quoted.quote, undefined);
   });
 });
 

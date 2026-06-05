@@ -329,11 +329,20 @@ export async function routeCapabilityRequest(store, {
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
     const request = { capability, params, constraints, consumer_context: consumerContext };
+    const alternatives = suggestCapabilityAlternatives(store, { capability, params, constraints });
     return {
       ok: false,
       status: "invalid_request",
       ...validation,
       request,
+      route_decision: createRouteDecision({
+        status: "invalid_request",
+        request,
+        exactMatch: false,
+        validation,
+        alternatives
+      }),
+      alternatives,
       retry_plan: createRetryPlan({
         status: "invalid_request",
         request,
@@ -374,6 +383,7 @@ export async function routeCapabilityRequest(store, {
   if (!candidates.length) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
     const diagnostics = diagnoseNoMatch(store, { capability, params, constraints: normalizedConstraints });
+    const alternatives = suggestCapabilityAlternatives(store, { capability, params, constraints: normalizedConstraints });
     const observation = recordRouteObservation(store, {
       status: ROUTER_STATUSES.NO_MATCH,
       request,
@@ -388,6 +398,15 @@ export async function routeCapabilityRequest(store, {
       observation,
       message: diagnostics.message,
       diagnostics,
+      exact_match: false,
+      alternatives,
+      route_decision: createRouteDecision({
+        status: ROUTER_STATUSES.NO_MATCH,
+        request,
+        exactMatch: false,
+        alternatives,
+        diagnostics
+      }),
       retry_plan: createRetryPlan({
         status: ROUTER_STATUSES.NO_MATCH,
         request,
@@ -399,6 +418,38 @@ export async function routeCapabilityRequest(store, {
   const selected = candidates[0];
   const record = store.services.get(selected.service_id);
   const input = buildInput(record.manifest, intent);
+  const preflight = validateManifestInput(record.manifest, input);
+  if (!preflight.ok) {
+    const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
+    return {
+      ok: false,
+      status: "preflight_validation_failed",
+      request,
+      selected_service: selected,
+      candidates_considered: candidates.length,
+      candidates: summarizeCandidates(candidates),
+      input,
+      preflight_validation: preflight,
+      exact_match: true,
+      route_decision: createRouteDecision({
+        status: "preflight_validation_failed",
+        request,
+        exactMatch: true,
+        selected,
+        candidates,
+        input,
+        preflight
+      }),
+      retry_plan: createRetryPlan({
+        status: "preflight_validation_failed",
+        request,
+        selected,
+        input,
+        error: preflight,
+        candidates
+      })
+    };
+  }
   const quote = createPaymentQuote({
     manifest: record.manifest,
     constraints: normalizedConstraints,
@@ -514,8 +565,21 @@ export async function routeCapabilityRequest(store, {
     request,
     selected_service: selected,
     token_resolution: tokenResolution || null,
+    exact_match: true,
     candidates_considered: candidates.length,
     candidates: summarizeCandidates(candidates),
+    preflight_validation: preflight,
+    route_decision: createRouteDecision({
+      status: retryPlan ? "routed_with_quality_warning" : "routed",
+      request,
+      exactMatch: true,
+      selected,
+      candidates,
+      input,
+      quote,
+      preflight,
+      verification
+    }),
     quote,
     input,
     result: invocation.body.result,
@@ -538,10 +602,21 @@ export function quoteCapabilityRequest(store, {
 } = {}) {
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
+    const request = { capability, params, constraints, consumer_context: consumerContext };
+    const alternatives = suggestCapabilityAlternatives(store, { capability, params, constraints });
     return {
       ok: false,
       status: "invalid_request",
-      ...validation
+      ...validation,
+      request,
+      alternatives,
+      route_decision: createRouteDecision({
+        status: "invalid_request",
+        request,
+        exactMatch: false,
+        validation,
+        alternatives
+      })
     };
   }
 
@@ -554,18 +629,55 @@ export function quoteCapabilityRequest(store, {
   const candidateConstraints = constraintsWithoutBudgetGuard(normalizedConstraints);
   const candidates = rankCandidates(store, intent, candidateConstraints);
   if (!candidates.length) {
+    const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
+    const diagnostics = diagnoseNoMatch(store, { capability, params, constraints: normalizedConstraints });
+    const alternatives = suggestCapabilityAlternatives(store, { capability, params, constraints: normalizedConstraints });
     return {
       ok: false,
       status: ROUTER_STATUSES.NO_MATCH,
-      request: { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext },
+      request,
       candidates_considered: 0,
-      message: "No registered service matched the structured capability request and constraints."
+      message: diagnostics.message,
+      diagnostics,
+      exact_match: false,
+      alternatives,
+      route_decision: createRouteDecision({
+        status: ROUTER_STATUSES.NO_MATCH,
+        request,
+        exactMatch: false,
+        alternatives,
+        diagnostics
+      })
     };
   }
 
   const selected = candidates[0];
   const record = store.services.get(selected.service_id);
   const input = buildInput(record.manifest, intent);
+  const preflight = validateManifestInput(record.manifest, input);
+  if (!preflight.ok) {
+    const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
+    return {
+      ok: false,
+      status: "preflight_validation_failed",
+      request,
+      selected_service: selected,
+      candidates_considered: candidates.length,
+      candidates: summarizeCandidates(candidates),
+      input,
+      preflight_validation: preflight,
+      exact_match: true,
+      route_decision: createRouteDecision({
+        status: "preflight_validation_failed",
+        request,
+        exactMatch: true,
+        selected,
+        candidates,
+        input,
+        preflight
+      })
+    };
+  }
   const quote = createPaymentQuote({
     manifest: record.manifest,
     constraints: normalizedConstraints,
@@ -577,9 +689,21 @@ export function quoteCapabilityRequest(store, {
     status: quote.would_pay ? "quoted" : "quote_blocked",
     request: { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext },
     selected_service: selected,
+    exact_match: true,
     candidates_considered: candidates.length,
     candidates: summarizeCandidates(candidates),
     input,
+    preflight_validation: preflight,
+    route_decision: createRouteDecision({
+      status: quote.would_pay ? "quoted" : "quote_blocked",
+      request: { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext },
+      exactMatch: true,
+      selected,
+      candidates,
+      input,
+      quote,
+      preflight
+    }),
     quote,
     quote_feedback_request: quoteFeedbackRequest
   };
@@ -963,6 +1087,166 @@ function summarizeCandidates(candidates) {
     routing_score,
     selection_reason
   }));
+}
+
+function createRouteDecision({
+  status,
+  request,
+  exactMatch,
+  selected = null,
+  candidates = [],
+  input = null,
+  quote = null,
+  preflight = null,
+  validation = null,
+  alternatives = [],
+  diagnostics = null,
+  verification = null
+} = {}) {
+  return {
+    decision_version: "agent_router_route_decision_v1",
+    status,
+    exact_match: Boolean(exactMatch),
+    next_action: routeNextAction({ status, exactMatch, quote, alternatives, preflight, validation }),
+    requested_capability: request?.capability || null,
+    selected_service_id: selected?.service_id || null,
+    selected_title: selected?.title || null,
+    candidates_considered: candidates.length,
+    input_ready: Boolean(input && (!preflight || preflight.ok)),
+    preflight_validation: preflight || null,
+    validation: validation || null,
+    quote: quote ? {
+      would_pay: quote.would_pay,
+      amount: quote.amount || quote.price,
+      currency: quote.pricing?.currency || quote.currency || "USDC"
+    } : null,
+    alternatives,
+    diagnostics,
+    verification_summary: verification ? {
+      schema_valid: verification.schema_valid,
+      freshness_valid: verification.freshness_valid,
+      coverage_valid: verification.coverage_valid,
+      data_non_empty: verification.data_non_empty,
+      intent_fit: verification.intent_fit || null
+    } : null,
+    main_agent_policy: {
+      do_not_guess_service_names: true,
+      do_not_blind_invoke_alternatives: true,
+      payment_required_is_not_failure: true,
+      ask_user_before_weak_alternative: true
+    }
+  };
+}
+
+function routeNextAction({ status, exactMatch, quote, alternatives, preflight, validation }) {
+  if (validation && !validation.ok) return "fix_structured_request";
+  if (preflight && !preflight.ok) return "fix_input_before_payment";
+  if (!exactMatch) {
+    return alternatives?.some((item) => item.fit_score >= 0.7)
+      ? "ask_user_to_confirm_alternative"
+      : "report_no_exact_match";
+  }
+  if (quote?.would_pay) return "pay_and_invoke_with_local_wallet";
+  if (status === "quote_blocked") return "increase_budget_or_choose_lower_cost_service";
+  return "invoke_or_return_result";
+}
+
+function validateManifestInput(manifest = {}, input = {}) {
+  const schema = manifest.input_schema || {};
+  const properties = schema.properties || {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const missing_fields = required.filter((field) => input[field] === undefined || input[field] === null || input[field] === "");
+  const invalid_fields = [];
+  for (const [field, rule] of Object.entries(properties)) {
+    const value = input[field];
+    if (value === undefined || value === null) continue;
+    if (rule?.enum && !rule.enum.includes(value)) {
+      invalid_fields.push({ field, value, allowed: rule.enum });
+    }
+    if (rule?.type === "number" && typeof value !== "number") {
+      invalid_fields.push({ field, value, expected_type: "number" });
+    }
+    if (rule?.type === "string" && typeof value !== "string") {
+      invalid_fields.push({ field, value, expected_type: "string" });
+    }
+    if (rule?.type === "array" && !Array.isArray(value)) {
+      invalid_fields.push({ field, value, expected_type: "array" });
+    }
+    if (rule?.type === "object" && (typeof value !== "object" || Array.isArray(value))) {
+      invalid_fields.push({ field, value, expected_type: "object" });
+    }
+  }
+  return {
+    ok: missing_fields.length === 0 && invalid_fields.length === 0,
+    validation_version: "agent_router_preflight_validation_v1",
+    service_id: manifest.service_id,
+    missing_fields,
+    invalid_fields,
+    input_schema: schema
+  };
+}
+
+function suggestCapabilityAlternatives(store, { capability, params = {}, constraints = {} } = {}) {
+  const requestedTerms = new Set([
+    ...dynamicCapabilityTerms(capability),
+    ...Object.values(params || {}).flatMap((value) => searchableValues(value)),
+    ...expandedAlternativeTerms(capability, params)
+  ].map((term) => String(term).toLowerCase()).filter(Boolean));
+  if (!requestedTerms.size) return [];
+
+  return [...store.services.values()]
+    .map((record) => alternativeFit(record.manifest, requestedTerms, constraints))
+    .filter((item) => item.fit_score > 0.18)
+    .sort((a, b) => b.fit_score - a.fit_score)
+    .slice(0, 5);
+}
+
+function alternativeFit(manifest, requestedTerms, constraints = {}) {
+  const text = [
+    manifest.service_id,
+    manifest.title,
+    manifest.description_for_agent,
+    manifest.agent_contract?.summary,
+    ...(manifest.capabilities || []),
+    JSON.stringify(manifest.sample_request || {}),
+    JSON.stringify(manifest.sample_response || {})
+  ].join(" ").toLowerCase();
+  const hits = [...requestedTerms].filter((term) => term.length > 1 && text.includes(term));
+  const price = Number(manifest.pricing?.amount || 0);
+  const maxPrice = Number(constraints.max_price_usdc || 0);
+  const priceOk = !maxPrice || !price || price <= maxPrice;
+  const raw = requestedTerms.size ? hits.length / requestedTerms.size : 0;
+  const fit_score = Number(Math.min(0.95, raw * (priceOk ? 1 : 0.75)).toFixed(2));
+  return {
+    service_id: manifest.service_id,
+    title: manifest.title,
+    capability_tags: (manifest.capabilities || []).slice(0, 8),
+    fit_score,
+    relationship: fit_score >= 0.75 ? "near_alternative" : fit_score >= 0.45 ? "related_signal" : "weak_related_signal",
+    requires_user_confirmation: fit_score < 0.75,
+    reason: hits.length
+      ? `Shares ${hits.slice(0, 6).join(", ")} with the requested capability, but it is not an exact capability match.`
+      : "Related by broad data domain, not by exact metric.",
+    price: manifest.pricing || null
+  };
+}
+
+function expandedAlternativeTerms(capability, params = {}) {
+  const terms = [];
+  const haystack = [
+    capability,
+    ...Object.values(params || {}).map((value) => JSON.stringify(value))
+  ].join(" ").toLowerCase();
+  if (/nupl|unrealized|profit|loss|pnl/.test(haystack)) {
+    terms.push("pnl", "profit", "loss", "profitability", "unrealized", "holder", "address");
+  }
+  if (/netflow|inflow|outflow|flow/.test(haystack)) {
+    terms.push("netflow", "inflow", "outflow", "flow", "fund");
+  }
+  if (/holder|holders|持仓/.test(haystack)) {
+    terms.push("holder", "holders", "balance", "holding");
+  }
+  return terms;
 }
 
 function recordRouteObservation(store, {

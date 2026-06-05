@@ -1039,8 +1039,12 @@ async function post(baseUrl, path, body) {
   });
   const payload = await response.json();
   if (!response.ok) {
+    if (response.status === 402 && (payload?.status === "payment_required" || payload?.status === "quote_blocked")) {
+      return payload;
+    }
     const error = new Error(payload?.error?.message || payload?.error?.code || `HTTP ${response.status}`);
     error.payload = payload;
+    error.http_status = response.status;
     throw error;
   }
   return payload;

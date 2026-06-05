@@ -1059,6 +1059,9 @@ async function request(path, options) {
     const text = await response.text();
     const payload = text ? JSON.parse(text) : null;
     if (!response.ok) {
+      if (response.status === 402 && (payload?.status === "payment_required" || payload?.status === "quote_blocked")) {
+        return payload;
+      }
       return {
         ok: false,
         status: "http_error",
