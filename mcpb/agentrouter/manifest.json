@@ -23,7 +23,8 @@
       ],
       "env": {
         "AGENT_ROUTER_URL": "${user_config.agent_router_url}",
-        "AGENT_ROUTER_MAX_PRICE": "${user_config.max_price_usdc}"
+        "AGENT_ROUTER_MAX_PRICE": "${user_config.max_price_usdc}",
+        "AGENT_ROUTER_API_KEY": "${user_config.agent_router_api_key}"
       }
     }
   },
@@ -80,6 +81,14 @@
       "description": "Default per-call USDC budget used by the natural-language fallback tool.",
       "default": "0.05",
       "required": true
+    },
+    "agent_router_api_key": {
+      "type": "string",
+      "title": "AgentRouter API key",
+      "description": "Create this key from your AgentRouter account. It authorizes paid calls against your prepaid credits balance.",
+      "default": "",
+      "required": false,
+      "sensitive": true
     }
   }
 }

@@ -10,6 +10,7 @@ import { currentPaymentBackend } from "../src/payment-adapter.js";
 import { initSessionWallet, initWallet, readWallet, walletStatus } from "../src/wallet.js";
 
 const baseUrl = (process.env.AGENT_ROUTER_URL || process.env.ADN_REGISTRY_URL || "https://agentrouter.network").replace(/\/$/, "");
+const creditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
 
 const tools = [
   {
@@ -265,10 +266,18 @@ async function handleMessage(message) {
 
 async function callTool(name, args) {
   if (name === "agentrouter_fetch") {
+    if (creditApiKey) return post("/agent-router/fetch", args);
     return fetchWithLocalWallet(args);
   }
 
   if (name === "agentrouter_ask") {
+    if (creditApiKey) {
+      return post("/agent-router/ask", {
+        task: args.task,
+        max_price: args.max_price || "0.05",
+        currency: args.currency || "USDC"
+      });
+    }
     if (["x402", "circle_arc"].includes(currentPaymentBackend())) {
       return routeTaskWithLocalWallet({
         baseUrl,
@@ -285,6 +294,15 @@ async function callTool(name, args) {
   }
 
   if (name === "agentrouter_request") {
+    if (creditApiKey) {
+      return post("/agent-router/request", {
+        capability: args.capability,
+        params: args.params || {},
+        constraints: args.constraints || {},
+        budget: args.budget || {},
+        consumer_context: args.consumer_context || {}
+      });
+    }
     if (["x402", "circle_arc"].includes(currentPaymentBackend())) {
       return requestWithLocalWallet(args);
     }
@@ -1054,6 +1072,10 @@ async function request(path, options) {
     const started = Date.now();
     const response = await fetch(`${baseUrl}${path}`, {
       ...options,
+      headers: {
+        ...(options.headers || {}),
+        ...(creditApiKey ? { "x-agentrouter-api-key": creditApiKey } : {})
+      },
       signal: options.signal || AbortSignal.timeout(httpTimeoutMs())
     });
     const text = await response.text();

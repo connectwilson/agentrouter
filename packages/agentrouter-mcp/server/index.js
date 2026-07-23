@@ -2,6 +2,7 @@
 
 const baseUrl = (process.env.AGENT_ROUTER_URL || process.env.ADN_REGISTRY_URL || "https://agentrouter.network").replace(/\/$/, "");
 const defaultMaxPrice = process.env.AGENT_ROUTER_MAX_PRICE || "0.05";
+const creditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
 
 const tools = [
   {
@@ -259,7 +260,13 @@ async function post(path, body) {
 
 async function request(path, options) {
   try {
-    const response = await fetch(`${baseUrl}${path}`, options);
+    const response = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        ...(creditApiKey ? { "x-agentrouter-api-key": creditApiKey } : {})
+      }
+    });
     const text = await response.text();
     const payload = text ? JSON.parse(text) : null;
     if (!response.ok) {

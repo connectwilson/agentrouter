@@ -1,8 +1,19 @@
 # Status
 
-Last updated: 2026-06-01
+Last updated: 2026-07-23
 
 ## Current MVP
+
+- Expanded `external_api_query` into a read-only high-frequency provider layer. Public providers now include GitHub, GDELT, SEC EDGAR, and Open-Meteo; user-connected providers now include YouTube Data API, VirusTotal, Google Places, Amadeus, EasyPost, and OpenAlex. Public sources can run without login, while credential-backed sources remain owner-scoped and never expose credentials in results.
+- Remote MCP `agentrouter_request` now dispatches built-in external API and social-user-voice capabilities consistently with the HTTP request endpoint. A valid AgentRouter credit API key resolves its owning user for private Provider connections; anonymous MCP calls remain limited to public/local sources. Provider-specific validation, unsupported operations, and zero-result responses now return machine-readable diagnostics.
+- Provider Studio now accepts `public-apis/public-apis` as an API discovery source. Catalog entries retain category/auth/HTTPS/CORS/documentation provenance, remain non-publishable candidates, and must continue through official-doc endpoint discovery plus live validation before entering the AgentRouter registry.
+- Added `social_user_voice_research` as a first-class AgentRouter capability for X, Reddit, Xiaohongshu, Bilibili, YouTube, and Facebook. It uses read-only local/browser connectors or user-owned official API connections, preserves source URLs and provenance, and keeps local credentials and raw browser results on the user's device by default.
+- Complaint research now retries an entity-only query when a strict complaint query has no relevant rows, then applies the same negative-experience relevance filter to the broader result set.
+- Creator Research now exposes sign-out controls for local sessions. YouTube execution plans match the runtime's OpenCLI-first/yt-dlp-fallback order.
+- Bilibili OpenCLI now has a 90-second browser-search timeout instead of the generic 20-second process timeout. A live KIMI K3 probe has returned real videos, but Bilibili's page-context request can still intermittently return `TypeError: Failed to fetch`; attempts are retained as provider diagnostics and `bili-cli` remains the preferred optional backend when installed.
+- Existing local users now have an explicit `agentrouter update` / `agentrouter upgrade` path. It refreshes installed Skill files and existing MCP package commands without recreating wallets, adding unused client configs, or overwriting API keys, custom AgentRouter environment values, unrelated MCP servers, and timestamped config backups.
+- Added a centralized prepaid credits backend for broader adoption beyond Arc Testnet. OAuth users can top up through Stripe Hosted Checkout, create client API keys, inspect balances and ledger activity, and pay for MCP/HTTP service calls from one persistent balance.
+- Credit keys are stored as SHA-256 hashes, Stripe webhooks are signature-verified and idempotent, debits are atomic, insufficient balances are rejected without charge, and failed provider delivery creates an automatic refund event.
 
 - Provider Studio supports manual service creation and OpenAPI import.
 - OpenAPI import can discover multiple endpoints, preview generated cards, select many drafts, and publish them.

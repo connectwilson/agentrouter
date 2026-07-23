@@ -7,3 +7,8 @@ providers/*.local.json
 providers/*secret*.json
 node_modules/
 .DS_Store
+*.pem
+*.key
+.gstack/
+.env.local
+.env.*.local

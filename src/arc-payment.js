@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { createPublicClient, createWalletClient, decodeFunctionData, formatUnits, http, parseUnits } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -136,8 +137,9 @@ export async function sendArcUsdcTransfer({ wallet, payment }) {
   }
   if (process.env.ADN_ARC_TRANSFER_MODE === "mock") {
     const amountAtomic = arcAmountAtomic(payment.amount);
+    const txHash = `0x${crypto.randomBytes(32).toString("hex")}`;
     return {
-      tx_hash: `0x${"a".repeat(64)}`,
+      tx_hash: txHash,
       chain_id: ARC_TESTNET.id,
       network: "arc-testnet",
       asset: "USDC",
@@ -146,7 +148,7 @@ export async function sendArcUsdcTransfer({ wallet, payment }) {
       amount_atomic: amountAtomic.toString(),
       payer: wallet.address,
       pay_to: payment.pay_to,
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/0x${"a".repeat(64)}`,
+      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/${txHash}`,
       mock: true
     };
   }

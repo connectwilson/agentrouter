@@ -7,6 +7,17 @@ import { assertPersistentProviderStorageReady, deletePersistentProviderConfig, l
 
 export const PROVIDER_DIR = path.resolve(process.env.ADN_PROVIDER_DIR || "providers");
 
+// listProviderConfigs runs on nearly every request; cache it briefly.
+// TTL bounds cross-instance staleness; local writes/deletes invalidate immediately.
+const CONFIG_CACHE_TTL_MS = Number(process.env.ADN_PROVIDER_CONFIG_CACHE_TTL_MS || 5000);
+let configCache = { configs: null, at: 0, version: -1 };
+let configVersion = 0;
+
+function invalidateProviderConfigCache() {
+  configVersion += 1;
+  configCache = { configs: null, at: 0, version: -1 };
+}
+
 export async function ensureProviderDir() {
   await fs.mkdir(PROVIDER_DIR, { recursive: true });
 }
@@ -24,6 +35,7 @@ export async function writeProviderConfig(config) {
   Object.assign(config, sanitized);
   await writePersistentProviderConfig(sanitized);
   await fs.writeFile(providerConfigPath(config.manifest.service_id), `${JSON.stringify(sanitized, null, 2)}\n`);
+  invalidateProviderConfigCache();
   return providerConfigPath(config.manifest.service_id);
 }
 
@@ -50,10 +62,21 @@ export async function deleteProviderConfig(serviceId) {
   } catch {
     // Best-effort cleanup.
   }
+  invalidateProviderConfigCache();
   return true;
 }
 
 export async function listProviderConfigs() {
+  const now = Date.now();
+  if (configCache.configs && configCache.version === configVersion && now - configCache.at < CONFIG_CACHE_TTL_MS) {
+    return configCache.configs;
+  }
+  const configs = await readAllProviderConfigs();
+  configCache = { configs, at: now, version: configVersion };
+  return configs;
+}
+
+async function readAllProviderConfigs() {
   const persistent = await listPersistentProviderConfigs();
   try {
     await ensureProviderDir();

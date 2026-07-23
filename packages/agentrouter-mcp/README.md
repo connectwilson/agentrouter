@@ -4,6 +4,8 @@ Universal MCP server for AgentRouter.
 
 AgentRouter routes AI agents to paid API/data services, supports quote-before-pay, invokes providers, verifies returned data, and returns an evidence envelope with trace hashes.
 
+Create `AGENT_ROUTER_API_KEY` from the signed-in AgentRouter account page. When present, the MCP server uses the prepaid credits balance and does not require a local Arc wallet.
+
 ## Usage
 
 Run with npx:
@@ -28,7 +30,8 @@ Most AI clients configure MCP like this:
       "args": ["-y", "@agentrouter/mcp"],
       "env": {
         "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_MAX_PRICE": "0.05",
+        "AGENT_ROUTER_API_KEY": "ar_live_..."
       }
     }
   }

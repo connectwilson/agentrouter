@@ -1,0 +1,432 @@
+import { readProviderSecret } from "./provider-secrets.js";
+
+const SOURCE_CATALOG = [
+  source("brave_search", "搜索", "Brave Search", "available", "brave_api", ["search"]),
+  source("tavily", "搜索", "Tavily", "available", "tavily_api", ["search"]),
+  source("serper", "搜索", "Serper", "available", "serper_api", ["search"]),
+  source("exa", "搜索", "Exa", "available", "exa_api", ["search"]),
+  source("firecrawl", "抓取", "Firecrawl", "available", "firecrawl_api", ["search"]),
+  source("jina", "抓取", "Jina", "available", "jina_api", ["search"]),
+  source("github", "开发者", "GitHub Public", "available", null, ["search"]),
+  source("gdelt", "新闻", "GDELT", "available", null, ["search"]),
+  source("sec_edgar", "公司与监管", "SEC EDGAR", "available", null, ["filings"]),
+  source("open_meteo", "天气与环境", "Open-Meteo", "available", null, ["forecast"]),
+  source("youtube", "社交媒体", "YouTube Data API", "available", "youtube_api", ["search"]),
+  source("virus_total", "安全", "VirusTotal", "available", "virustotal_api", ["inspect"]),
+  source("google_places", "地点", "Google Places", "available", "google_places_api", ["search"]),
+  source("amadeus", "旅行", "Amadeus", "available", "amadeus_api", ["flight_search"]),
+  source("easy_post", "物流", "EasyPost", "available", "easypost_api", ["track"]),
+  source("openalex", "学术", "OpenAlex", "available", "openalex_api", ["search"]),
+  source("perplexity", "搜索", "Perplexity", "planned", null, []),
+  source("parallel", "搜索", "Parallel", "planned", null, []),
+  source("bright_data", "抓取", "Bright Data", "requires_partner_api", null, []),
+  source("x", "社交媒体", "X / Twitter", "available", "x_api", ["search"]),
+  source("reddit", "社交媒体", "Reddit", "available", "reddit_api", ["search"]),
+  source("xiaohongshu", "社交媒体", "小红书", "browser_only", "local_browser", ["search"]),
+  source("linkedin", "社交媒体", "LinkedIn", "requires_partner_api", null, []),
+  source("tiktok", "社交媒体", "TikTok", "requires_partner_api", null, []),
+  source("douyin", "社交媒体", "抖音", "requires_partner_api", null, []),
+  source("zhihu", "社交媒体", "知乎", "browser_only", null, []),
+  source("bilibili", "社交媒体", "Bilibili", "browser_only", "local_browser", ["search"]),
+  source("tushare", "金融", "Tushare", "planned", null, []),
+  source("yahoo_finance", "金融", "Yahoo Finance", "planned", null, []),
+  source("fred", "金融", "FRED", "planned", null, []),
+  source("finnhub", "金融", "Finnhub", "planned", null, [])
+];
+
+export function getExternalApiCatalog(store, ownerKey) {
+  const connections = new Set([...(store?.socialConnections || new Map()).values()]
+    .filter((item) => item.owner_key === ownerKey)
+    .map((item) => item.platform));
+  return SOURCE_CATALOG.map((item) => ({
+    ...item,
+    connected: item.connection_required ? connections.has(item.source) : item.implementation_status === "available"
+  }));
+}
+
+export async function runExternalApiQuery(store, ownerKey, params = {}, options = {}) {
+  const sourceId = clean(params.source, 64).toLowerCase();
+  const query = clean(params.query, 500);
+  const operation = clean(params.operation || "search", 32).toLowerCase();
+  const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 25);
+  const definition = SOURCE_CATALOG.find((item) => item.source === sourceId);
+  if (!definition) return failure("unsupported_source", `Unknown source: ${sourceId || "(missing)"}`);
+  if (definition.implementation_status !== "available") {
+    return { ...failure("source_not_callable", `${definition.title} is not available through a server API connector.`), source: publicSource(definition), action_required: definition.implementation_status };
+  }
+  if (!query) return failure("invalid_request", "params.query is required");
+  if (!definition.operations.includes(operation)) {
+    return {
+      ...failure("unsupported_operation", `${operation} is not supported for ${sourceId}`),
+      error: {
+        code: "UNSUPPORTED_OPERATION",
+        message: `${operation} is not supported for ${sourceId}`,
+        allowed_operations: definition.operations
+      }
+    };
+  }
+  const parameterError = validateSourceParams(sourceId, operation, params);
+  if (parameterError) return parameterError;
+
+  let secret = "";
+  if (definition.connection_required) {
+    const connection = [...(store?.socialConnections || new Map()).values()].find((item) =>
+      item.owner_key === ownerKey && item.platform === sourceId && item.provider_type === definition.provider_type);
+    if (!connection) {
+      return {
+        ...failure("connection_required", `Connect ${definition.title} before invoking this source.`),
+        action_required: "connect_api_source",
+        source: publicSource(definition)
+      };
+    }
+    const readSecret = options.readSecret || readProviderSecret;
+    secret = await readSecret(connection.secret_ref);
+    if (!secret) return { ...failure("auth_required", "The connected credential is unavailable."), action_required: "reconnect_api_source" };
+  }
+
+  const response = await invokeSource(sourceId, {
+    operation,
+    query,
+    limit,
+    params,
+    secret,
+    fetchImpl: options.fetchImpl || globalThis.fetch
+  });
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      source: publicSource(definition),
+      error: { code: response.status.toUpperCase(), message: response.error }
+    };
+  }
+  const noResults = response.items.length === 0;
+  return {
+    ok: true,
+    status: noResults ? "no_results" : "completed",
+    protocol: { protocol_version: "agent_router_external_api_v1", write_access: false },
+    request: { capability: "external_api_query", params: { source: sourceId, operation, query, limit } },
+    source: publicSource(definition),
+    result: { items: response.items, count: response.items.length },
+    ...(noResults ? {
+      diagnostics: {
+        code: "PROVIDER_RETURNED_NO_RESULTS",
+        message: `${definition.title} completed the request but returned no matching items.`,
+        source: sourceId,
+        operation,
+        query
+      }
+    } : {}),
+    verification: {
+      source_urls_present: response.items.every((item) => /^https?:\/\//.test(item.url || "")),
+      credential_redacted: true,
+      provider_response_normalized: true
+    }
+  };
+}
+
+function validateSourceParams(sourceId, operation, params) {
+  if (sourceId !== "amadeus" || operation !== "flight_search") return null;
+  const missingFields = [];
+  if (!/^[A-Za-z]{3}$/.test(String(params.origin || "").trim())) missingFields.push("origin");
+  if (!/^[A-Za-z]{3}$/.test(String(params.destination || "").trim())) missingFields.push("destination");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(params.departure_date || "").trim())) missingFields.push("departure_date");
+  if (!missingFields.length) return null;
+  return {
+    ok: false,
+    status: "invalid_request",
+    error: {
+      code: "INVALID_PROVIDER_PARAMETERS",
+      message: "Amadeus flight_search requires three-letter origin and destination IATA codes plus departure_date in YYYY-MM-DD format.",
+      missing_fields: missingFields
+    }
+  };
+}
+
+async function invokeSource(sourceId, context) {
+  try {
+    if (sourceId === "open_meteo") return invokeOpenMeteo(context);
+    if (sourceId === "sec_edgar") return invokeSecEdgar(context);
+    const request = buildRequest(sourceId, context);
+    if (!request) return { ok: false, status: "provider_error", error: "Connector is not implemented.", items: [] };
+    const fetched = await fetchJson(context.fetchImpl, request.url, request.options);
+    if (!fetched.ok) return fetched;
+    return { ok: true, status: "completed", items: normalizeItems(sourceId, fetched.payload, context).slice(0, context.limit) };
+  } catch (error) {
+    return { ok: false, status: "provider_error", error: clean(error.message, 300), items: [] };
+  }
+}
+
+function buildRequest(sourceId, context) {
+  const { query, limit, secret, params } = context;
+  if (sourceId === "brave_search") {
+    const url = new URL("https://api.search.brave.com/res/v1/web/search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("count", String(Math.min(limit, 20)));
+    return get(url, { accept: "application/json", "x-subscription-token": secret });
+  }
+  if (sourceId === "tavily") return post("https://api.tavily.com/search", { query, max_results: limit }, { authorization: `Bearer ${secret}` });
+  if (sourceId === "serper") return post("https://google.serper.dev/search", { q: query, num: limit }, { "x-api-key": secret });
+  if (sourceId === "exa") return post("https://api.exa.ai/search", { query, numResults: limit, contents: { text: { maxCharacters: 1200 } } }, { "x-api-key": secret });
+  if (sourceId === "firecrawl") return post("https://api.firecrawl.dev/v2/search", { query, limit }, { authorization: `Bearer ${secret}` });
+  if (sourceId === "jina") {
+    const url = new URL("https://s.jina.ai/");
+    url.searchParams.set("q", query);
+    return get(url, { accept: "application/json", authorization: `Bearer ${secret}`, "x-respond-with": "no-content" });
+  }
+  if (sourceId === "github") {
+    const url = new URL("https://api.github.com/search/issues");
+    url.searchParams.set("q", query);
+    url.searchParams.set("per_page", String(limit));
+    return get(url, { accept: "application/vnd.github+json", "user-agent": "AgentRouter/0.1" });
+  }
+  if (sourceId === "gdelt") {
+    const url = new URL("https://api.gdeltproject.org/api/v2/doc/doc");
+    url.searchParams.set("query", query);
+    url.searchParams.set("mode", "artlist");
+    url.searchParams.set("format", "json");
+    url.searchParams.set("maxrecords", String(limit));
+    return get(url);
+  }
+  if (sourceId === "youtube") {
+    const url = new URL("https://www.googleapis.com/youtube/v3/search");
+    url.searchParams.set("part", "snippet");
+    url.searchParams.set("type", "video");
+    url.searchParams.set("q", query);
+    url.searchParams.set("maxResults", String(limit));
+    url.searchParams.set("key", secret);
+    return get(url);
+  }
+  if (sourceId === "virus_total") {
+    const target = virusTotalTarget(query);
+    return get(`https://www.virustotal.com/api/v3/${target.type}/${encodeURIComponent(target.id)}`, { accept: "application/json", "x-apikey": secret });
+  }
+  if (sourceId === "google_places") {
+    return post("https://places.googleapis.com/v1/places:searchText", { textQuery: query, maxResultCount: Math.min(limit, 20) }, {
+      "x-goog-api-key": secret,
+      "x-goog-fieldmask": "places.id,places.displayName,places.formattedAddress,places.googleMapsUri,places.websiteUri,places.rating,places.userRatingCount,places.currentOpeningHours"
+    });
+  }
+  if (sourceId === "amadeus") {
+    const origin = clean(params.origin, 3).toUpperCase();
+    const destination = clean(params.destination, 3).toUpperCase();
+    const departureDate = clean(params.departure_date, 10);
+    if (!/^[A-Z]{3}$/.test(origin) || !/^[A-Z]{3}$/.test(destination) || !/^\d{4}-\d{2}-\d{2}$/.test(departureDate)) {
+      throw new Error("Amadeus flight_search requires origin, destination, and departure_date.");
+    }
+    const url = new URL("https://test.api.amadeus.com/v2/shopping/flight-offers");
+    url.searchParams.set("originLocationCode", origin);
+    url.searchParams.set("destinationLocationCode", destination);
+    url.searchParams.set("departureDate", departureDate);
+    url.searchParams.set("adults", String(Math.max(Number(params.adults) || 1, 1)));
+    url.searchParams.set("max", String(limit));
+    return get(url, { authorization: `Bearer ${secret}`, accept: "application/json" });
+  }
+  if (sourceId === "easy_post") {
+    const url = new URL("https://api.easypost.com/v2/trackers");
+    url.searchParams.append("tracking_codes[]", query);
+    if (params.carrier) url.searchParams.set("carrier", clean(params.carrier, 40));
+    return get(url, { authorization: `Basic ${Buffer.from(`${secret}:`).toString("base64")}`, accept: "application/json" });
+  }
+  if (sourceId === "openalex") {
+    const url = new URL("https://api.openalex.org/works");
+    url.searchParams.set("search", query);
+    url.searchParams.set("per-page", String(limit));
+    url.searchParams.set("api_key", secret);
+    return get(url, { "user-agent": "AgentRouter/0.1" });
+  }
+  return null;
+}
+
+async function invokeOpenMeteo({ query, fetchImpl }) {
+  const geocodeUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
+  geocodeUrl.searchParams.set("name", query);
+  geocodeUrl.searchParams.set("count", "1");
+  geocodeUrl.searchParams.set("language", "en");
+  const geocoded = await fetchJson(fetchImpl, geocodeUrl, {});
+  if (!geocoded.ok) return geocoded;
+  const location = geocoded.payload.results?.[0];
+  if (!location) return { ok: true, status: "completed", items: [] };
+  const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
+  forecastUrl.searchParams.set("latitude", String(location.latitude));
+  forecastUrl.searchParams.set("longitude", String(location.longitude));
+  forecastUrl.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m");
+  forecastUrl.searchParams.set("timezone", location.timezone || "auto");
+  const forecast = await fetchJson(fetchImpl, forecastUrl, {});
+  if (!forecast.ok) return forecast;
+  const current = forecast.payload.current || {};
+  const units = forecast.payload.current_units || {};
+  const place = [location.name, location.country].filter(Boolean).join(", ");
+  return {
+    ok: true,
+    status: "completed",
+    items: [{
+      title: `${place} weather`,
+      url: `https://open-meteo.com/en/docs#latitude=${location.latitude}&longitude=${location.longitude}`,
+      snippet: `Current temperature ${current.temperature_2m ?? "unknown"}${units.temperature_2m || ""}; weather code ${current.weather_code ?? "unknown"}.`,
+      published_at: validDate(current.time),
+      metadata: {
+        location: place,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        timezone: location.timezone || null,
+        temperature: current.temperature_2m ?? null,
+        apparent_temperature: current.apparent_temperature ?? null,
+        precipitation: current.precipitation ?? null,
+        weather_code: current.weather_code ?? null,
+        wind_speed: current.wind_speed_10m ?? null
+      }
+    }]
+  };
+}
+
+async function invokeSecEdgar({ query, limit, fetchImpl }) {
+  const tickerResponse = await fetchJson(fetchImpl, "https://www.sec.gov/files/company_tickers.json", {
+    headers: { accept: "application/json", "user-agent": "AgentRouter research contact@example.com" }
+  });
+  if (!tickerResponse.ok) return tickerResponse;
+  const normalizedQuery = query.toLowerCase();
+  const company = Object.values(tickerResponse.payload || {}).find((item) =>
+    String(item.ticker || "").toLowerCase() === normalizedQuery
+    || String(item.cik_str || "") === query.replace(/^0+/, "")
+    || String(item.title || "").toLowerCase().includes(normalizedQuery));
+  if (!company) return { ok: true, status: "completed", items: [] };
+  const cik = String(company.cik_str).padStart(10, "0");
+  const submission = await fetchJson(fetchImpl, `https://data.sec.gov/submissions/CIK${cik}.json`, {
+    headers: { accept: "application/json", "user-agent": "AgentRouter research contact@example.com" }
+  });
+  if (!submission.ok) return submission;
+  const recent = submission.payload.filings?.recent || {};
+  const items = [];
+  for (let index = 0; index < Math.min(recent.accessionNumber?.length || 0, limit); index += 1) {
+    const accession = String(recent.accessionNumber[index] || "");
+    const document = recent.primaryDocument?.[index];
+    if (!accession || !document) continue;
+    const form = recent.form?.[index] || "Filing";
+    const filingDate = recent.filingDate?.[index] || null;
+    items.push({
+      title: `${submission.payload.name || company.title} ${form}`,
+      url: `https://www.sec.gov/Archives/edgar/data/${Number(company.cik_str)}/${accession.replace(/-/g, "")}/${document}`,
+      snippet: recent.primaryDocDescription?.[index] || `${form} filed ${filingDate || ""}`.trim(),
+      published_at: validDate(filingDate),
+      metadata: { company: submission.payload.name || company.title, cik, ticker: company.ticker, form, accession_number: accession }
+    });
+  }
+  return { ok: true, status: "completed", items };
+}
+
+async function fetchJson(fetchImpl, url, options) {
+  let response;
+  let payload;
+  try {
+    response = await fetchImpl(url, options);
+    payload = await response.json().catch(() => ({}));
+  } catch (error) {
+    return { ok: false, status: "provider_error", error: clean(error.message, 300), items: [] };
+  }
+  if (!response.ok) return {
+    ok: false,
+    status: response.status === 401 || response.status === 403 ? "auth_required" : response.status === 429 ? "rate_limited" : "provider_error",
+    error: clean(payload?.message || payload?.detail || payload?.error?.message || payload?.error || `Provider returned HTTP ${response.status}`, 300),
+    items: []
+  };
+  return { ok: true, payload };
+}
+
+function normalizeItems(sourceId, payload) {
+  let rows = [];
+  if (sourceId === "brave_search") rows = payload.web?.results || [];
+  else if (sourceId === "tavily") rows = payload.results || [];
+  else if (sourceId === "serper") rows = payload.organic || [];
+  else if (sourceId === "exa") rows = payload.results || [];
+  else if (sourceId === "firecrawl") rows = payload.data?.web || payload.data || [];
+  else if (sourceId === "jina") rows = payload.data || [];
+  else if (sourceId === "github") return (payload.items || []).map((row) => item(row.title, row.html_url, row.body, row.created_at, { author: row.user?.login || null, comments: row.comments ?? null, score: row.score ?? null }));
+  else if (sourceId === "gdelt") return (payload.articles || []).map((row) => item(row.title, row.url, row.domain, gdeltDate(row.seendate), { domain: row.domain || null, language: row.language || null, source_country: row.sourcecountry || null }));
+  else if (sourceId === "youtube") return (payload.items || []).map((row) => item(row.snippet?.title, row.id?.videoId ? `https://www.youtube.com/watch?v=${row.id.videoId}` : "", row.snippet?.description, row.snippet?.publishedAt, { channel: row.snippet?.channelTitle || null, video_id: row.id?.videoId || null }));
+  else if (sourceId === "virus_total") {
+    const row = payload.data || {};
+    const type = row.type || "domain";
+    const guiType = type === "ip_address" ? "ip-address" : type === "file" ? "file" : type === "url" ? "url" : "domain";
+    const stats = row.attributes?.last_analysis_stats || {};
+    return [item(`VirusTotal ${type}: ${row.id}`, `https://www.virustotal.com/gui/${guiType}/${encodeURIComponent(row.id || "")}`, `Malicious: ${stats.malicious ?? 0}; suspicious: ${stats.suspicious ?? 0}; harmless: ${stats.harmless ?? 0}.`, null, { type, reputation: row.attributes?.reputation ?? null, analysis_stats: stats })];
+  } else if (sourceId === "google_places") return (payload.places || []).map((row) => item(row.displayName?.text, row.googleMapsUri || row.websiteUri, row.formattedAddress, null, { rating: row.rating ?? null, user_rating_count: row.userRatingCount ?? null, open_now: row.currentOpeningHours?.openNow ?? null }));
+  else if (sourceId === "amadeus") return (payload.data || []).map((row) => {
+    const first = row.itineraries?.[0]?.segments?.[0] || {};
+    const last = row.itineraries?.[0]?.segments?.at(-1) || {};
+    return item(`${first.departure?.iataCode || "Flight"} → ${last.arrival?.iataCode || ""} ${row.price?.total || ""} ${row.price?.currency || ""}`.trim(), "https://developers.amadeus.com/", `${first.carrierCode || ""}${first.number || ""} · ${row.itineraries?.[0]?.duration || ""}`.trim(), first.departure?.at, { offer_id: row.id || null, total_price: row.price?.total || null, currency: row.price?.currency || null, duration: row.itineraries?.[0]?.duration || null });
+  });
+  else if (sourceId === "easy_post") return (payload.trackers || []).map((row) => item(`${row.carrier || "Package"} ${row.tracking_code || ""}: ${row.status || "unknown"}`, row.public_url || "https://www.easypost.com/track", row.status_detail || row.status, row.updated_at, { tracker_id: row.id || null, carrier: row.carrier || null, tracking_code: row.tracking_code || null, status: row.status || null, estimated_delivery_date: row.est_delivery_date || null }));
+  else if (sourceId === "openalex") return (payload.results || []).map((row) => item(row.title, row.doi || row.id, row.abstract || null, row.publication_date, { openalex_id: row.id || null, cited_by_count: row.cited_by_count ?? null, authors: (row.authorships || []).map((entry) => entry.author?.display_name).filter(Boolean) }));
+  return (Array.isArray(rows) ? rows : []).map((row) => item(
+    row.title || row.name,
+    row.url || row.link,
+    row.description || row.content || row.text || row.snippet,
+    row.publishedDate || row.published_at || row.age || row.date
+  )).filter((row) => /^https?:\/\//.test(row.url));
+}
+
+function item(title, url, snippet, publishedAt, metadata = {}) {
+  return {
+    title: clean(title, 300) || null,
+    url: clean(url, 2048),
+    snippet: clean(snippet, 1200) || null,
+    published_at: validDate(publishedAt),
+    ...(Object.keys(metadata).length ? { metadata } : {})
+  };
+}
+
+function virusTotalTarget(query) {
+  const value = String(query || "").trim();
+  if (/^https?:\/\//i.test(value)) return { type: "urls", id: Buffer.from(value).toString("base64url") };
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(value) || value.includes(":")) return { type: "ip_addresses", id: value };
+  if (/^[a-f0-9]{32,64}$/i.test(value)) return { type: "files", id: value };
+  return { type: "domains", id: value };
+}
+
+function gdeltDate(value) {
+  const match = String(value || "").match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z` : value;
+}
+
+function source(id, category, title, implementationStatus, providerType, operations) {
+  const connectionRequired = Boolean(providerType && providerType !== "local_browser");
+  const credentialField = providerType === "amadeus_api" ? "access_token" : connectionRequired ? "api_key" : null;
+  return {
+    source: id,
+    category,
+    title,
+    implementation_status: implementationStatus,
+    provider_type: providerType,
+    operations,
+    credential_field: credentialField,
+    connection_required: connectionRequired,
+    read_only: true
+  };
+}
+
+function publicSource(definition) {
+  return { source: definition.source, title: definition.title, category: definition.category };
+}
+
+function get(url, headers = {}) {
+  return { url, options: { headers } };
+}
+
+function post(url, body, headers) {
+  return { url, options: { method: "POST", headers: { accept: "application/json", "content-type": "application/json", ...headers }, body: JSON.stringify(body) } };
+}
+
+function failure(status, message) {
+  return { ok: false, status, error: { code: status.toUpperCase(), message } };
+}
+
+function validDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function clean(value, max) {
+  return String(value || "").trim().slice(0, max);
+}

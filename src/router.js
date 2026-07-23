@@ -16,6 +16,66 @@ export const ROUTER_STATUSES = {
 
 const CAPABILITY_ALIASES = [
   {
+    capability: "external_api_query",
+    capabilities: ["external_api_query", "web_search", "web_scrape", "search_api", "data_service"],
+    keywords: ["search api", "搜索 API", "brave", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec edgar", "weather", "youtube", "virustotal", "places", "amadeus", "tracking", "openalex"],
+    agent_description: "Query a public or user-connected read-only external data provider through AgentRouter without exposing the user's credential.",
+    not_for: ["social posting", "external writes", "credential management", "unconnected or unavailable sources"],
+    input_schema: {
+      type: "object",
+      required: ["source", "operation", "query"],
+      properties: {
+        source: { type: "string", enum: ["brave_search", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec_edgar", "open_meteo", "youtube", "virus_total", "google_places", "amadeus", "easy_post", "openalex"] },
+        operation: { type: "string", enum: ["search", "forecast", "filings", "inspect", "flight_search", "track"] },
+        query: { type: "string" },
+        limit: { type: "number" },
+        origin: { type: "string", description: "IATA origin code for Amadeus flight search." },
+        destination: { type: "string", description: "IATA destination code for Amadeus flight search." },
+        departure_date: { type: "string", description: "YYYY-MM-DD departure date for Amadeus flight search." },
+        adults: { type: "number" },
+        carrier: { type: "string", description: "Optional carrier hint for EasyPost tracking." }
+      }
+    },
+    examples: [{
+      user_query: "Use my Brave connection to search for AI Web3 products with revenue.",
+      request: { capability: "external_api_query", params: { source: "brave_search", operation: "search", query: "AI Web3 products real revenue", limit: 10 } }
+    }],
+    defaultInput: (intent) => ({ source: intent.source || "brave_search", operation: "search", query: intent.query || intent.question || "", limit: intent.limit || 10 })
+  },
+  {
+    capability: "social_user_voice_research",
+    capabilities: ["social_user_voice_research", "social_research", "user_voice", "sentiment_data", "data_service"],
+    keywords: ["用户抱怨", "用户反馈", "用户原声", "社交媒体", "reddit", "小红书", "bilibili", "youtube", "facebook", "twitter", "x.com", "complaints", "user voice", "social research"],
+    agent_description: "Use this to research real user discussions across X, Reddit, Xiaohongshu, Bilibili, YouTube, Facebook, and configured social sources with source links and platform coverage diagnostics.",
+    not_for: ["posting content", "liking or commenting", "private messages"],
+    input_schema: {
+      type: "object",
+      required: ["question"],
+      properties: {
+        question: { type: "string" },
+        platforms: { type: "array", items: { type: "string", enum: ["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"] } },
+        language: { type: "string", enum: ["zh", "en"] },
+        location: { type: "string" },
+        limit: { type: "number" }
+      }
+    },
+    examples: [
+      {
+        user_query: "KIMI K3 用户有哪些抱怨？",
+        request: {
+          capability: "social_user_voice_research",
+          params: { question: "KIMI K3 用户有哪些抱怨", platforms: ["x", "reddit", "xiaohongshu"], language: "zh", limit: 10 }
+        }
+      }
+    ],
+    defaultInput: (intent) => ({
+      question: intent.question || intent.query || "",
+      platforms: intent.platforms || ["x", "reddit", "xiaohongshu"],
+      language: intent.language || "zh",
+      limit: intent.limit || 10
+    })
+  },
+  {
     capability: "token_price",
     capabilities: ["token_price", "crypto_price", "market_data", "token_data", "data_service"],
     keywords: ["price", "价格", "行情", "usd", "market data", "token price", "crypto price"],
@@ -247,7 +307,7 @@ export function getCapabilityCatalog() {
   ];
 }
 
-export async function routeTask(store, { task = "", intent: providedIntent, constraints = {}, budget = {} } = {}) {
+export async function routeTask(store, { task = "", intent: providedIntent, constraints = {}, budget = {} } = {}, options = {}) {
   const resolved = resolveRoute(store, { task, intent: providedIntent, constraints });
   if (resolved.status === ROUTER_STATUSES.NEEDS_CLARIFICATION || resolved.status === ROUTER_STATUSES.NO_MATCH) {
     return resolved;
@@ -259,7 +319,8 @@ export async function routeTask(store, { task = "", intent: providedIntent, cons
     store,
     selected.service_id,
     resolved.input,
-    { max_amount: constraints.max_price_usdc || budget.max_amount || "0.05", currency: budget.currency || "USDC" }
+    { max_amount: constraints.max_price_usdc || budget.max_amount || "0.05", currency: budget.currency || "USDC" },
+    options
   );
   if (invocation.statusCode >= 400) {
     return {
@@ -325,7 +386,7 @@ export async function routeCapabilityRequest(store, {
   constraints = {},
   budget = {},
   consumer_context: consumerContext = {}
-} = {}) {
+} = {}, options = {}) {
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
     const request = { capability, params, constraints, consumer_context: consumerContext };
@@ -357,7 +418,7 @@ export async function routeCapabilityRequest(store, {
     consumer_context: consumerContext
   };
   const normalizedConstraints = normalizeRequestConstraints(constraints, budget);
-  const tokenResolution = await resolveStructuredTokenIfNeeded(store, intent, normalizedConstraints, budget);
+  const tokenResolution = await resolveStructuredTokenIfNeeded(store, intent, normalizedConstraints, budget, options);
   if (tokenResolution?.ok === false) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
     const observation = recordRouteObservation(store, {
@@ -459,7 +520,8 @@ export async function routeCapabilityRequest(store, {
     store,
     selected.service_id,
     input,
-    { max_amount: normalizedConstraints.max_price_usdc || "0.05", currency: budget.currency || "USDC" }
+    { max_amount: normalizedConstraints.max_price_usdc || "0.05", currency: budget.currency || "USDC" },
+    options
   );
   if (invocation.statusCode >= 400) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
@@ -1363,7 +1425,7 @@ function providerInputAllowlist(manifest = {}, intent = {}) {
   return extra;
 }
 
-async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, budget = {}) {
+async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, budget = {}, options = {}) {
   if (intent.capability !== "token_smart_money_activity") return null;
   if (intent.token_address) return null;
   const tokenSymbol = intent.token_symbol || intent.asset;
@@ -1403,7 +1465,7 @@ async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, b
   const invocation = await invokePaidService(store, resolver.service_id, resolverInput, {
     max_amount: constraints.max_price_usdc || budget.max_amount || "0.05",
     currency: budget.currency || "USDC"
-  });
+  }, options);
   if (invocation.statusCode >= 400) {
     return {
       ok: false,

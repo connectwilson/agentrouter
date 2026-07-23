@@ -9,11 +9,13 @@
 - AgentRouter: higher-level execution endpoint that accepts a structured request or fallback natural-language task and performs search -> selection -> payment -> invocation -> verification -> evidence.
 - Route Observations: lightweight offchain records of structured routing decisions, candidate scores, selected service, verification outcome, and feedback hashes for future ranking improvements.
 - Provider Runtime: local provider endpoints that return preview or paid agent data envelopes.
-- Wallet/Payment: dev-mode x402-style challenge and signed proof.
+- Wallet/Payment: adapter boundary supporting prepaid platform credits, x402-style payment, and Arc settlement. The credits backend uses Stripe Hosted Checkout plus a PostgreSQL append-only ledger.
 
 ## Trust Boundaries
 
 - Demand agents should not choose payment target or amount directly. Invocation derives those from the service manifest and provider challenge.
+- Credit top-ups are granted only after a verified Stripe webhook. Client API keys are stored as hashes, and ledger debits use an account row lock so concurrent calls cannot overspend.
+- Invalid requests are rejected before debit. A provider failure after debit creates a compensating refund ledger entry instead of mutating history.
 - Provider secrets stay server-side in provider config/runtime. They should not be exposed to demand agents or Skill files.
 - Hosted provider credentials are encrypted before persistence. `ADN_PROVIDER_SECRET_PASSPHRASE` is the deployment key and must remain stable across restarts.
 - Provider-owned upstream API keys must not be hardcoded into hosted deployment environment variables for normal onboarding. Provider Studio collects provider credentials and stores encrypted secret records in the persistent registry.

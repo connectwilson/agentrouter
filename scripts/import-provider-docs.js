@@ -7,7 +7,7 @@ import { loadProviderConfigs } from "../src/registry.js";
 const args = parseArgs(process.argv.slice(2));
 
 if (!args.url) {
-  console.error("Usage: node scripts/import-provider-docs.js --url <docs-url> --provider <name> --secret-env <ENV_NAME> [--auth-header <header>] [--price 0.01] [--remote-url <url> --remote-token-env <ENV_NAME>]");
+  console.error("Usage: node scripts/import-provider-docs.js --url <docs-url> --provider <name> --secret-env <ENV_NAME> [--auth-header <header>] [--price 0.01] [--remote-url <url> --remote-cookie-env <ENV_NAME>]");
   process.exit(1);
 }
 
@@ -21,8 +21,14 @@ if (args.remoteUrl && args.remoteTokenEnv && !remoteToken) {
   console.error(`Missing remote publish token: environment variable ${args.remoteTokenEnv} is not set.`);
   process.exit(1);
 }
+const remoteCookie = args.remoteCookieEnv ? process.env[args.remoteCookieEnv] || "" : "";
+if (args.remoteUrl && args.remoteCookieEnv && !remoteCookie) {
+  console.error(`Missing remote provider session cookie: environment variable ${args.remoteCookieEnv} is not set.`);
+  process.exit(1);
+}
 if (args.remoteUrl) process.env.ADN_REMOTE_REGISTRY_URL = args.remoteUrl;
 if (remoteToken) process.env.ADN_REMOTE_PUBLISH_TOKEN = remoteToken;
+if (remoteCookie) process.env.ADN_REMOTE_SESSION_COOKIE = remoteCookie;
 
 const store = createMemoryStore();
 const server = createServer({ store });

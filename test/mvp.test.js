@@ -401,6 +401,83 @@ test("agentrouter CLI installer installs skill and configures local MCP clients"
   });
 });
 
+test("agentrouter update refreshes existing installs without replacing user settings", async () => {
+  const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-update-"));
+  const claudeConfig = path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  const cursorConfig = path.join(home, ".cursor", "mcp.json");
+  const skillDir = path.join(home, ".codex", "skills", "agentrouter");
+  const adnDir = path.join(home, "custom-agentrouter-wallet");
+  await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.mkdir(adnDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: AgentRouter\nmetadata:\n  version: 0.1.0\n---\n# Old AgentRouter\n");
+  await fs.writeFile(path.join(adnDir, "wallet.json"), JSON.stringify({ address: "0x0000000000000000000000000000000000000001" }));
+  await fs.writeFile(path.join(adnDir, "wallet-session.key"), "keep-this-wallet-secret");
+  await fs.writeFile(cursorConfig, JSON.stringify({
+    mcpServers: {
+      OtherTool: { command: "other-tool", args: ["serve"] },
+      AgentRouter: {
+        command: "npx",
+        args: ["-y", "--package", "@agentrouter/mcp@0.1.0", "agent-router-mcp"],
+        env: {
+          AGENT_ROUTER_URL: "https://custom.agentrouter.example",
+          AGENT_ROUTER_MAX_PRICE: "0.12",
+          AGENT_ROUTER_API_KEY: "ar_live_keep_me",
+          ADN_PAYMENT_BACKEND: "circle_arc",
+          ADN_ARC_RPC_URL: "https://custom.arc.example",
+          ADN_DIR: adnDir,
+          USER_DEFINED_SETTING: "keep-me"
+        }
+      }
+    }
+  }, null, 2));
+
+  const result = await installAgentRouter({
+    home,
+    update: true,
+    claudeConfig,
+    cursorConfig,
+    skillText: "---\nname: AgentRouter\nmetadata:\n  version: 0.2.0\n---\n# New AgentRouter\n",
+    skipNetworkCheck: true
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "update");
+  assert.equal(result.wallet, null);
+  assert.deepEqual(result.configured_clients.map((client) => client.name), ["Cursor"]);
+  assert.equal(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8"), "---\nname: AgentRouter\nmetadata:\n  version: 0.2.0\n---\n# New AgentRouter\n");
+  assert.equal(await fs.access(claudeConfig).then(() => true, () => false), false);
+
+  const updated = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+  assert.deepEqual(updated.mcpServers.OtherTool, { command: "other-tool", args: ["serve"] });
+  assert.deepEqual(updated.mcpServers.AgentRouter.args, ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"]);
+  assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, "https://custom.agentrouter.example");
+  assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_MAX_PRICE, "0.12");
+  assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_API_KEY, "ar_live_keep_me");
+  assert.equal(updated.mcpServers.AgentRouter.env.ADN_ARC_RPC_URL, "https://custom.arc.example");
+  assert.equal(updated.mcpServers.AgentRouter.env.ADN_DIR, adnDir);
+  assert.equal(updated.mcpServers.AgentRouter.env.USER_DEFINED_SETTING, "keep-me");
+  assert.equal(await fs.readFile(path.join(adnDir, "wallet-session.key"), "utf8"), "keep-this-wallet-secret");
+  assert.match(formatInstallResult(result), /AgentRouter updated\. READY/);
+  assert.deepEqual(parseInstallArgs(["update", "--no-network-check"]), {
+    clients: [],
+    update: true,
+    skipNetworkCheck: true
+  });
+
+  await installAgentRouter({
+    home,
+    update: true,
+    maxPrice: "0.25",
+    claudeConfig,
+    cursorConfig,
+    skillText: "---\nname: AgentRouter\nmetadata:\n  version: 0.2.0\n---\n# New AgentRouter\n",
+    skipNetworkCheck: true
+  });
+  const explicitlyOverridden = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+  assert.equal(explicitlyOverridden.mcpServers.AgentRouter.env.AGENT_ROUTER_MAX_PRICE, "0.25");
+});
+
 test("agentrouter doctor reports readiness when skill wallet and MCP config are present", async () => {
   const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-doctor-"));
   const adnDir = path.join(home, ".agentrouter", "adn");
@@ -1586,6 +1663,49 @@ test("AgentRouter npm MCP package exposes the same structured tools", async () =
       client.close();
     }
   });
+});
+
+test("AgentRouter npm MCP forwards the prepaid credits API key", async () => {
+  let receivedKey = "";
+  const server = http.createServer(async (request, response) => {
+    receivedKey = String(request.headers["x-agentrouter-api-key"] || "");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      status: "data_returned",
+      result: { status: "success", data: { value: 42 } }
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const client = createMcpClient(
+    {
+      AGENT_ROUTER_URL: baseUrl,
+      AGENT_ROUTER_API_KEY: "ar_live_mcp_forwarding_test"
+    },
+    "packages/agentrouter-mcp/bin/agentrouter-mcp.js"
+  );
+  try {
+    await client.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "npm-credits-test", version: "0.1.0" }
+    });
+    const called = await client.request("tools/call", {
+      name: "agentrouter_request",
+      arguments: {
+        capability: "test_data",
+        params: { asset: "TEST" },
+        constraints: { max_price_usdc: "0.05" }
+      }
+    });
+    const payload = JSON.parse(called.content[0].text);
+    assert.equal(payload.ok, true);
+    assert.equal(receivedKey, "ar_live_mcp_forwarding_test");
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("AgentRouter structured request returns machine-readable validation errors", async () => {
@@ -2899,47 +3019,43 @@ test("Provider Studio imports OpenAPI data endpoints into multiple services", as
   });
 });
 
-test("remote Provider Studio publish accepts platform publish token without browser session", async () => {
-  const previousToken = process.env.ADN_STUDIO_API_TOKEN;
-  process.env.ADN_STUDIO_API_TOKEN = "test-remote-publish-token";
-  try {
-    await withServer(async ({ baseUrl, rawFetch }) => {
-      const discoverResponse = await fetch(`${baseUrl}/studio/import/discover`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          api_url: `${baseUrl}/mock/api`,
-          default_price: "0.01"
-        })
-      });
-      assert.equal(discoverResponse.status, 200);
-      const discovered = await discoverResponse.json();
-
-      const unauthenticated = await rawFetch(`${baseUrl}/studio/import/publish`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ drafts: [discovered.drafts[0]], publish_scope: "local_only" })
-      });
-      assert.equal(unauthenticated.status, 401);
-
-      const tokenPublish = await rawFetch(`${baseUrl}/studio/import/publish`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer test-remote-publish-token"
-        },
-        body: JSON.stringify({ drafts: [discovered.drafts[0]], publish_scope: "local_only" })
-      });
-      assert.equal(tokenPublish.status, 201);
-      const payload = await tokenPublish.json();
-      assert.equal(payload.ok, true);
-      assert.equal(payload.published.length, 1);
-      assert.equal(payload.published[0].service_id, discovered.drafts[0].service_id);
+test("remote Provider Studio publish requires a provider account session and records owner metadata", async () => {
+  await withServer(async ({ server, baseUrl, authCookie, testUser, rawFetch }) => {
+    const discoverResponse = await fetch(`${baseUrl}/studio/import/discover`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        api_url: `${baseUrl}/mock/api`,
+        default_price: "0.01"
+      })
     });
-  } finally {
-    if (previousToken === undefined) delete process.env.ADN_STUDIO_API_TOKEN;
-    else process.env.ADN_STUDIO_API_TOKEN = previousToken;
-  }
+    assert.equal(discoverResponse.status, 200);
+    const discovered = await discoverResponse.json();
+
+    const unauthenticated = await rawFetch(`${baseUrl}/studio/import/publish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ drafts: [discovered.drafts[0]], publish_scope: "local_only" })
+    });
+    assert.equal(unauthenticated.status, 401);
+
+    const sessionPublish = await rawFetch(`${baseUrl}/studio/import/publish`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: authCookie
+      },
+      body: JSON.stringify({ drafts: [discovered.drafts[0]], publish_scope: "local_only" })
+    });
+    assert.equal(sessionPublish.status, 201);
+    const payload = await sessionPublish.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.published.length, 1);
+    assert.equal(payload.published[0].service_id, discovered.drafts[0].service_id);
+    const record = server.store.services.get(discovered.drafts[0].service_id);
+    assert.equal(record.manifest.registration.owner.user_key, `${testUser.provider}:${testUser.id}`);
+    assert.equal(record.manifest.registration.owner.handle, testUser.handle);
+  });
 });
 
 test("Provider Studio imports a direct API endpoint when no OpenAPI document exists", async () => {
@@ -4242,6 +4358,51 @@ test("provider rejects replayed wallet payment challenge", async () => {
     assert.equal(paidTwice.status, 402);
     const body = await paidTwice.json();
     assert.equal(body.code, "UNKNOWN_OR_REPLAYED_PAYMENT_CHALLENGE");
+  });
+});
+
+test("provider rejects a second challenge settled by an already-used on-chain tx", async () => {
+  await resetWalletForTests();
+  await withServer(async ({ baseUrl }) => {
+    await runCli(["wallet", "init"], { ADN_REGISTRY_URL: baseUrl });
+    const wallet = await readWallet();
+    const issue = async () => {
+      const response = await fetch(`${baseUrl}/provider/chain-fund-flow`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chain: "base", days: 7 })
+      });
+      assert.equal(response.status, 402);
+      return (await response.json()).payment;
+    };
+    const challengeA = await issue();
+    const challengeB = await issue();
+    const tx = await sendArcUsdcTransfer({ wallet, payment: challengeA });
+    const proofFor = (challenge) => createArcPaymentProof({
+      wallet,
+      serviceId: "chain_fund_flow_7d_base",
+      amount: challenge.amount,
+      currency: challenge.asset,
+      network: challenge.network,
+      payTo: challenge.pay_to,
+      challenge,
+      tx
+    });
+
+    const paidA = await fetch(`${baseUrl}/provider/chain-fund-flow`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-payment": proofFor(challengeA) },
+      body: JSON.stringify({ chain: "base", days: 7 })
+    });
+    assert.equal(paidA.status, 200);
+
+    const paidB = await fetch(`${baseUrl}/provider/chain-fund-flow`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-payment": proofFor(challengeB) },
+      body: JSON.stringify({ chain: "base", days: 7 })
+    });
+    assert.equal(paidB.status, 402);
+    assert.equal((await paidB.json()).code, "ARC_TX_ALREADY_SETTLED");
   });
 });
 

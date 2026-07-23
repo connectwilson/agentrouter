@@ -6,6 +6,7 @@ import { askAgentRouterRemote } from "../src/agent-router.js";
 
 const [command = "ask", ...args] = process.argv.slice(2);
 const baseUrl = (process.env.AGENT_ROUTER_URL || process.env.ADN_REGISTRY_URL || "https://agentrouter.network").replace(/\/$/, "");
+const creditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
 const defaultAdnDir = path.join(os.homedir(), ".agentrouter", "adn");
 if (!process.env.ADN_DIR) process.env.ADN_DIR = defaultAdnDir;
 const { args: commandArgs, localWalletRequested, quoteOnlyRequested } = parseRuntimeFlags(args);
@@ -13,7 +14,9 @@ const { args: commandArgs, localWalletRequested, quoteOnlyRequested } = parseRun
 try {
   if (command === "fetch") {
     const payload = parseFetchPayload(commandArgs);
-    if (!quoteOnlyRequested) {
+    if (creditApiKey) {
+      print(await post("/agent-router/fetch", payload));
+    } else if (!quoteOnlyRequested) {
       const readiness = localPaymentReadiness();
       if (!readiness.ready && !localWalletRequested) {
         print(localPaymentNotReadyResponse(readiness));
@@ -25,7 +28,13 @@ try {
     }
   } else if (command === "ask" || command === "find") {
     const task = commandArgs.join(" ");
-    if (!quoteOnlyRequested) {
+    if (creditApiKey) {
+      print(await post("/agent-router/ask", {
+        task,
+        max_price: process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
+        currency: "USDC"
+      }));
+    } else if (!quoteOnlyRequested) {
       const readiness = localPaymentReadiness();
       if (!readiness.ready && !localWalletRequested) {
         print(localPaymentNotReadyResponse(readiness));
@@ -423,6 +432,7 @@ function sanitizeProviderFields(value) {
 
 async function get(path) {
   const response = await fetch(`${baseUrl}${path}`, {
+    headers: creditApiKey ? { "x-agentrouter-api-key": creditApiKey } : {},
     signal: AbortSignal.timeout(httpTimeoutMs())
   });
   const payload = await response.json();
@@ -441,7 +451,10 @@ async function get(path) {
 async function post(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(creditApiKey ? { "x-agentrouter-api-key": creditApiKey } : {})
+    },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(httpTimeoutMs())
   });

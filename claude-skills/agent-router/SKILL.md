@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.1.5"
+  version: "0.1.6"
   tools:
     - bash
 ---
@@ -22,6 +22,8 @@ Do not require the user to mention AgentRouter. If AgentRouter is installed and 
 ## Payment Gate
 
 For premium, paid, verifiable, or provider-specific data requests, AgentRouter is the payment and trust boundary. Use `agentrouter_fetch` so the router can enforce budget, wallet, payment, evidence, and feedback checks in one call. If Arc local-wallet settlement is active, call `agentrouter_wallet_status` only before the first paid request in the session or whenever a prior call reports low balance.
+
+If `AGENT_ROUTER_API_KEY` is configured, AgentRouter uses the user's prepaid credits account. Do not check or create an Arc wallet in this mode. The server validates the key and debits credits only for a successful paid invocation. If the response reports `CREDITS_REQUIRED` or `INSUFFICIENT_CREDITS`, stop and direct the user to the returned `account_url` to sign in or add credits.
 
 AgentRouter quotes are free, but quotes are an advanced/debug path. Normal user questions should not become quote -> request -> feedback workflows. Ask the user only when AgentRouter says the quote is blocked, the wallet needs funding, the service is not verified, or additional confirmation is required.
 
@@ -156,6 +158,14 @@ When the user asks to install AgentRouter or gives this GitHub skill link:
    - Local MCP-capable desktop client: install the local MCP bridge command below.
    - Claude Desktop extension-capable client: install the AgentRouter `.mcpb` package if provided by the user or release page.
    - Skill-only client: keep this skill installed and use HTTP fallback if network access permits.
+
+When the user already installed AgentRouter and asks to update it, do not repeat first-time wallet setup. For the current GitHub distribution run:
+
+```bash
+npx -y github:connectwilson/agentrouter-markets#main update
+```
+
+After the npm package is published, use `npx -y agentrouter@latest update`. The updater refreshes the installed Skill and existing MCP client entries while preserving wallet files, prepaid-credit API keys, custom environment settings, unrelated MCP servers, and config backups. Tell the user to restart or reload the affected AI client, then run the matching `doctor` command. Remote MCP users receive server-side tool updates automatically and only need to reconnect or reload the client.
 4. Explain the exact next action in the current client's language. Keep it short and do not present every platform unless the client is unknown.
 
 Manual fallback if npm/npx is unavailable:

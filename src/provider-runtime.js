@@ -7,19 +7,42 @@ import { createLiveBtcLiquidationEnvelope, createLiveFundFlowEnvelope } from "./
 import { readJson, sendJson, sendNotFound } from "./http-utils.js";
 import { readProviderSecret } from "./provider-secrets.js";
 import { isRealX402ProviderEnabled, processProviderX402Payment, sendX402Response, settleProviderX402Payment } from "./real-x402-provider.js";
+import { authenticateCreditRequest, creditPaymentRequired, debitCredits, refundCredits } from "./credits.js";
 
 const issuedChallenges = new Map();
 const preflightResults = new Map();
+const consumedTxHashes = new Map(); // lowercased tx_hash -> expiry ms; blocks one on-chain tx settling multiple challenges
 
-export async function handleFundFlowProvider(req, res) {
+// ponytail: in-memory, resets on restart like issuedChallenges; challenges also live here so the replay window is one process lifetime
+function sweepExpiredPaymentState(now = Date.now()) {
+  for (const [nonce, challenge] of issuedChallenges) {
+    const expiry = Date.parse(challenge?.expires_at || "");
+    if (expiry && expiry < now) issuedChallenges.delete(nonce);
+  }
+  for (const [nonce, entry] of preflightResults) {
+    const expiry = Date.parse(entry?.expires_at || "");
+    if (expiry && expiry < now) preflightResults.delete(nonce);
+  }
+  for (const [txHash, expiry] of consumedTxHashes) {
+    if (expiry < now) consumedTxHashes.delete(txHash);
+  }
+}
+
+export async function handleFundFlowProvider(req, res, { store, baseUrl = "" } = {}) {
   const input = await readJson(req);
   const serviceId = "chain_fund_flow_7d_base";
   const amount = "0.01";
   const currency = "USDC";
   const network = "base";
+  if (input.chain && input.chain !== "base") {
+    sendJson(res, 422, providerInputError(serviceId, input, "UNSUPPORTED_CHAIN", "This service only supports Base.", "Use chain=base."));
+    return;
+  }
   const payment = await requirePaymentOrRespond({
     req,
     res,
+    store,
+    baseUrl,
     serviceId,
     amount,
     currency,
@@ -29,35 +52,24 @@ export async function handleFundFlowProvider(req, res) {
   });
   if (!payment.ok) return;
 
-  let body;
-  if (input.chain && input.chain !== "base") {
-    body = {
-      schema_version: "agent_data_envelope_v1",
-      service_id: serviceId,
-      request_id: `req_${Date.now()}`,
-      status: "error",
-      error: {
-        code: "UNSUPPORTED_CHAIN",
-        message: "This demo service only supports Base.",
-        retryable: false,
-        suggested_action: "Use chain=base."
-      }
-    };
-  } else {
-    body = createLiveFundFlowEnvelope(input);
-  }
-  await sendPaidResult({ res, payment, body });
+  await sendPaidResult({ res, payment, body: createLiveFundFlowEnvelope(input), store });
 }
 
-export async function handleBtcLiquidationProvider(req, res) {
+export async function handleBtcLiquidationProvider(req, res, { store, baseUrl = "" } = {}) {
   const input = await readJson(req);
   const serviceId = "btc_liquidation_max_pain_demo";
   const amount = "0.02";
   const currency = "USDC";
   const network = "base";
+  if (input.asset && String(input.asset).toUpperCase() !== "BTC") {
+    sendJson(res, 422, providerInputError(serviceId, input, "UNSUPPORTED_ASSET", "This service only supports BTC.", "Use asset=BTC."));
+    return;
+  }
   const payment = await requirePaymentOrRespond({
     req,
     res,
+    store,
+    baseUrl,
     serviceId,
     amount,
     currency,
@@ -67,27 +79,10 @@ export async function handleBtcLiquidationProvider(req, res) {
   });
   if (!payment.ok) return;
 
-  let body;
-  if (input.asset && String(input.asset).toUpperCase() !== "BTC") {
-    body = {
-      schema_version: "agent_data_envelope_v1",
-      service_id: serviceId,
-      request_id: `req_${Date.now()}`,
-      status: "error",
-      error: {
-        code: "UNSUPPORTED_ASSET",
-        message: "This demo service only supports BTC.",
-        retryable: false,
-        suggested_action: "Use asset=BTC."
-      }
-    };
-  } else {
-    body = createLiveBtcLiquidationEnvelope(input);
-  }
-  await sendPaidResult({ res, payment, body });
+  await sendPaidResult({ res, payment, body: createLiveBtcLiquidationEnvelope(input), store });
 }
 
-export async function handleCustomProvider(req, res, serviceId) {
+export async function handleCustomProvider(req, res, serviceId, { store, baseUrl = "" } = {}) {
   let config;
   try {
     config = await readProviderConfig(serviceId);
@@ -114,6 +109,8 @@ export async function handleCustomProvider(req, res, serviceId) {
   const payment = await requirePaymentOrRespond({
     req,
     res,
+    store,
+    baseUrl,
     serviceId,
     amount,
     currency,
@@ -142,7 +139,7 @@ export async function handleCustomProvider(req, res, serviceId) {
   }
 
   const result = payment.preflight?.result || await executeProviderConfig(config, input);
-  await sendPaidResult({ res, payment, body: result.body, status: result.status });
+  await sendPaidResult({ res, payment, body: result.body, status: result.status, store });
 }
 
 export async function executeProviderConfig(config, input = {}) {
@@ -218,7 +215,52 @@ export async function executeProviderConfig(config, input = {}) {
   }) };
 }
 
-async function requirePaymentOrRespond({ req, res, serviceId, amount, currency, network, payTo, description, inputHash = null, preflight = null }) {
+async function requirePaymentOrRespond({ req, res, store, baseUrl = "", serviceId, amount, currency, network, payTo, description, inputHash = null, preflight = null }) {
+  if (currentPaymentBackend() === "credits") {
+    if (!store) {
+      sendJson(res, 503, {
+        error: "Credit ledger unavailable",
+        code: "CREDIT_LEDGER_UNAVAILABLE"
+      });
+      return { ok: false };
+    }
+    const creditAuth = await authenticateCreditRequest(store, req);
+    if (!creditAuth) {
+      sendJson(res, 402, creditPaymentRequired({ amount, baseUrl }));
+      return { ok: false };
+    }
+    const requestId = `bill_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+    try {
+      const ledger = await debitCredits(store, {
+        accountId: creditAuth.account.account_id,
+        amount,
+        serviceId,
+        requestId,
+        metadata: { input_hash: inputHash, description }
+      });
+      return {
+        ok: true,
+        payment: { required: false },
+        backend: "credits",
+        credit_auth: creditAuth,
+        ledger,
+        request_id: requestId,
+        amount: String(amount),
+        currency: "credits",
+        input_hash: inputHash,
+        preflight: preflight ? { result: preflight } : null
+      };
+    } catch (error) {
+      if (error.code !== "INSUFFICIENT_CREDITS") throw error;
+      sendJson(res, 402, {
+        ...creditPaymentRequired({ amount, baseUrl }),
+        code: "INSUFFICIENT_CREDITS",
+        balance: error.balance_atomic == null ? null : String(error.balance_atomic / 1_000_000),
+        required: String(amount)
+      });
+      return { ok: false };
+    }
+  }
   if (isRealX402ProviderEnabled()) {
     const payment = await processProviderX402Payment({
       req,
@@ -279,7 +321,7 @@ async function requirePaymentOrRespond({ req, res, serviceId, amount, currency, 
   };
 }
 
-async function sendPaidResult({ res, payment, body, status = 200 }) {
+async function sendPaidResult({ res, payment, body, status = 200, store = null }) {
   if (payment.payment?.required) {
     const settlement = await settleProviderX402Payment(payment.payment, body);
     if (settlement.failed) {
@@ -289,10 +331,58 @@ async function sendPaidResult({ res, payment, body, status = 200 }) {
     sendJson(res, status, body, settlement.headers);
     return;
   }
+  if (payment.backend === "credits") {
+    const successful = status >= 200 && status < 300 && body?.status === "success" && !body?.error;
+    if (!successful) {
+      const refund = await refundCredits(store, {
+        accountId: payment.credit_auth.account.account_id,
+        amount: payment.amount,
+        serviceId: body?.service_id || payment.ledger.service_id,
+        requestId: payment.request_id,
+        metadata: { reason: "provider_result_not_delivered", debit_entry_id: payment.ledger.entry_id }
+      });
+      attachCreditBilling(body, payment, { status: "refunded", refund });
+    } else {
+      attachCreditBilling(body, payment, { status: "charged" });
+    }
+  }
   sendJson(res, status, body);
 }
 
+function attachCreditBilling(body, payment, { status, refund = null }) {
+  if (!body || typeof body !== "object") return;
+  body.metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
+  body.metadata.billing = {
+    payment_backend: "credits",
+    billing_status: status,
+    amount: payment.amount,
+    currency: "credits",
+    ledger_entry_id: payment.ledger.entry_id,
+    balance_after: payment.ledger.balance,
+    refund_entry_id: refund?.entry_id || null
+  };
+}
+
+function providerInputError(serviceId, input, code, message, suggestedAction) {
+  return {
+    schema_version: "agent_data_envelope_v1",
+    service_id: serviceId,
+    request_id: `req_${Date.now()}`,
+    status: "error",
+    query: input || {},
+    payment_collected: false,
+    billing_status: "not_charged",
+    error: {
+      code,
+      message,
+      retryable: false,
+      suggested_action: suggestedAction
+    }
+  };
+}
+
 function issueChallenge({ serviceId, amount, currency, network, payTo, inputHash = null, preflight = null }) {
+  sweepExpiredPaymentState();
   const payment = createPaymentRequirements({ serviceId, amount, currency, network, payTo, inputHash });
   issuedChallenges.set(payment.nonce, payment);
   if (preflight) {
@@ -318,6 +408,10 @@ async function verifyPaymentWithChallenge(paymentProof, expected) {
   });
   if (verification.ok) {
     if (currentPaymentBackend() === "circle_arc" || isArcNetwork(challenge.network)) {
+      const txHash = String(decoded.payment.tx_hash || "").toLowerCase();
+      if (consumedTxHashes.has(txHash)) {
+        return { ok: false, error: "ARC_TX_ALREADY_SETTLED" };
+      }
       const arc = await verifyArcUsdcTransfer({
         txHash: decoded.payment.tx_hash,
         expected: {
@@ -328,6 +422,8 @@ async function verifyPaymentWithChallenge(paymentProof, expected) {
       });
       if (!arc.ok) return arc;
       verification.payment.arc_verification = arc;
+      // Remember for 1h so the tx cannot settle any other (still-live, 5min TTL) challenge.
+      consumedTxHashes.set(txHash, Date.now() + 3600_000);
     }
     issuedChallenges.delete(challenge.nonce);
     verification.challenge_nonce = challenge.nonce;

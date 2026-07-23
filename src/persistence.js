@@ -136,6 +136,174 @@ export async function readPersistentProviderSecret(secretRef) {
   return result.rows[0]?.encrypted || null;
 }
 
+export async function writePersistentSocialConnection(connection) {
+  if (!persistenceEnabled()) return false;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query(
+    `insert into adn_social_connections (connection_id, owner_key, connection, updated_at)
+     values ($1, $2, $3::jsonb, now())
+     on conflict (connection_id)
+     do update set owner_key = excluded.owner_key, connection = excluded.connection, updated_at = now()`,
+    [connection.connection_id, connection.owner_key, JSON.stringify(connection)]
+  );
+  return true;
+}
+
+export async function listPersistentSocialConnections() {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query("select connection from adn_social_connections order by updated_at asc");
+  return result.rows.map((row) => row.connection);
+}
+
+export async function deletePersistentSocialConnection(connectionId, ownerKey) {
+  if (!persistenceEnabled()) return false;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query("delete from adn_social_connections where connection_id = $1 and owner_key = $2", [connectionId, ownerKey]);
+  return true;
+}
+
+export async function upsertPersistentCreditAccount(account) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `insert into adn_credit_accounts (account_id, owner_key, user_profile, updated_at)
+     values ($1, $2, $3::jsonb, now())
+     on conflict (owner_key)
+     do update set user_profile = excluded.user_profile, updated_at = now()
+     returning account_id, owner_key, user_profile, created_at, updated_at`,
+    [account.account_id, account.owner_key, JSON.stringify(account.user_profile || {})]
+  );
+  return result.rows[0] || null;
+}
+
+export async function readPersistentCreditAccountByOwner(ownerKey) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select account_id, owner_key, user_profile, created_at, updated_at
+     from adn_credit_accounts
+     where owner_key = $1`,
+    [ownerKey]
+  );
+  return result.rows[0] || null;
+}
+
+export async function writePersistentCreditApiKey(keyRecord) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `insert into adn_credit_api_keys (key_id, account_id, key_hash, label, created_at)
+     values ($1, $2, $3, $4, now())
+     returning key_id, account_id, key_hash, label, created_at, revoked_at`,
+    [keyRecord.key_id, keyRecord.account_id, keyRecord.key_hash, keyRecord.label || null]
+  );
+  return result.rows[0] || null;
+}
+
+export async function readPersistentCreditApiKeyByHash(keyHash) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select k.key_id, k.account_id, k.key_hash, k.label, k.created_at, k.revoked_at,
+            a.owner_key, a.user_profile
+     from adn_credit_api_keys k
+     join adn_credit_accounts a on a.account_id = k.account_id
+     where k.key_hash = $1 and k.revoked_at is null`,
+    [keyHash]
+  );
+  return result.rows[0] || null;
+}
+
+export async function listPersistentCreditLedger(accountId, { limit = 100 } = {}) {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select entry_id, account_id, delta_atomic, balance_after_atomic, currency, kind,
+            service_id, request_id, metadata, created_at
+     from adn_credit_ledger
+     where account_id = $1
+     order by created_at desc
+     limit $2`,
+    [accountId, Math.max(1, Math.min(1000, Number(limit) || 100))]
+  );
+  return result.rows;
+}
+
+export async function persistentCreditBalance(accountId) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "select coalesce(sum(delta_atomic), 0)::bigint as balance_atomic from adn_credit_ledger where account_id = $1",
+    [accountId]
+  );
+  return Number(result.rows[0]?.balance_atomic || 0);
+}
+
+export async function writePersistentCreditLedgerEntry({ entryId, accountId, deltaAtomic, currency = "credits", kind, serviceId = null, requestId = null, metadata = {}, requireSufficientBalance = false }) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const account = await client.query("select account_id from adn_credit_accounts where account_id = $1 for update", [accountId]);
+    if (!account.rows.length) {
+      const error = new Error("Credit account not found.");
+      error.statusCode = 404;
+      error.code = "CREDIT_ACCOUNT_NOT_FOUND";
+      throw error;
+    }
+    const existing = await client.query(
+      `select entry_id, account_id, delta_atomic, balance_after_atomic, currency, kind,
+              service_id, request_id, metadata, created_at
+       from adn_credit_ledger where entry_id = $1`,
+      [entryId]
+    );
+    if (existing.rows[0]) {
+      await client.query("commit");
+      return existing.rows[0];
+    }
+    const balanceResult = await client.query(
+      "select coalesce(sum(delta_atomic), 0)::bigint as balance_atomic from adn_credit_ledger where account_id = $1",
+      [accountId]
+    );
+    const balanceBefore = Number(balanceResult.rows[0]?.balance_atomic || 0);
+    const balanceAfter = balanceBefore + Number(deltaAtomic);
+    if (requireSufficientBalance && balanceAfter < 0) {
+      const error = new Error("Insufficient credits.");
+      error.statusCode = 402;
+      error.code = "INSUFFICIENT_CREDITS";
+      error.balance_atomic = balanceBefore;
+      error.required_atomic = Math.abs(Number(deltaAtomic));
+      throw error;
+    }
+    const inserted = await client.query(
+      `insert into adn_credit_ledger
+       (entry_id, account_id, delta_atomic, balance_after_atomic, currency, kind, service_id, request_id, metadata, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, now())
+       returning entry_id, account_id, delta_atomic, balance_after_atomic, currency, kind, service_id, request_id, metadata, created_at`,
+      [entryId, accountId, Number(deltaAtomic), balanceAfter, currency, kind, serviceId, requestId, JSON.stringify(metadata || {})]
+    );
+    await client.query("commit");
+    return inserted.rows[0] || null;
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function getPool() {
   if (!poolPromise) {
     poolPromise = import("pg").then(({ Pool }) => new Pool({
@@ -159,6 +327,14 @@ async function ensureSchema(pool) {
       encrypted jsonb not null,
       updated_at timestamptz not null default now()
     );
+    create table if not exists adn_social_connections (
+      connection_id text primary key,
+      owner_key text not null,
+      connection jsonb not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create index if not exists adn_social_connections_owner_idx on adn_social_connections(owner_key, updated_at desc);
     create table if not exists adn_service_events (
       event_id bigserial primary key,
       event_type text not null,
@@ -170,6 +346,35 @@ async function ensureSchema(pool) {
     create index if not exists adn_service_events_service_idx on adn_service_events(service_id);
     create index if not exists adn_service_events_type_idx on adn_service_events(event_type);
     create index if not exists adn_service_events_request_idx on adn_service_events(request_id);
+    create table if not exists adn_credit_accounts (
+      account_id text primary key,
+      owner_key text not null unique,
+      user_profile jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create table if not exists adn_credit_api_keys (
+      key_id text primary key,
+      account_id text not null references adn_credit_accounts(account_id),
+      key_hash text not null unique,
+      label text,
+      created_at timestamptz not null default now(),
+      revoked_at timestamptz
+    );
+    create table if not exists adn_credit_ledger (
+      entry_id text primary key,
+      account_id text not null references adn_credit_accounts(account_id),
+      delta_atomic bigint not null,
+      balance_after_atomic bigint not null,
+      currency text not null default 'credits',
+      kind text not null,
+      service_id text,
+      request_id text,
+      metadata jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now()
+    );
+    create index if not exists adn_credit_ledger_account_idx on adn_credit_ledger(account_id, created_at desc);
+    create index if not exists adn_credit_api_keys_hash_idx on adn_credit_api_keys(key_hash);
   `);
   schemaReady = true;
 }

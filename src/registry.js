@@ -3,7 +3,7 @@ import { validateEnvelope, validateJsonSchema } from "./schema.js";
 import { publicServiceRecord, summarizeTrust } from "./store.js";
 import { normalizeEndpoint } from "./http-utils.js";
 import { suggestCapabilities } from "./id-utils.js";
-import { createSettlementReceipt } from "./payment-adapter.js";
+import { createSettlementReceipt, currentPaymentBackend } from "./payment-adapter.js";
 import { hashJson } from "./evidence.js";
 import { normalizeConsumerFeedback, verifyServiceResult } from "./verifier.js";
 import { listPersistentServiceEvents, writePersistentServiceEvent } from "./persistence.js";
@@ -391,7 +391,7 @@ export function searchServices(store, { query = "", capabilities = [], maxPrice,
   return results.sort((a, b) => b.match_score - a.match_score);
 }
 
-export async function invokePaidService(store, serviceId, input, budget) {
+export async function invokePaidService(store, serviceId, input, budget = {}, options = {}) {
   const record = store.services.get(serviceId);
   if (!record) return { statusCode: 404, body: { error: { code: "SERVICE_NOT_FOUND" } } };
 
@@ -409,63 +409,112 @@ export async function invokePaidService(store, serviceId, input, budget) {
   }
 
   const started = Date.now();
-  const firstResponse = await fetch(manifest.endpoint.url, {
-    method: manifest.endpoint.method || "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input)
-  });
-  if (firstResponse.status !== 402) {
-    let providerPayload = null;
-    try {
-      providerPayload = await firstResponse.json();
-    } catch {}
-    const prepayFailure = providerPayload?.error?.code === "PREPAY_VALIDATION_FAILED";
-    const feedback = await recordOperationalFailure(store, record, {
-      input,
-      statusCode: firstResponse.status,
-      error: {
-        code: prepayFailure ? "PREPAY_VALIDATION_FAILED" : "EXPECTED_402_PAYMENT_REQUIRED",
-        message: prepayFailure
-          ? providerPayload.error.message
-          : `Expected HTTP 402 payment challenge, got ${firstResponse.status}.`,
-        provider_payload: providerPayload
+  let paidResponse;
+  let body;
+  let paymentTx = null;
+  let settlementReceipt;
+  if (currentPaymentBackend() === "credits") {
+    if (!options.consumerApiKey) {
+      return {
+        statusCode: 402,
+        body: {
+          error: {
+            code: "CREDITS_REQUIRED",
+            message: "An AgentRouter credit API key is required for this paid service call."
+          }
+        }
+      };
+    }
+    paidResponse = await fetch(manifest.endpoint.url, {
+      method: manifest.endpoint.method || "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentrouter-api-key": options.consumerApiKey
       },
-      started
+      body: JSON.stringify(input)
     });
-    return {
-      statusCode: prepayFailure ? 422 : firstResponse.status >= 500 ? 503 : 502,
-      body: {
+    body = await paidResponse.json().catch(() => ({}));
+    const billing = body?.metadata?.billing || {};
+    paymentTx = billing.ledger_entry_id ? `credits:${billing.ledger_entry_id}` : null;
+    settlementReceipt = {
+      receipt_version: "agent_router_settlement_receipt_v1",
+      payment_backend: "credits",
+      mode: "credits",
+      network: "agentrouter",
+      protocol: "platform_credits",
+      asset: "credits",
+      amount: billing.amount || manifest.pricing.amount,
+      payer: options.consumerId || "agentrouter_consumer",
+      ledger_entry_id: billing.ledger_entry_id || null,
+      balance_after: billing.balance_after || null,
+      status: billing.billing_status || (paidResponse.ok ? "charged" : "not_charged"),
+      created_at: new Date().toISOString()
+    };
+  } else {
+    const firstResponse = await fetch(manifest.endpoint.url, {
+      method: manifest.endpoint.method || "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+    if (firstResponse.status !== 402) {
+      let providerPayload = null;
+      try {
+        providerPayload = await firstResponse.json();
+      } catch {}
+      const prepayFailure = providerPayload?.error?.code === "PREPAY_VALIDATION_FAILED";
+      const feedback = await recordOperationalFailure(store, record, {
+        input,
+        statusCode: firstResponse.status,
         error: {
-          code: prepayFailure
-            ? "PROVIDER_PREPAY_VALIDATION_FAILED"
-            : firstResponse.status >= 500 ? "PROVIDER_UNAVAILABLE_BEFORE_PAYMENT" : "EXPECTED_402_PAYMENT_REQUIRED",
+          code: prepayFailure ? "PREPAY_VALIDATION_FAILED" : "EXPECTED_402_PAYMENT_REQUIRED",
           message: prepayFailure
-            ? "Provider preflight validation failed before payment. No payment was collected."
+            ? providerPayload.error.message
             : `Expected HTTP 402 payment challenge, got ${firstResponse.status}.`,
-          upstream_status: firstResponse.status,
-          retryable: firstResponse.status >= 500,
           provider_payload: providerPayload
         },
-        feedback
-      }
-    };
+        started
+      });
+      return {
+        statusCode: prepayFailure ? 422 : firstResponse.status >= 500 ? 503 : 502,
+        body: {
+          error: {
+            code: prepayFailure
+              ? "PROVIDER_PREPAY_VALIDATION_FAILED"
+              : firstResponse.status >= 500 ? "PROVIDER_UNAVAILABLE_BEFORE_PAYMENT" : "EXPECTED_402_PAYMENT_REQUIRED",
+            message: prepayFailure
+              ? "Provider preflight validation failed before payment. No payment was collected."
+              : `Expected HTTP 402 payment challenge, got ${firstResponse.status}.`,
+            upstream_status: firstResponse.status,
+            retryable: firstResponse.status >= 500,
+            provider_payload: providerPayload
+          },
+          feedback
+        }
+      };
+    }
+    const challenge = await firstResponse.json();
+    const proof = await createArcProofForProviderChallenge({
+      serviceId,
+      manifest,
+      payment: challenge.payment,
+      consumerId: "agentrouter_consumer"
+    });
+    paidResponse = await fetch(manifest.endpoint.url, {
+      method: manifest.endpoint.method || "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-payment": proof
+      },
+      body: JSON.stringify(input)
+    });
+    body = await paidResponse.json();
+    paymentTx = decodePaymentTx(proof);
+    settlementReceipt = createSettlementReceipt({
+      manifest,
+      challenge: challenge.payment,
+      txHash: paymentTx
+    });
   }
-  const challenge = await firstResponse.json();
-  const proof = await createArcProofForProviderChallenge({
-    serviceId,
-    manifest,
-    payment: challenge.payment,
-    consumerId: "agentrouter_consumer"
-  });
-  const paidResponse = await fetch(manifest.endpoint.url, {
-    method: manifest.endpoint.method || "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-payment": proof
-    },
-    body: JSON.stringify(input)
-  });
-  const body = await paidResponse.json();
   const schemaErrors = validateJsonSchema(body, manifest.output_schema);
   const envelopeErrors = validateEnvelope(body);
   const resultErrors = validateRealResultFeedback(body);
@@ -481,21 +530,23 @@ export async function invokePaidService(store, serviceId, input, budget) {
         }
       ]
     : resultErrors;
-  const paymentTx = decodePaymentTx(proof);
-  const settlementReceipt = createSettlementReceipt({
-    manifest,
-    challenge: challenge.payment,
-    txHash: paymentTx
-  });
+  const creditBilling = currentPaymentBackend() === "credits" ? body?.metadata?.billing || {} : null;
+  const paymentCollected = currentPaymentBackend() === "credits"
+    ? creditBilling?.billing_status === "charged"
+    : true;
+  const billingStatus = currentPaymentBackend() === "credits"
+    ? creditBilling?.billing_status || "not_charged"
+    : paidResponse.ok && schemaValid && !qualityErrors.length ? "charged_success" : "charged_provider_error";
   const feedback = {
     event_version: "agent_service_feedback_v1",
     request_id: body.request_id || `req_${Date.now()}`,
     service_id: serviceId,
     provider_id: manifest.provider.provider_id,
     consumer_id: "agentrouter_consumer",
+    payment_backend: currentPaymentBackend(),
     payment_tx: paymentTx,
-    payment_collected: true,
-    billing_status: paidResponse.ok && schemaValid && !qualityErrors.length ? "charged_success" : "charged_provider_error",
+    payment_collected: paymentCollected,
+    billing_status: billingStatus,
     result_delivery_status: paidResponse.ok && schemaValid && !qualityErrors.length ? "delivered" : "failed_after_payment",
     settlement_receipt: settlementReceipt,
     status: paidResponse.ok ? "success" : "error",

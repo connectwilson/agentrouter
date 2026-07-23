@@ -16,14 +16,26 @@ export const DEFAULT_ARC_RPC_URL = "https://rpc.testnet.arc.network";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
-  const agentRouterUrl = trimTrailingSlash(options.agentRouterUrl || process.env.AGENT_ROUTER_URL || DEFAULT_AGENT_ROUTER_URL);
-  const maxPrice = String(options.maxPrice || process.env.AGENT_ROUTER_MAX_PRICE || "0.05");
-  const arcRpcUrl = options.arcRpcUrl || process.env.ADN_ARC_RPC_URL || DEFAULT_ARC_RPC_URL;
+  const update = options.update === true;
+  const claudeConfig = options.claudeConfig || process.env.CLAUDE_DESKTOP_CONFIG || path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+  const cursorConfig = options.cursorConfig || process.env.CURSOR_MCP_CONFIG || path.join(home, ".cursor", "mcp.json");
+  const installedSettings = update ? await readInstalledMcpSettings([claudeConfig, cursorConfig]) : {};
+  const agentRouterUrl = trimTrailingSlash(options.agentRouterUrl || process.env.AGENT_ROUTER_URL || installedSettings.AGENT_ROUTER_URL || DEFAULT_AGENT_ROUTER_URL);
+  const maxPrice = String(options.maxPrice || process.env.AGENT_ROUTER_MAX_PRICE || installedSettings.AGENT_ROUTER_MAX_PRICE || "0.05");
+  const arcRpcUrl = options.arcRpcUrl || process.env.ADN_ARC_RPC_URL || installedSettings.ADN_ARC_RPC_URL || DEFAULT_ARC_RPC_URL;
   const packageSpec = options.packageSpec || process.env.AGENTROUTER_MCP_PACKAGE || DEFAULT_PACKAGE_SPEC;
-  const adnDir = path.resolve(options.adnDir || process.env.AGENTROUTER_ADN_DIR || path.join(home, ".agentrouter", "adn"));
-  const clients = normalizeClients(options.clients?.length ? options.clients : parseClients(process.env.AGENTROUTER_CLIENT) || ["all"]);
+  const adnDir = path.resolve(options.adnDir || process.env.AGENTROUTER_ADN_DIR || installedSettings.ADN_DIR || path.join(home, ".agentrouter", "adn"));
+  const requestedClients = options.clients?.length ? options.clients : parseClients(process.env.AGENTROUTER_CLIENT);
+  const clients = normalizeClients(requestedClients || [update ? "installed" : "all"]);
+  const updateEnvOverrides = new Set([
+    options.agentRouterUrl || process.env.AGENT_ROUTER_URL ? "AGENT_ROUTER_URL" : "",
+    options.maxPrice || process.env.AGENT_ROUTER_MAX_PRICE ? "AGENT_ROUTER_MAX_PRICE" : "",
+    options.arcRpcUrl || process.env.ADN_ARC_RPC_URL ? "ADN_ARC_RPC_URL" : "",
+    options.adnDir || process.env.AGENTROUTER_ADN_DIR ? "ADN_DIR" : ""
+  ].filter(Boolean));
   const result = {
     ok: true,
+    action: update ? "update" : "install",
     agent_router_url: agentRouterUrl,
     skill_paths: [],
     configured_clients: [],
@@ -38,7 +50,8 @@ export async function installAgentRouter(options = {}) {
       skillText: options.skillText,
       skillUrl: options.skillUrl || `${agentRouterUrl}/skills/AgentRouter/SKILL.md`
     });
-    const skillDirs = resolveSkillDirs({ home, value: options.skillDirs || process.env.AGENTROUTER_SKILL_DIRS });
+    const resolvedSkillDirs = resolveSkillDirs({ home, value: options.skillDirs || process.env.AGENTROUTER_SKILL_DIRS });
+    const skillDirs = update ? await existingSkillDirsOrFallback(resolvedSkillDirs) : resolvedSkillDirs;
     for (const skillDir of skillDirs) {
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(path.join(skillDir, "SKILL.md"), skillText);
@@ -47,24 +60,23 @@ export async function installAgentRouter(options = {}) {
   }
 
   const mcpServer = createMcpServerConfig({ agentRouterUrl, maxPrice, arcRpcUrl, adnDir, packageSpec });
-  const claudeConfig = options.claudeConfig || process.env.CLAUDE_DESKTOP_CONFIG || path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
-  const cursorConfig = options.cursorConfig || process.env.CURSOR_MCP_CONFIG || path.join(home, ".cursor", "mcp.json");
 
   if (await shouldConfigureClient({ client: "claude-desktop", clients, configPath: claudeConfig, forceEnv: process.env.AGENTROUTER_CONFIGURE_CLAUDE_DESKTOP })) {
-    await writeMcpConfig(claudeConfig, mcpServer);
+    await writeMcpConfig(claudeConfig, mcpServer, { preserveAgentRouterSettings: update, overrideEnvKeys: updateEnvOverrides });
     result.configured_clients.push({ name: "Claude Desktop", config_path: claudeConfig });
   } else {
     result.skipped_clients.push({ name: "Claude Desktop", reason: "config directory not found" });
   }
 
   if (await shouldConfigureClient({ client: "cursor", clients, configPath: cursorConfig, forceEnv: process.env.AGENTROUTER_CONFIGURE_CURSOR })) {
-    await writeMcpConfig(cursorConfig, mcpServer);
+    await writeMcpConfig(cursorConfig, mcpServer, { preserveAgentRouterSettings: update, overrideEnvKeys: updateEnvOverrides });
     result.configured_clients.push({ name: "Cursor", config_path: cursorConfig });
   } else {
     result.skipped_clients.push({ name: "Cursor", reason: "config directory not found" });
   }
 
-  if (options.createWallet !== false) {
+  const shouldCreateWallet = options.createWallet === undefined ? !update : options.createWallet !== false;
+  if (shouldCreateWallet) {
     result.wallet = await createLocalWallet({ adnDir, cwd: options.cwd || repoRoot });
   }
 
@@ -81,7 +93,9 @@ export async function installAgentRouter(options = {}) {
 
   if (result.configured_clients.length) result.next_steps.push("Restart or reload the configured AI client to activate AgentRouter MCP tools.");
   else result.next_steps.push("No desktop MCP config was changed. Rerun with --client cursor, --client claude-desktop, or --client all to force a client config.");
-  if (result.wallet?.address) {
+  if (update) {
+    result.next_steps.push("Existing wallet files, API keys, and custom AgentRouter environment settings were preserved.");
+  } else if (result.wallet?.address) {
     result.next_steps.push(`Fund ${result.wallet.address} with Arc Testnet USDC before the first paid data call.`);
   } else {
     result.next_steps.push("After MCP starts, call agentrouter_wallet_status to see the funding address.");
@@ -93,9 +107,10 @@ export async function installAgentRouter(options = {}) {
 
 export function formatInstallResult(result) {
   const lines = [];
-  lines.push(result.ok ? "AgentRouter installed. READY" : "AgentRouter installed. NOT_READY");
+  const action = result.action === "update" ? "updated" : "installed";
+  lines.push(result.ok ? `AgentRouter ${action}. READY` : `AgentRouter ${action}. NOT_READY`);
   if (result.skill_paths?.length) {
-    lines.push(`Skill installed: ${result.skill_paths.join(", ")}`);
+    lines.push(`Skill ${action}: ${result.skill_paths.join(", ")}`);
   }
   if (result.configured_clients?.length) {
     for (const client of result.configured_clients) {
@@ -128,6 +143,10 @@ export function parseInstallArgs(argv) {
   const options = { clients: [] };
   const args = [...argv];
   if (args[0] === "install" || args[0] === "setup") args.shift();
+  if (args[0] === "update" || args[0] === "upgrade") {
+    options.update = true;
+    args.shift();
+  }
   if (args[0] === "doctor" || args[0] === "diagnose" || args[0] === "status") {
     options.doctor = true;
     args.shift();
@@ -175,11 +194,17 @@ export function installUsage() {
   return `Usage:
   agentrouter
   agentrouter install
+  agentrouter update
   agentrouter doctor
   agentrouter install --client cursor
   agentrouter install --client claude-desktop
   agentrouter install --client all
   agentrouter install --client auto
+
+Update behavior:
+  Refreshes the installed Skill and MCP package command for existing clients.
+  Preserves wallet files, API keys, custom environment settings, and other MCP servers.
+  Restart or reload the updated AI client after the command reports READY.
 
 Options:
   --url <url>        AgentRouter server URL. Default: https://agentrouter.network
@@ -396,11 +421,12 @@ function createMcpServerConfig({ agentRouterUrl, maxPrice, arcRpcUrl, adnDir, pa
 async function shouldConfigureClient({ client, clients, configPath, forceEnv }) {
   if (forceEnv === "1" || forceEnv === "true") return true;
   if (forceEnv === "0" || forceEnv === "false") return false;
+  if (clients.has("installed")) return hasAgentRouterConfig(configPath);
   if (clients.has("all") || clients.has(client)) return true;
   return directoryExists(path.dirname(configPath));
 }
 
-async function writeMcpConfig(configPath, serverConfig) {
+async function writeMcpConfig(configPath, serverConfig, { preserveAgentRouterSettings = false, overrideEnvKeys = new Set() } = {}) {
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   let config = {};
   if (await fileExists(configPath)) {
@@ -413,8 +439,50 @@ async function writeMcpConfig(configPath, serverConfig) {
     }
   }
   config.mcpServers = config.mcpServers && typeof config.mcpServers === "object" ? config.mcpServers : {};
-  config.mcpServers.AgentRouter = serverConfig;
+  const existingServer = config.mcpServers.AgentRouter;
+  const preservedEnv = {
+    ...serverConfig.env,
+    ...(existingServer?.env && typeof existingServer.env === "object" ? existingServer.env : {})
+  };
+  for (const key of overrideEnvKeys) preservedEnv[key] = serverConfig.env[key];
+  config.mcpServers.AgentRouter = preserveAgentRouterSettings && existingServer && typeof existingServer === "object"
+    ? {
+        ...existingServer,
+        ...serverConfig,
+        env: preservedEnv
+      }
+    : serverConfig;
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+async function readInstalledMcpSettings(configPaths) {
+  for (const configPath of configPaths) {
+    try {
+      const config = JSON.parse(await fs.readFile(configPath, "utf8") || "{}");
+      const env = config?.mcpServers?.AgentRouter?.env;
+      if (env && typeof env === "object") return env;
+    } catch {
+      // Invalid or missing configs are handled by the normal installer backup path.
+    }
+  }
+  return {};
+}
+
+async function hasAgentRouterConfig(configPath) {
+  try {
+    const config = JSON.parse(await fs.readFile(configPath, "utf8") || "{}");
+    return Boolean(config?.mcpServers?.AgentRouter);
+  } catch {
+    return false;
+  }
+}
+
+async function existingSkillDirsOrFallback(skillDirs) {
+  const installed = [];
+  for (const skillDir of skillDirs) {
+    if (await fileExists(path.join(skillDir, "SKILL.md"))) installed.push(skillDir);
+  }
+  return installed.length ? installed : skillDirs;
 }
 
 async function createLocalWallet({ adnDir, cwd }) {

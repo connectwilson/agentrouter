@@ -1,0 +1,522 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createMemoryStore } from "../src/store.js";
+import { authUserKey, createDevSession } from "../src/auth.js";
+import { createServer } from "../src/server.js";
+import { getCapabilityCatalog } from "../src/router.js";
+import { createSocialConnection } from "../src/social-connections.js";
+import { getExternalApiCatalog, runExternalApiQuery } from "../src/external-api-capability.js";
+import { researchHtml } from "../src/research.js";
+import { createCreditApiKey, ensureCreditAccount } from "../src/credits.js";
+
+function secrets() {
+  const values = new Map();
+  return {
+    writeSecret: async ({ serviceId, secretName, secretValue }) => {
+      const ref = `${serviceId}:${secretName}`;
+      values.set(ref, secretValue);
+      return ref;
+    },
+    readSecret: async (ref) => values.get(ref) || ""
+  };
+}
+
+test("external API catalog separates callable connectors from planned sources", () => {
+  const catalog = getExternalApiCatalog();
+  assert.equal(catalog.find((item) => item.source === "brave_search").implementation_status, "available");
+  assert.equal(catalog.find((item) => item.source === "github").connection_required, false);
+  assert.equal(catalog.find((item) => item.source === "open_meteo").implementation_status, "available");
+  assert.equal(catalog.find((item) => item.source === "youtube").provider_type, "youtube_api");
+  assert.equal(catalog.find((item) => item.source === "virus_total").provider_type, "virustotal_api");
+  assert.equal(catalog.find((item) => item.source === "google_places").provider_type, "google_places_api");
+  assert.equal(catalog.find((item) => item.source === "amadeus").operations.includes("flight_search"), true);
+  assert.equal(catalog.find((item) => item.source === "easy_post").operations.includes("track"), true);
+  assert.equal(catalog.find((item) => item.source === "openalex").operations.includes("search"), true);
+  assert.equal(catalog.find((item) => item.source === "linkedin").implementation_status, "requires_partner_api");
+  assert.equal(catalog.find((item) => item.source === "xiaohongshu").implementation_status, "browser_only");
+});
+
+test("AgentRouter capability schema and connection UI expose the expanded provider set", () => {
+  const capability = getCapabilityCatalog().find((item) => item.capability === "external_api_query");
+  const sources = capability.input_schema.properties.source.enum;
+  for (const sourceId of ["github", "gdelt", "sec_edgar", "open_meteo", "youtube", "virus_total", "google_places", "amadeus", "easy_post", "openalex"]) {
+    assert.ok(sources.includes(sourceId), sourceId);
+  }
+  for (const operation of ["search", "forecast", "filings", "inspect", "flight_search", "track"]) {
+    assert.ok(capability.input_schema.properties.operation.enum.includes(operation), operation);
+  }
+  const html = researchHtml({ user: { name: "Provider User" } });
+  assert.match(html, /YouTube Data API/);
+  assert.match(html, /VirusTotal/);
+  assert.match(html, /Google Places/);
+  assert.match(html, /Amadeus/);
+  assert.match(html, /EasyPost/);
+  assert.match(html, /OpenAlex/);
+});
+
+test("Brave API credentials stay secret and query results are normalized", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "brave_search",
+    provider_type: "brave_api",
+    credentials: { api_key: "brave-secret" }
+  }, secretStore);
+  const requests = [];
+  const result = await runExternalApiQuery(store, "github:user-a", {
+    source: "brave_search",
+    operation: "search",
+    query: "AI Web3 revenue",
+    limit: 5
+  }, {
+    ...secretStore,
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return { ok: true, status: 200, json: async () => ({ web: { results: [{ title: "Example", url: "https://example.com", description: "Evidence" }] } }) };
+    }
+  });
+
+  assert.equal(requests[0].options.headers["x-subscription-token"], "brave-secret");
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.result.items, [{ title: "Example", url: "https://example.com", snippet: "Evidence", published_at: null }]);
+  assert.equal(JSON.stringify(result).includes("brave-secret"), false);
+});
+
+test("external API query fails clearly when the user has not connected the source", async () => {
+  const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "exa",
+    operation: "search",
+    query: "test"
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "connection_required");
+  assert.equal(result.action_required, "connect_api_source");
+});
+
+test("provider rate limits are preserved as structured AgentRouter status", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "serper",
+    provider_type: "serper_api",
+    credentials: { api_key: "serper-secret" }
+  }, secretStore);
+  const result = await runExternalApiQuery(store, "github:user-a", {
+    source: "serper",
+    operation: "search",
+    query: "test"
+  }, {
+    ...secretStore,
+    fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({ message: "quota exceeded" }) })
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "rate_limited");
+});
+
+test("public GitHub provider works without a stored connection", async () => {
+  const requests = [];
+  const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "github",
+    operation: "search",
+    query: "agent routing",
+    limit: 3
+  }, {
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [{
+            title: "Agent routing discussion",
+            html_url: "https://github.com/example/router/issues/1",
+            body: "A real issue body",
+            created_at: "2026-07-01T00:00:00Z",
+            user: { login: "octocat" },
+            comments: 4
+          }]
+        })
+      };
+    }
+  });
+
+  assert.match(requests[0].url, /^https:\/\/api\.github\.com\/search\/issues/);
+  assert.equal(requests[0].options.headers.authorization, undefined);
+  assert.equal(result.ok, true);
+  assert.equal(result.result.items[0].url, "https://github.com/example/router/issues/1");
+  assert.equal(result.result.items[0].metadata.author, "octocat");
+  assert.equal(result.verification.source_urls_present, true);
+});
+
+test("YouTube provider uses the user's API key and normalizes video provenance", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "youtube",
+    provider_type: "youtube_api",
+    credentials: { api_key: "youtube-secret" }
+  }, secretStore);
+  const result = await runExternalApiQuery(store, "github:user-a", {
+    source: "youtube",
+    operation: "search",
+    query: "agent router",
+    limit: 5
+  }, {
+    ...secretStore,
+    fetchImpl: async (url) => {
+      assert.equal(new URL(url).searchParams.get("key"), "youtube-secret");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [{
+            id: { videoId: "video123" },
+            snippet: {
+              title: "AgentRouter demo",
+              description: "Demo video",
+              publishedAt: "2026-07-01T00:00:00Z",
+              channelTitle: "Agent Lab"
+            }
+          }]
+        })
+      };
+    }
+  });
+
+  assert.equal(result.result.items[0].url, "https://www.youtube.com/watch?v=video123");
+  assert.equal(result.result.items[0].metadata.channel, "Agent Lab");
+  assert.equal(JSON.stringify(result).includes("youtube-secret"), false);
+});
+
+test("Open-Meteo public provider geocodes a location before returning a forecast", async () => {
+  const requests = [];
+  const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "open_meteo",
+    operation: "forecast",
+    query: "Taipei"
+  }, {
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      if (String(url).includes("geocoding-api")) {
+        return { ok: true, status: 200, json: async () => ({ results: [{ name: "Taipei", country: "Taiwan", latitude: 25.04, longitude: 121.56, timezone: "Asia/Taipei" }] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ current: { time: "2026-07-23T10:00", temperature_2m: 31, weather_code: 3 }, current_units: { temperature_2m: "°C" } }) };
+    }
+  });
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[1], /api\.open-meteo\.com\/v1\/forecast/);
+  assert.equal(result.result.items[0].title, "Taipei, Taiwan weather");
+  assert.equal(result.result.items[0].metadata.temperature, 31);
+});
+
+test("SEC EDGAR public provider resolves a ticker and preserves filing URLs", async () => {
+  const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "sec_edgar",
+    operation: "filings",
+    query: "AAPL",
+    limit: 2
+  }, {
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/files/company_tickers.json")) {
+        return { ok: true, status: 200, json: async () => ({ 0: { cik_str: 320193, ticker: "AAPL", title: "Apple Inc." } }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          name: "Apple Inc.",
+          filings: { recent: {
+            accessionNumber: ["0000320193-26-000001"],
+            filingDate: ["2026-07-01"],
+            form: ["8-K"],
+            primaryDocument: ["aapl-20260701.htm"],
+            primaryDocDescription: ["Current report"]
+          } }
+        })
+      };
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.result.items[0].url, /^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/320193\//);
+  assert.equal(result.result.items[0].metadata.form, "8-K");
+});
+
+test("credential-backed risk, places, travel, tracking, and research providers normalize results", async () => {
+  const cases = [
+    {
+      platform: "virus_total",
+      provider_type: "virustotal_api",
+      params: { source: "virus_total", operation: "inspect", query: "example.com" },
+      payload: { data: { id: "example.com", type: "domain", attributes: { reputation: 4, last_analysis_stats: { malicious: 1, harmless: 70 } } } },
+      expectedUrl: "https://www.virustotal.com/gui/domain/example.com"
+    },
+    {
+      platform: "google_places",
+      provider_type: "google_places_api",
+      params: { source: "google_places", operation: "search", query: "coffee Taipei" },
+      payload: { places: [{ displayName: { text: "Coffee Lab" }, formattedAddress: "Taipei", googleMapsUri: "https://maps.google.com/?cid=1", rating: 4.8, userRatingCount: 20 }] },
+      expectedUrl: "https://maps.google.com/?cid=1"
+    },
+    {
+      platform: "amadeus",
+      provider_type: "amadeus_api",
+      credential: "access_token",
+      params: { source: "amadeus", operation: "flight_search", query: "TPE to NRT", origin: "TPE", destination: "NRT", departure_date: "2026-08-01" },
+      payload: { data: [{ id: "offer-1", price: { total: "120.00", currency: "EUR" }, itineraries: [{ duration: "PT3H", segments: [{ departure: { iataCode: "TPE", at: "2026-08-01T08:00:00" }, arrival: { iataCode: "NRT", at: "2026-08-01T12:00:00" }, carrierCode: "BR", number: "198" }] }] }] },
+      expectedUrl: "https://developers.amadeus.com/"
+    },
+    {
+      platform: "easy_post",
+      provider_type: "easypost_api",
+      params: { source: "easy_post", operation: "track", query: "EZ1000000001" },
+      payload: { trackers: [{ id: "trk_1", tracking_code: "EZ1000000001", carrier: "USPS", status: "in_transit", public_url: "https://track.easypost.com/djE6..." }] },
+      expectedUrl: "https://track.easypost.com/djE6..."
+    },
+    {
+      platform: "openalex",
+      provider_type: "openalex_api",
+      params: { source: "openalex", operation: "search", query: "agent routing" },
+      payload: { results: [{ id: "https://openalex.org/W1", title: "Agent routing", publication_date: "2026-01-01", doi: "https://doi.org/10.1/example", cited_by_count: 5, authorships: [{ author: { display_name: "A. Researcher" } }] }] },
+      expectedUrl: "https://doi.org/10.1/example"
+    }
+  ];
+
+  for (const item of cases) {
+    const store = createMemoryStore();
+    const secretStore = secrets();
+    const credential = item.credential || "api_key";
+    await createSocialConnection(store, "github:user-a", {
+      platform: item.platform,
+      provider_type: item.provider_type,
+      credentials: { [credential]: `${item.platform}-secret` }
+    }, secretStore);
+    const result = await runExternalApiQuery(store, "github:user-a", item.params, {
+      ...secretStore,
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => item.payload })
+    });
+    assert.equal(result.ok, true, `${item.platform}: ${JSON.stringify(result)}`);
+    assert.equal(result.result.items[0].url, item.expectedUrl);
+    assert.equal(JSON.stringify(result).includes(`${item.platform}-secret`), false);
+  }
+});
+
+test("provider-specific validation and empty results return actionable diagnostics", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "amadeus",
+    provider_type: "amadeus_api",
+    credentials: { access_token: "amadeus-token" }
+  }, secretStore);
+  let fetchCalled = false;
+  const invalid = await runExternalApiQuery(store, "github:user-a", {
+    source: "amadeus",
+    operation: "flight_search",
+    query: "Taipei to Tokyo"
+  }, {
+    ...secretStore,
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error("should not fetch");
+    }
+  });
+  assert.equal(fetchCalled, false);
+  assert.equal(invalid.status, "invalid_request");
+  assert.deepEqual(invalid.error.missing_fields, ["origin", "destination", "departure_date"]);
+
+  const noResults = await runExternalApiQuery(createMemoryStore(), "", {
+    source: "open_meteo",
+    operation: "forecast",
+    query: "not-a-real-place"
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ results: [] }) })
+  });
+  assert.equal(noResults.ok, true);
+  assert.equal(noResults.status, "no_results");
+  assert.equal(noResults.result.count, 0);
+  assert.equal(noResults.diagnostics.code, "PROVIDER_RETURNED_NO_RESULTS");
+
+  const wrongOperation = await runExternalApiQuery(createMemoryStore(), "", {
+    source: "open_meteo",
+    operation: "search",
+    query: "Taipei"
+  });
+  assert.equal(wrongOperation.status, "unsupported_operation");
+  assert.deepEqual(wrongOperation.error.allowed_operations, ["forecast"]);
+});
+
+test("AgentRouter exposes and invokes external_api_query for the signed-in connection owner", async () => {
+  assert.ok(getCapabilityCatalog().some((item) => item.capability === "external_api_query"));
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  const session = createDevSession(store, "http://127.0.0.1");
+  const cookie = session.cookie.split(";")[0];
+  await createSocialConnection(store, authUserKey(session.user), {
+    platform: "brave_search",
+    provider_type: "brave_api",
+    credentials: { api_key: "brave-secret" }
+  }, secretStore);
+  const server = createServer({
+    store,
+    socialConnectionOptions: {
+      ...secretStore,
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ web: { results: [{ title: "Result", url: "https://example.com", description: "Found" }] } }) })
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const catalogResponse = await fetch(`${baseUrl}/agent-router/api-sources`, { headers: { cookie } });
+    const catalog = await catalogResponse.json();
+    assert.equal(catalog.sources.find((item) => item.source === "brave_search").connected, true);
+
+    const response = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ capability: "external_api_query", params: { source: "brave_search", operation: "search", query: "test" } })
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.result.items[0].title, "Result");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("AgentRouter permits public providers without login but protects credential-backed providers", async () => {
+  const store = createMemoryStore();
+  const server = createServer({
+    store,
+    socialConnectionOptions: {
+      fetchImpl: async (url) => String(url).includes("geocoding-api")
+        ? { ok: true, status: 200, json: async () => ({ results: [{ name: "Taipei", country: "Taiwan", latitude: 25.04, longitude: 121.56, timezone: "Asia/Taipei" }] }) }
+        : { ok: true, status: 200, json: async () => ({ current: { temperature_2m: 30, weather_code: 1 }, current_units: { temperature_2m: "°C" } }) }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const publicResponse = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "external_api_query", params: { source: "open_meteo", operation: "forecast", query: "Taipei" } })
+    });
+    assert.equal(publicResponse.status, 200);
+    assert.equal((await publicResponse.json()).ok, true);
+
+    const privateResponse = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "external_api_query", params: { source: "youtube", operation: "search", query: "AgentRouter" } })
+    });
+    assert.equal(privateResponse.status, 401);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("remote MCP routes public and credit-key-owned external providers through the built-in capability", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  const user = { provider: "github", id: "mcp-provider-user", name: "MCP Provider User", email: "mcp@example.com" };
+  const ownerKey = authUserKey(user);
+  const account = await ensureCreditAccount(store, user);
+  const { api_key: apiKey } = await createCreditApiKey(store, { account, label: "MCP external providers" });
+  await createSocialConnection(store, ownerKey, {
+    platform: "youtube",
+    provider_type: "youtube_api",
+    credentials: { api_key: "youtube-owner-secret" }
+  }, secretStore);
+  const server = createServer({
+    store,
+    socialConnectionOptions: {
+      ...secretStore,
+      fetchImpl: async (url) => {
+        if (String(url).includes("geocoding-api")) {
+          return { ok: true, status: 200, json: async () => ({ results: [{ name: "Taipei", country: "Taiwan", latitude: 25.04, longitude: 121.56, timezone: "Asia/Taipei" }] }) };
+        }
+        if (String(url).includes("open-meteo.com")) {
+          return { ok: true, status: 200, json: async () => ({ current: { temperature_2m: 30, weather_code: 1 }, current_units: { temperature_2m: "°C" } }) };
+        }
+        assert.equal(new URL(url).searchParams.get("key"), "youtube-owner-secret");
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: { videoId: "mcp-video" }, snippet: { title: "MCP video", channelTitle: "Agent Lab" } }] }) };
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const mcpCall = async (params, headers = {}) => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agentrouter_request", arguments: params } })
+    });
+    const rpc = await response.json();
+    return JSON.parse(rpc.result.content[0].text);
+  };
+  try {
+    const weather = await mcpCall({ capability: "external_api_query", params: { source: "open_meteo", operation: "forecast", query: "Taipei" } });
+    assert.equal(weather.ok, true);
+    assert.equal(weather.result.items[0].metadata.temperature, 30);
+
+    const youtube = await mcpCall(
+      { capability: "external_api_query", params: { source: "youtube", operation: "search", query: "AgentRouter" } },
+      { "x-agentrouter-api-key": apiKey }
+    );
+    assert.equal(youtube.ok, true);
+    assert.equal(youtube.result.items[0].url, "https://www.youtube.com/watch?v=mcp-video");
+
+    const denied = await mcpCall({ capability: "external_api_query", params: { source: "youtube", operation: "search", query: "AgentRouter" } });
+    assert.equal(denied.status, "authentication_required");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("remote MCP routes social user voice research through the same built-in dispatcher", async () => {
+  const store = createMemoryStore();
+  const user = { provider: "github", id: "mcp-social-user", name: "MCP Social User" };
+  const account = await ensureCreditAccount(store, user);
+  const { api_key: apiKey } = await createCreditApiKey(store, { account, label: "MCP social" });
+  let receivedOwnerKey = null;
+  const server = createServer({
+    store,
+    socialProviderFactory: async (_store, ownerKey) => {
+      receivedOwnerKey = ownerKey;
+      return { x: [{ id: "x-owner-provider" }] };
+    },
+    socialResearchRunner: async (params, options) => ({
+      ok: true,
+      status: "completed",
+      request: params,
+      provider_ids: options.searchOptions.localOptions.providers.x.map((item) => item.id)
+    })
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-agentrouter-api-key": apiKey },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "agentrouter_request",
+          arguments: { capability: "social_user_voice_research", params: { question: "AgentRouter feedback", platforms: ["x"] } }
+        }
+      })
+    });
+    const rpc = await response.json();
+    const payload = JSON.parse(rpc.result.content[0].text);
+    assert.equal(payload.ok, true);
+    assert.deepEqual(payload.provider_ids, ["x-owner-provider"]);
+    assert.equal(receivedOwnerKey, authUserKey(user));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -1,8 +1,26 @@
+const MAX_JSON_BODY_BYTES = Number(process.env.ADN_MAX_JSON_BODY_BYTES || 5 * 1024 * 1024);
+
 export async function readJson(req) {
+  const raw = await readRawBody(req);
+  if (!raw) return {};
+  return JSON.parse(raw);
+}
+
+export async function readRawBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_JSON_BODY_BYTES) {
+      const error = new Error("Request body is too large.");
+      error.statusCode = 413;
+      error.code = "REQUEST_BODY_TOO_LARGE";
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return "";
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 export function sendJson(res, statusCode, body, headers = {}) {

@@ -9,8 +9,12 @@ export function createMemoryStore() {
     evidenceEvents: [],
     routeObservations: [],
     quoteFeedbackEvents: [],
+    creditAccounts: new Map(),
+    creditApiKeys: new Map(),
+    creditLedger: [],
     authSessions: new Map(),
-    oauthStates: new Map()
+    oauthStates: new Map(),
+    socialConnections: new Map()
   };
 }
 

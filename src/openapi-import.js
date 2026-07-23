@@ -20,7 +20,7 @@ const OPENAPI_CANDIDATES = [
 const SKIP_PATH_RE = /\/(auth|login|logout|user|users|admin|debug|health|metrics|internal|webhook|reload|refresh|sync)(\/|$)/i;
 const DATA_PATH_RE = /(data|market|price|funding|liquidation|wallet|onchain|search|analytics|open-interest|interest|orderbook|sentiment|flow|risk|profile)/i;
 
-export async function discoverApiServices(body, baseUrl) {
+export async function discoverApiServices(body, baseUrl, options = {}) {
   const apiUrl = normalizeEndpoint(requireString(body.api_url, "api_url"), baseUrl).replace(/\/$/, "");
   const defaultPrice = String(body.default_price || "0.01");
   const defaultMethod = String(body.default_method || "").toUpperCase();
@@ -28,6 +28,9 @@ export async function discoverApiServices(body, baseUrl) {
   const secretValue = body.secret_value || "";
   const authHeader = body.auth_header || "";
   const payoutAddress = body.payout_address || "";
+  if (looksLikePublicApiCatalogSource(apiUrl)) {
+    return discoverPublicApiCatalog({ ...body, api_url: apiUrl }, options);
+  }
   if (looksLikeSkillSource(apiUrl)) {
     return discoverSkillServices({
       skillUrl: apiUrl,
@@ -119,6 +122,67 @@ export async function discoverApiServices(body, baseUrl) {
     provider: {
       provider_id: providerId,
       provider_name: providerTitle
+    },
+    drafts,
+    skipped
+  };
+}
+
+export async function discoverPublicApiCatalog(body = {}, options = {}) {
+  const requestedUrl = requireString(body.api_url, "api_url");
+  if (!looksLikePublicApiCatalogSource(requestedUrl)) {
+    const error = new Error("Only the public-apis/public-apis repository or its README can be used with this catalog importer.");
+    error.statusCode = 422;
+    error.code = "UNSUPPORTED_PUBLIC_API_CATALOG";
+    throw error;
+  }
+  const source = "https://raw.githubusercontent.com/public-apis/public-apis/master/README.md";
+  const response = await fetchWithTimeout(source, { fetchImpl: options.fetchImpl || globalThis.fetch });
+  if (!response.ok) {
+    const error = new Error(`Public APIs catalog fetch failed with HTTP ${response.status}.`);
+    error.statusCode = 502;
+    error.code = "PUBLIC_API_CATALOG_FETCH_FAILED";
+    throw error;
+  }
+  const markdown = await response.text();
+  const categories = new Set((Array.isArray(body.catalog_categories) ? body.catalog_categories : [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean));
+  const query = String(body.catalog_query || "").trim().toLowerCase();
+  const httpsOnly = body.catalog_https_only !== false;
+  const limit = Math.min(Math.max(Number(body.catalog_limit) || 25, 1), 100);
+  const parsed = parsePublicApiCatalog(markdown);
+  const skipped = [];
+  const eligible = [];
+  for (const entry of parsed) {
+    if (categories.size && !categories.has(entry.category.toLowerCase())) continue;
+    if (query && !`${entry.title} ${entry.description} ${entry.category}`.toLowerCase().includes(query)) continue;
+    if (httpsOnly && entry.https !== true) {
+      skipped.push({ category: entry.category, title: entry.title, reason: "https_required" });
+      continue;
+    }
+    eligible.push(entry);
+    if (eligible.length >= limit) break;
+  }
+  const defaultPrice = String(body.default_price || "0.01");
+  const drafts = eligible.map((entry) => createPublicApiCatalogCandidate(entry, { source, defaultPrice }));
+  return {
+    ok: true,
+    mode: "public_api_catalog",
+    source,
+    api_url: "https://github.com/public-apis/public-apis",
+    provider: {
+      provider_id: "public_apis_catalog",
+      provider_name: "Public APIs catalog"
+    },
+    catalog: {
+      catalog_id: "github:public-apis/public-apis",
+      candidate_count: drafts.length,
+      skipped_count: skipped.length,
+      categories: [...categories],
+      query: query || null,
+      https_only: httpsOnly,
+      registry_policy: "Candidates require endpoint discovery and live validation before publishing."
     },
     drafts,
     skipped
@@ -225,6 +289,117 @@ async function discoverSkillServices({ skillUrl, defaultPrice, providerName, sec
   };
 }
 
+function looksLikePublicApiCatalogSource(value) {
+  try {
+    const url = new URL(String(value || ""));
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname.replace(/\/+$/, "").toLowerCase();
+    if (host === "github.com") return path === "/public-apis/public-apis" || path === "/public-apis/public-apis/blob/master/readme.md" || path === "/public-apis/public-apis/blob/main/readme.md";
+    return host === "raw.githubusercontent.com" && /^\/public-apis\/public-apis\/(?:master|main)\/readme\.md$/.test(path);
+  } catch {
+    return false;
+  }
+}
+
+function parsePublicApiCatalog(markdown) {
+  const entries = [];
+  let category = "";
+  for (const line of String(markdown || "").split(/\r?\n/)) {
+    const heading = line.match(/^###\s+(.+?)\s*$/);
+    if (heading) {
+      category = cleanMarkdownCell(heading[1]);
+      continue;
+    }
+    if (!category || !line.trim().startsWith("|")) continue;
+    const cells = splitMarkdownTableRow(line);
+    if (cells.length < 5 || /^api$/i.test(cells[0]) || /^[-: ]+$/.test(cells[0])) continue;
+    const link = cells[0].match(/^\[([^\]]+)]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)$/i);
+    if (!link) continue;
+    entries.push({
+      category,
+      title: cleanMarkdownCell(link[1]),
+      documentation_url: link[2],
+      description: cleanMarkdownCell(cells[1]),
+      auth: cleanMarkdownCell(cells[2]),
+      https: catalogBoolean(cells[3]),
+      cors: catalogBoolean(cells[4])
+    });
+  }
+  return entries;
+}
+
+function splitMarkdownTableRow(line) {
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const character of String(line || "").trim().replace(/^\|/, "").replace(/\|$/, "")) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function cleanMarkdownCell(value) {
+  return String(value || "")
+    .replace(/`/g, "")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function catalogBoolean(value) {
+  const normalized = cleanMarkdownCell(value).toLowerCase();
+  if (normalized === "yes") return true;
+  if (normalized === "no") return false;
+  return null;
+}
+
+function createPublicApiCatalogCandidate(entry, { source, defaultPrice }) {
+  const capabilities = suggestCapabilities(`${entry.title} ${entry.description} ${entry.category}`).split(",");
+  return {
+    selected: false,
+    service_id: normalizeId(null, `catalog ${entry.category} ${entry.title}`, "service"),
+    provider_id: normalizeId(null, entry.title, "provider"),
+    provider_name: entry.title,
+    title: entry.title,
+    description_for_agent: entry.description,
+    capabilities,
+    price: defaultPrice,
+    sample_request: {},
+    preview_data: {},
+    summary: `${entry.title} is a ${entry.category} API discovery candidate. Inspect its official documentation before creating an executable AgentRouter service.`,
+    source_type: "public_api_catalog",
+    source_url: source,
+    discovery_url: entry.documentation_url,
+    discovery_status: "catalog_candidate",
+    registry_eligible: false,
+    publish_blocked: true,
+    publish_requirements: ["discover_http_endpoint", "confirm_auth_and_terms", "generate_service_contract", "pass_live_validation"],
+    catalog_metadata: {
+      catalog_id: "github:public-apis/public-apis",
+      category: entry.category,
+      auth: entry.auth,
+      https: entry.https,
+      cors: entry.cors,
+      documentation_url: entry.documentation_url
+    },
+    discovery_note: "Imported as a discovery candidate from public-apis/public-apis. It is not executable or routable until official API documentation yields a concrete endpoint that passes AgentRouter live validation."
+  };
+}
+
 function resolveOpenApiServerUrl(doc, sourceUrl, requestedUrl) {
   const serverUrl = doc.servers?.[0]?.url;
   if (serverUrl) return normalizeEndpoint(serverUrl, sourceUrl).replace(/\/$/, "");
@@ -241,11 +416,31 @@ export async function publishApiDrafts(body, store, baseUrl, { user = null, owne
     error.statusCode = 422;
     throw error;
   }
-  const remoteUrl = normalizedRemoteRegistryUrl(body.remote_registry_url);
-  if (shouldPublishToRemote({ body, baseUrl, remoteUrl })) {
-    return publishApiDraftsToRemote({ body, remoteUrl });
+  const blocked = drafts.filter((draft) => draft.selected !== false && (draft.publish_blocked || draft.source_type === "public_api_catalog"));
+  const publishable = drafts.filter((draft) => !blocked.includes(draft));
+  const blockedFailures = blocked.map((draft) => ({
+    service_id: draft.service_id || null,
+    error: "CATALOG_CANDIDATE_REQUIRES_ENDPOINT_DISCOVERY",
+    message: "Catalog candidates cannot be published directly. Inspect the official API documentation, discover a concrete HTTP endpoint, and pass live validation first.",
+    discovery_url: draft.discovery_url || null
+  }));
+  if (!publishable.some((draft) => draft.selected !== false)) {
+    return { ok: false, published: [], failed: blockedFailures };
   }
-  return publishApiDraftsLocal(body, store, baseUrl, { user, ownerKey });
+  const publishBody = { ...body, drafts: publishable };
+  const remoteUrl = normalizedRemoteRegistryUrl(body.remote_registry_url);
+  let result;
+  if (shouldPublishToRemote({ body, baseUrl, remoteUrl })) {
+    result = await publishApiDraftsToRemote({ body: publishBody, remoteUrl });
+  } else {
+    result = await publishApiDraftsLocal(publishBody, store, baseUrl, { user, ownerKey });
+  }
+  if (!blockedFailures.length) return result;
+  return {
+    ...result,
+    ok: false,
+    failed: [...(result.failed || []), ...blockedFailures]
+  };
 }
 
 async function publishApiDraftsLocal(body, store, baseUrl, { user = null, ownerKey = "" } = {}) {
@@ -432,8 +627,10 @@ function isLocalBaseUrl(baseUrl) {
 
 async function publishApiDraftsToRemote({ body, remoteUrl }) {
   const remoteToken = body.remote_publish_token || process.env.ADN_REMOTE_PUBLISH_TOKEN || process.env.ADN_STUDIO_API_TOKEN || "";
+  const remoteCookie = body.remote_session_cookie || process.env.ADN_REMOTE_SESSION_COOKIE || "";
   const headers = { "content-type": "application/json" };
   if (remoteToken) headers.authorization = `Bearer ${remoteToken}`;
+  if (remoteCookie) headers.cookie = remoteCookie;
   const response = await fetchWithTimeout(`${remoteUrl}/studio/import/publish`, {
     method: "POST",
     headers,
@@ -444,7 +641,34 @@ async function publishApiDraftsToRemote({ body, remoteUrl }) {
       remote_registry_url: undefined
     })
   });
-  const payload = await response.json();
+  const payload = await response.json().catch(() => ({
+    ok: false,
+    error: {
+      code: "REMOTE_PUBLISH_NON_JSON_RESPONSE",
+      message: "Remote registry did not return JSON."
+    }
+  }));
+  if (!response.ok || payload.ok !== true) {
+    const remoteError = payload.error || {};
+    const message = remoteError.message || payload.message || `Remote registry rejected publish with HTTP ${response.status}.`;
+    const code = remoteError.code || payload.error || "REMOTE_PUBLISH_FAILED";
+    const drafts = Array.isArray(body.drafts) ? body.drafts : [];
+    return {
+      ok: false,
+      remote_registry_url: remoteUrl,
+      publish_scope: "remote_and_local",
+      remote_status: response.status,
+      local_published: false,
+      published: [],
+      failed: drafts.map((draft) => ({
+        service_id: draft.service_id,
+        error: "REMOTE_PUBLISH_FAILED",
+        message,
+        remote_status: response.status,
+        remote_error: code
+      }))
+    };
+  }
   return {
     ...payload,
     ok: response.ok && payload.ok === true,
@@ -1886,8 +2110,9 @@ function requireString(value, name) {
 
 function fetchWithTimeout(url, options = {}) {
   const timeoutMs = Number(process.env.ADN_DOCS_FETCH_TIMEOUT_MS || 12000);
-  return fetch(url, {
-    ...options,
-    signal: options.signal || AbortSignal.timeout(timeoutMs)
+  const { fetchImpl = globalThis.fetch, ...fetchOptions } = options;
+  return fetchImpl(url, {
+    ...fetchOptions,
+    signal: fetchOptions.signal || AbortSignal.timeout(timeoutMs)
   });
 }

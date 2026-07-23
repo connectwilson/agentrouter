@@ -7,8 +7,10 @@ export async function askAgentRouter(store, {
   task = "",
   max_price: maxPrice = "0.05",
   currency = "USDC",
-  invoke = true
+  invoke = true,
+  consumerApiKey = ""
 } = {}) {
+  const invocationOptions = { consumerApiKey };
   if (!String(task || "").trim()) {
     const error = new Error("task is required");
     error.statusCode = 422;
@@ -33,7 +35,7 @@ export async function askAgentRouter(store, {
     const routed = await routeCapabilityRequest(store, {
       ...structuredRequest,
       budget: { max_amount: maxPrice, currency }
-    });
+    }, invocationOptions);
     return {
       ...routed,
       task,
@@ -78,7 +80,7 @@ export async function askAgentRouter(store, {
         : "Increase the max_price budget or choose a lower-cost service."
     };
   }
-  const tokenResolution = await maybeResolveTokenAddressLocal(store, intent, record?.manifest, { maxPrice, currency });
+  const tokenResolution = await maybeResolveTokenAddressLocal(store, intent, record?.manifest, { maxPrice, currency }, invocationOptions);
   if (tokenResolution?.ok === false) {
     return {
       ok: false,
@@ -96,7 +98,7 @@ export async function askAgentRouter(store, {
   const invocation = await invokePaidService(store, selected.service_id, serviceInput, {
     max_amount: maxPrice,
     currency
-  });
+  }, invocationOptions);
   if (invocation.statusCode >= 400) {
     return {
       ok: false,
@@ -459,7 +461,7 @@ function stripEmptyValues(input) {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined && value !== null));
 }
 
-async function maybeResolveTokenAddressLocal(store, intent, manifest, { maxPrice, currency }) {
+async function maybeResolveTokenAddressLocal(store, intent, manifest, { maxPrice, currency }, options = {}) {
   if (!serviceNeedsTokenAddress(manifest) || intent.input?.token_address || !intent.token) return null;
   const resolver = findTokenResolverLocal(store, maxPrice);
   if (!resolver) {
@@ -474,7 +476,7 @@ async function maybeResolveTokenAddressLocal(store, intent, manifest, { maxPrice
   const invocation = await invokePaidService(store, resolver.service_id, resolverInput, {
     max_amount: maxPrice,
     currency
-  });
+  }, options);
   if (invocation.statusCode >= 400) {
     return {
       ok: false,

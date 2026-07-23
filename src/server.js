@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { URL } from "node:url";
-import { readJson, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
+import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
 import { createMemoryStore, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment } from "./provider-runtime.js";
@@ -17,9 +17,20 @@ import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc } from "./arc-anchor.j
 import { createErc8004AgentMetadata, submitErc8004Feedback } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
-import { agentHtml, homeHtml, humanHtml, serviceDetailHtml } from "./home.js";
+import { accountHtml, agentHtml, homeHtml, humanHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
-import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, currentUser, logout } from "./auth.js";
+import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
+import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditLedger } from "./credits.js";
+import { currentPaymentBackend } from "./payment-adapter.js";
+import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
+import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
+import { searchPublicDiscussions } from "./research-search.js";
+import { getSocialProviderHealth } from "./research-social-providers.js";
+import { buildCreatorResearchReport } from "./research-synthesis.js";
+import { runSocialResearchCapability } from "./research-capability.js";
+import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
+import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
+import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
 
 const clientLogoPaths = {
   "claude.svg": new URL("../public/assets/client-logos/claude.svg", import.meta.url),
@@ -139,10 +150,16 @@ const remoteMcpTools = [
   }
 ];
 
-export function createServer({ store = createMemoryStore(), baseUrl = "" } = {}) {
+export function createServer({
+  store = createMemoryStore(),
+  baseUrl = "",
+  socialResearchRunner = runSocialResearchCapability,
+  socialConnectionOptions = {},
+  socialProviderFactory = socialProvidersForUser
+} = {}) {
   const server = http.createServer(async (req, res) => {
     try {
-      await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req));
+      await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), { socialResearchRunner, socialConnectionOptions, socialProviderFactory });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
         error: {
@@ -158,9 +175,18 @@ export function createServer({ store = createMemoryStore(), baseUrl = "" } = {})
   return server;
 }
 
-async function routeRequest(req, res, store, baseUrl) {
+async function routeRequest(req, res, store, baseUrl, {
+  socialResearchRunner = runSocialResearchCapability,
+  socialConnectionOptions = {},
+  socialProviderFactory = socialProvidersForUser
+} = {}) {
   const url = new URL(req.url, baseUrl);
-  const auth = { user: currentUser(req, store) || currentApiTokenUser(req), providers: authProviders() };
+  const auth = {
+    user: currentUser(req, store) || currentApiTokenUser(req),
+    providers: authProviders(),
+    devLogin: devLoginAvailable(req, baseUrl)
+  };
+  const paymentContext = await paidInvocationContext(req, baseUrl, store);
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/assets/client-logos/")) {
     await sendClientLogo(req, res, url);
@@ -203,8 +229,21 @@ async function routeRequest(req, res, store, baseUrl) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/agent-router/api-sources") {
+    sendJson(res, 200, {
+      catalog_version: "agent_router_external_sources_v1",
+      sources: getExternalApiCatalog(store, authUserKey(auth.user))
+    });
+    return;
+  }
+
   if (url.pathname === "/mcp" || url.pathname === "/agent-router/mcp") {
-    await handleRemoteMcp(req, res, store, baseUrl);
+    await handleRemoteMcp(req, res, store, baseUrl, {
+      ...paymentContext,
+      socialConnectionOptions,
+      socialProviderFactory,
+      socialResearchRunner
+    });
     return;
   }
 
@@ -248,6 +287,53 @@ async function routeRequest(req, res, store, baseUrl) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/webhooks/stripe/credits") {
+    const rawBody = await readRawBody(req);
+    const result = await processStripeCreditWebhook(store, {
+      rawBody,
+      signatureHeader: req.headers["stripe-signature"] || ""
+    });
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/account/credits") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to view your AgentRouter credits.");
+    const account = await ensureCreditAccount(store, auth.user);
+    sendJson(res, 200, {
+      account,
+      balance: await getCreditBalance(store, account.account_id),
+      currency: "credits",
+      ledger: await listCreditLedger(store, account.account_id, { limit: url.searchParams.get("limit") || 100 })
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/account/api-keys") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to create an AgentRouter API key.");
+    const body = await readJson(req);
+    const account = await ensureCreditAccount(store, auth.user);
+    const apiKey = await createCreditApiKey(store, { account, label: body.label });
+    sendJson(res, 201, {
+      ...apiKey,
+      note: "This API key is shown once. Store it in your AI client and do not share it."
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/account/credits/topup") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to add AgentRouter credits.");
+    const body = await readJson(req);
+    const account = await ensureCreditAccount(store, auth.user);
+    const topup = await createCreditTopup(store, {
+      account,
+      amount: body.amount,
+      baseUrl
+    });
+    sendJson(res, 201, topup);
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/auth/login") {
     sendHtml(res, 200, loginHtml({
       auth,
@@ -259,6 +345,15 @@ async function routeRequest(req, res, store, baseUrl) {
 
   if (req.method === "GET" && url.pathname === "/auth/logout") {
     redirect(res, "/", { "set-cookie": logout(req, store, baseUrl) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/dev/start") {
+    if (!devLoginAvailable(req, baseUrl)) return sendNotFound(res, "ROUTE_NOT_FOUND");
+    const result = createDevSession(store, baseUrl);
+    redirect(res, safeReturnTo(url.searchParams.get("return_to") || "/account"), {
+      "set-cookie": result.cookie
+    });
     return;
   }
 
@@ -382,6 +477,81 @@ async function routeRequest(req, res, store, baseUrl) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/research") {
+    sendHtml(res, 200, researchHtml(auth));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/research/api/projects") {
+    const body = await readJson(req);
+    sendJson(res, 201, createResearchDraft(body));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/research/api/evidence/normalize") {
+    const body = await readJson(req);
+    sendJson(res, 200, normalizeSocialEvidenceItem(body));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/research/api/search") {
+    const body = await readJson(req);
+    const providers = await socialProviderFactory(store, authUserKey(auth.user), socialConnectionOptions);
+    sendJson(res, 200, await searchPublicDiscussions(body, { localOptions: { providers } }));
+    return;
+  }
+
+  if (url.pathname === "/research/api/connections" && req.method === "GET") {
+    if (!auth.user) return sendJson(res, 401, { error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in to manage social connections." } });
+    sendJson(res, 200, { connections: listSocialConnections(store, authUserKey(auth.user)) });
+    return;
+  }
+
+  if (url.pathname === "/research/api/connections" && req.method === "POST") {
+    if (!auth.user) return sendJson(res, 401, { error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in to manage social connections." } });
+    const body = await readJson(req);
+    sendJson(res, 201, await createSocialConnection(store, authUserKey(auth.user), body, socialConnectionOptions));
+    return;
+  }
+
+  if (url.pathname.startsWith("/research/api/connections/") && req.method === "DELETE") {
+    if (!auth.user) return sendJson(res, 401, { error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in to manage social connections." } });
+    const connectionId = decodeURIComponent(url.pathname.split("/").at(-1) || "");
+    sendJson(res, 200, await deleteSocialConnection(store, authUserKey(auth.user), connectionId, socialConnectionOptions));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/research/api/providers") {
+    sendJson(res, 200, await getSocialProviderHealth());
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/research/api/local-platforms") {
+    sendJson(res, 200, { protocol_version: "agentrouter_local_social_catalog_v1", platforms: getLocalSocialPlatformCatalog() });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/research/api/local-plan") {
+    if (!auth.user) return sendJson(res, 401, { error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in before creating a local execution plan." } });
+    const body = await readJson(req);
+    sendJson(res, 200, buildLocalSocialExecutionPlan(body));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/research/api/run") {
+    const body = await readJson(req);
+    const providers = await socialProviderFactory(store, authUserKey(auth.user), socialConnectionOptions);
+    const search = await searchPublicDiscussions(body, { localOptions: { providers } });
+    const report = buildCreatorResearchReport({ question: body.question, candidates: search.candidates });
+    sendJson(res, 200, {
+      run_version: "creator_research_run_v1",
+      search,
+      report,
+      completion_status: report.answer_status === "evidence_based" ? "review_required" : search.action_required?.length ? "action_required" : "insufficient_evidence"
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/human") {
     sendHtml(res, 200, humanHtml({ auth }));
     return;
@@ -389,6 +559,16 @@ async function routeRequest(req, res, store, baseUrl) {
 
   if (req.method === "GET" && url.pathname === "/agent") {
     sendHtml(res, 200, agentHtml({ auth }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/account") {
+    if (!auth.user) {
+      res.writeHead(302, { location: "/auth/login?return_to=%2Faccount" });
+      res.end();
+      return;
+    }
+    sendHtml(res, 200, accountHtml({ auth }));
     return;
   }
 
@@ -621,25 +801,27 @@ async function routeRequest(req, res, store, baseUrl) {
 
   if (req.method === "POST" && url.pathname === "/connector/invoke_paid_service") {
     const body = await readJson(req);
-    if (!localServerPaidInvocationsAllowed(baseUrl)) {
+    if (!paymentContext.invoke) {
       const blocked = paymentRequiredForService(store, body.service_id, body.input || {}, body.budget || {});
       sendJson(res, blocked.statusCode, blocked.body);
       return;
     }
-    const result = await invokePaidService(store, body.service_id, body.input || {}, body.budget || {});
+    const result = await invokePaidService(store, body.service_id, body.input || {}, body.budget || {}, {
+      consumerApiKey: paymentContext.consumerApiKey
+    });
     sendJson(res, result.statusCode, result.body);
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/router/route") {
     const body = await readJson(req);
-    if (!localServerPaidInvocationsAllowed(baseUrl)) {
+    if (!paymentContext.invoke) {
       const resolved = resolveRoute(store, body);
       const payload = routePaymentRequired(resolved, body);
       sendJson(res, paymentBoundaryStatusCode(payload), payload);
       return;
     }
-    const result = await routeTask(store, body);
+    const result = await routeTask(store, body, paymentContext);
     sendJson(res, 200, result);
     return;
   }
@@ -663,13 +845,29 @@ async function routeRequest(req, res, store, baseUrl) {
 
   if (req.method === "POST" && url.pathname === "/agent-router/request") {
     const body = await readJson(req);
-    if (!localServerPaidInvocationsAllowed(baseUrl)) {
+    if (body.capability === "external_api_query") {
+      const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+      const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(body.params?.source || "").toLowerCase());
+      if (!auth.user && sourceDefinition?.connection_required !== false) {
+        return sendJson(res, 401, { ok: false, status: "authentication_required", error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in before using a connected API source." } });
+      }
+      const result = await runExternalApiQuery(store, ownerKey, body.params || {}, socialConnectionOptions);
+      sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
+      return;
+    }
+    if (body.capability === "social_user_voice_research") {
+      const providers = await socialProviderFactory(store, authUserKey(auth.user), socialConnectionOptions);
+      const result = await socialResearchRunner(body.params || {}, { searchOptions: { localOptions: { providers } } });
+      sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
+      return;
+    }
+    if (!paymentContext.invoke) {
       const result = quoteCapabilityRequest(store, body);
       const payload = requestPaymentRequired(result);
       sendJson(res, paymentBoundaryStatusCode(payload), payload);
       return;
     }
-    const result = await routeCapabilityRequest(store, body);
+    const result = await routeCapabilityRequest(store, body, paymentContext);
     sendJson(res, result.ok === false && result.status === "invalid_request" ? 422 : 200, result);
     return;
   }
@@ -677,7 +875,7 @@ async function routeRequest(req, res, store, baseUrl) {
   if (req.method === "POST" && url.pathname === "/agent-router/fetch") {
     const body = await readJson(req);
     const result = await runRemoteAgentRouterFetch(store, body, {
-      invoke: localServerPaidInvocationsAllowed(baseUrl)
+      ...paymentContext
     });
     sendJson(res, paymentBoundaryStatusCode(result), result);
     return;
@@ -703,7 +901,8 @@ async function routeRequest(req, res, store, baseUrl) {
       task: body.task || body.query || "",
       max_price: body.max_price || body.maxPrice || "0.05",
       currency: body.currency || "USDC",
-      invoke: localServerPaidInvocationsAllowed(baseUrl)
+      invoke: paymentContext.invoke,
+      consumerApiKey: paymentContext.consumerApiKey
     });
     sendJson(res, paymentBoundaryStatusCode(result), result);
     return;
@@ -794,18 +993,18 @@ async function routeRequest(req, res, store, baseUrl) {
   }
 
   if (req.method === "POST" && url.pathname === "/provider/chain-fund-flow") {
-    await handleFundFlowProvider(req, res);
+    await handleFundFlowProvider(req, res, { store, baseUrl });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/provider/btc-liquidation-max-pain") {
-    await handleBtcLiquidationProvider(req, res);
+    await handleBtcLiquidationProvider(req, res, { store, baseUrl });
     return;
   }
 
   if (req.method === "POST" && url.pathname.startsWith("/provider/custom/")) {
     const serviceId = decodeURIComponent(url.pathname.split("/")[3] || "");
-    await handleCustomProvider(req, res, serviceId);
+    await handleCustomProvider(req, res, serviceId, { store, baseUrl });
     return;
   }
 
@@ -878,6 +1077,15 @@ function requireAuth(req, res, auth, url) {
   return false;
 }
 
+function sendAuthRequired(res, message) {
+  sendJson(res, 401, {
+    error: {
+      code: "AUTH_REQUIRED",
+      message
+    }
+  });
+}
+
 function currentApiTokenUser(req) {
   const expected = process.env.ADN_STUDIO_API_TOKEN || process.env.ADN_ADMIN_API_TOKEN || "";
   if (!expected) return null;
@@ -917,7 +1125,7 @@ function requireServiceOwner(req, res, auth, record) {
   return false;
 }
 
-async function handleRemoteMcp(req, res, store, baseUrl) {
+async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
   const headers = remoteMcpHeaders();
   if (req.method === "OPTIONS") {
     res.writeHead(204, headers);
@@ -961,7 +1169,7 @@ async function handleRemoteMcp(req, res, store, baseUrl) {
   const messages = Array.isArray(payload) ? payload : [payload];
   const responses = [];
   for (const message of messages) {
-    const response = await dispatchRemoteMcpMessage(message, store, baseUrl);
+    const response = await dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext);
     if (response) responses.push(response);
   }
   if (!responses.length) {
@@ -972,7 +1180,7 @@ async function handleRemoteMcp(req, res, store, baseUrl) {
   sendRemoteMcpJson(res, 200, Array.isArray(payload) ? responses : responses[0]);
 }
 
-async function dispatchRemoteMcpMessage(message, store, baseUrl) {
+async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext = {}) {
   if (!message || typeof message !== "object") {
     return remoteMcpError(null, -32600, "Invalid JSON-RPC message.");
   }
@@ -993,7 +1201,7 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl) {
       return remoteMcpResult(id, { tools: remoteMcpTools });
     }
     if (message.method === "tools/call") {
-      const result = await callRemoteMcpTool(message.params?.name, message.params?.arguments || {}, store, baseUrl);
+      const result = await callRemoteMcpTool(message.params?.name, message.params?.arguments || {}, store, baseUrl, paymentContext);
       const presentation = sanitizeAgentToolResult(result);
       return remoteMcpResult(id, {
         content: [{ type: "text", text: JSON.stringify(presentation, null, 2) }],
@@ -1006,11 +1214,11 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl) {
   }
 }
 
-async function callRemoteMcpTool(name, args, store, baseUrl) {
+async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}) {
   await loadProviderConfigs(store, baseUrl, { validate: false });
   if (name === "agentrouter_fetch") {
     return runRemoteAgentRouterFetch(store, args, {
-      invoke: localServerPaidInvocationsAllowed(baseUrl)
+      ...paymentContext
     });
   }
   if (name === "agentrouter_request") {
@@ -1021,10 +1229,32 @@ async function callRemoteMcpTool(name, args, store, baseUrl) {
       budget: args.budget || {},
       consumer_context: args.consumer_context || { source: "remote_mcp" }
     };
-    if (!localServerPaidInvocationsAllowed(baseUrl)) {
+    if (request.capability === "external_api_query") {
+      const ownerKey = paymentContext.ownerKey || "";
+      const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(request.params?.source || "").toLowerCase());
+      if (sourceDefinition?.connection_required !== false && !ownerKey) {
+        return {
+          ok: false,
+          status: "authentication_required",
+          error: {
+            code: "AUTHENTICATION_REQUIRED",
+            message: "Provide a valid AgentRouter API key owned by the account that connected this source."
+          }
+        };
+      }
+      return runExternalApiQuery(store, ownerKey, request.params, paymentContext.socialConnectionOptions || {});
+    }
+    if (request.capability === "social_user_voice_research") {
+      const ownerKey = paymentContext.ownerKey || "";
+      const providerFactory = paymentContext.socialProviderFactory || socialProvidersForUser;
+      const researchRunner = paymentContext.socialResearchRunner || runSocialResearchCapability;
+      const providers = await providerFactory(store, ownerKey, paymentContext.socialConnectionOptions || {});
+      return researchRunner(request.params, { searchOptions: { localOptions: { providers } } });
+    }
+    if (!paymentContext.invoke) {
       return requestPaymentRequired(quoteCapabilityRequest(store, request));
     }
-    return routeCapabilityRequest(store, request);
+    return routeCapabilityRequest(store, request, paymentContext);
   }
   if (name === "agentrouter_quote") {
     return quoteCapabilityRequest(store, {
@@ -1063,7 +1293,8 @@ async function callRemoteMcpTool(name, args, store, baseUrl) {
       task: args.task || args.query || "",
       max_price: args.max_price || args.maxPrice || "0.05",
       currency: args.currency || "USDC",
-      invoke: localServerPaidInvocationsAllowed(baseUrl)
+      invoke: paymentContext.invoke,
+      consumerApiKey: paymentContext.consumerApiKey
     });
   }
   return {
@@ -1074,7 +1305,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl) {
   };
 }
 
-async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true } = {}) {
+async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true, consumerApiKey = "" } = {}) {
   const requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
   const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
   const currency = args.currency || args.budget?.currency || "USDC";
@@ -1084,7 +1315,8 @@ async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true } = {
       task: args.task || args.query || "",
       max_price: maxPrice,
       currency,
-      invoke
+      invoke,
+      consumerApiKey
     });
   }
 
@@ -1101,7 +1333,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true } = {
       continue;
     }
     if (invoke) {
-      results.push(await routeCapabilityRequest(store, request));
+      results.push(await routeCapabilityRequest(store, request, { consumerApiKey }));
     } else {
       results.push(requestPaymentRequired(quoteCapabilityRequest(store, request)));
     }
@@ -1213,7 +1445,7 @@ function remoteMcpHeaders() {
   return {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "content-type, accept, mcp-session-id, authorization, anthropic-beta, anthropic-version, x-api-key",
+    "access-control-allow-headers": "content-type, accept, mcp-session-id, authorization, anthropic-beta, anthropic-version, x-api-key, x-agentrouter-api-key",
     "access-control-expose-headers": "mcp-session-id",
     "cache-control": "no-store"
   };
@@ -1458,6 +1690,17 @@ function localServerPaidInvocationsAllowed(baseUrl) {
   }
 }
 
+async function paidInvocationContext(req, baseUrl, store) {
+  const consumerApiKey = creditApiKeyFromRequest(req);
+  const creditIdentity = consumerApiKey ? await authenticateCreditRequest(store, req) : null;
+  return {
+    invoke: localServerPaidInvocationsAllowed(baseUrl)
+      || (currentPaymentBackend() === "credits" && Boolean(consumerApiKey)),
+    consumerApiKey,
+    ownerKey: creditIdentity?.account?.owner_key || ""
+  };
+}
+
 function isAgentRouterOriginDocumentPath(pathname) {
   return pathname === "/.well-known/agentrouter.json"
     || pathname === "/agentrouter.json"
@@ -1665,6 +1908,12 @@ function loginHtml({ auth, error = "", returnTo = "/" }) {
         </div>`;
     return `<section class="login-card">${body}</section>`;
   }).join("");
+  const devLogin = auth.devLogin
+    ? `<form method="POST" action="/auth/dev/start?return_to=${escapeHtml(encodeURIComponent(safeReturnTo(returnTo)))}">
+        <button class="login-provider local-login" type="submit">Continue locally</button>
+        <small>Local development only. This entry is unavailable on public deployments.</small>
+      </form>`
+    : "";
   const signedIn = auth.user
     ? `<div class="login-user">
         ${auth.user.avatar_url ? `<img src="${escapeHtml(auth.user.avatar_url)}" alt="" />` : ""}
@@ -1693,10 +1942,13 @@ function loginHtml({ auth, error = "", returnTo = "/" }) {
     h1 { margin:0; font-size:42px; line-height:1.05; }
     p { margin:0; color:var(--muted); font-size:16px; line-height:1.55; }
     .login-options { display:grid; gap:10px; margin-top:14px; }
-    .login-provider { min-height:54px; border:1px solid var(--line); background:#fff; display:flex; align-items:center; justify-content:center; padding:0 18px; font-size:14px; font-weight:800; }
+    .login-provider { width:100%; min-height:54px; border:1px solid var(--line); background:#fff; display:flex; align-items:center; justify-content:center; padding:0 18px; font-size:14px; font-weight:800; cursor:pointer; }
     .login-provider:hover { border-color:#b9c2c5; background:#fbfbfb; }
     .login-provider.disabled { justify-content:space-between; gap:18px; color:var(--muted); background:var(--panel); font-weight:700; }
     .login-provider.disabled span { font-size:12px; text-align:right; }
+    .login-options form { display:grid; gap:8px; }
+    .login-options form small { color:var(--muted); font-size:12px; line-height:1.4; }
+    .local-login { border-color:#b9c2c5; }
     .login-error { border:1px solid #f2b8b5; background:#fff7f7; color:#8c1d18; padding:12px 14px; font-size:13px; line-height:1.4; }
     .login-user { border:1px solid var(--line); background:var(--panel); padding:14px; display:grid; grid-template-columns:40px minmax(0,1fr) auto; gap:12px; align-items:center; }
     .login-user img { width:40px; height:40px; border-radius:50%; }
@@ -1721,7 +1973,7 @@ function loginHtml({ auth, error = "", returnTo = "/" }) {
       <p>Sign in to AgentRouter with GitHub. Provider onboarding credentials stay in Provider Studio; OAuth is only for user identity.</p>
       ${error ? `<div class="login-error">${escapeHtml(error)}</div>` : ""}
       ${signedIn}
-      <div class="login-options">${providerCards}</div>
+      <div class="login-options">${providerCards}${devLogin}</div>
     </section>
   </main>
 </body>
@@ -2528,6 +2780,7 @@ export async function bootstrapServer(server, baseUrl) {
     validate: process.env.ADN_VALIDATE_PROVIDER_CONFIGS_ON_BOOT === "1"
   });
   await hydratePersistentServiceEvents(server.store);
+  await hydrateSocialConnections(server.store);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -745,7 +745,130 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
   });
 }
 
+export function accountHtml({ auth = {} } = {}) {
+  return appPage({
+    title: "Account & credits",
+    subtitle: "Fund one balance, create a client key, and let your agents pay per successful API call.",
+    active: "account",
+    auth,
+    body: `
+      <main class="shell wide-shell account-console">
+        <section class="account-summary">
+          <div>
+            <span class="eyebrow">Available balance</span>
+            <strong id="credit-balance">--</strong>
+            <span>AgentRouter credits</span>
+          </div>
+          <div class="account-actions">
+            <form id="topup-form">
+              <label for="topup-amount">Add credits</label>
+              <div class="inline-form">
+                <input id="topup-amount" name="amount" type="number" min="0.5" max="10000" step="0.01" value="10.00" required>
+                <button class="button primary" type="submit">Continue to payment</button>
+              </div>
+              <small>Production top-ups use hosted Stripe Checkout. Credits are added only after a signed payment webhook.</small>
+            </form>
+          </div>
+        </section>
+
+        <section class="account-grid">
+          <article class="detail-panel">
+            <span class="eyebrow">Agent access</span>
+            <h2>Create an API key</h2>
+            <p>Use this key in Claude, Codex, Cursor, or any MCP client. It authorizes calls against your prepaid balance.</p>
+            <form id="api-key-form">
+              <label for="api-key-label">Client label</label>
+              <div class="inline-form">
+                <input id="api-key-label" name="label" value="Claude Desktop" maxlength="120">
+                <button class="button" type="submit">Create key</button>
+              </div>
+            </form>
+            <div id="api-key-result" class="key-result" hidden>
+              <b>Copy this key now. It will not be shown again.</b>
+              <code id="api-key-value"></code>
+              <button class="button ghost" id="copy-api-key" type="button">Copy key</button>
+              <small>Set it as <code>AGENT_ROUTER_API_KEY</code> in your AgentRouter MCP configuration. The client will then use this prepaid balance instead of an Arc wallet.</small>
+            </div>
+          </article>
+
+          <article class="detail-panel">
+            <span class="eyebrow">Billing model</span>
+            <h2>One balance, every service</h2>
+            <div class="detail-kv">
+              <div>Charge timing</div><div>After request validation, before data release</div>
+              <div>Failed provider call</div><div>Not charged or automatically refunded</div>
+              <div>API credentials</div><div>Provider keys remain server-side</div>
+              <div>Ledger precision</div><div>6 decimal places</div>
+            </div>
+          </article>
+        </section>
+
+        <section class="detail-panel ledger-panel">
+          <div class="panel-head">
+            <span class="eyebrow">Account activity</span>
+            <h2>Credit ledger</h2>
+          </div>
+          <div id="credit-ledger" class="credit-ledger"></div>
+        </section>
+        <p class="form-status" id="account-status" role="status"></p>
+      </main>
+      <script>
+        const statusNode = document.getElementById("account-status");
+        async function loadCredits() {
+          const response = await fetch("/account/credits");
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error?.message || "Could not load credits.");
+          document.getElementById("credit-balance").textContent = payload.balance;
+          const ledger = payload.ledger || [];
+          document.getElementById("credit-ledger").innerHTML = ledger.length
+            ? ['<div class="ledger-row ledger-labels"><span>Event</span><span>Service</span><span>Change</span><span>Balance</span><span>Time</span></div>', ...ledger.map((entry) =>
+                '<div class="ledger-row"><span>' + escapeAccount(entry.kind) + '</span><span>' + escapeAccount(entry.service_id || "Account") + '</span><span class="' + (String(entry.delta).startsWith("-") ? "debit" : "credit") + '">' + escapeAccount(entry.delta) + '</span><span>' + escapeAccount(entry.balance) + '</span><span>' + escapeAccount(new Date(entry.created_at).toLocaleString()) + '</span></div>'
+              )].join("")
+            : '<div class="empty-row">No credit activity yet.</div>';
+        }
+        document.getElementById("topup-form").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          statusNode.textContent = "Creating secure checkout...";
+          const response = await fetch("/account/credits/topup", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ amount: document.getElementById("topup-amount").value })
+          });
+          const payload = await response.json();
+          if (!response.ok) { statusNode.textContent = payload.error?.message || "Top-up failed."; return; }
+          if (payload.checkout_url) { location.href = payload.checkout_url; return; }
+          statusNode.textContent = "Credits added.";
+          await loadCredits();
+        });
+        document.getElementById("api-key-form").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const response = await fetch("/account/api-keys", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ label: document.getElementById("api-key-label").value })
+          });
+          const payload = await response.json();
+          if (!response.ok) { statusNode.textContent = payload.error?.message || "Key creation failed."; return; }
+          document.getElementById("api-key-value").textContent = payload.api_key;
+          document.getElementById("api-key-result").hidden = false;
+        });
+        document.getElementById("copy-api-key").addEventListener("click", async () => {
+          await navigator.clipboard.writeText(document.getElementById("api-key-value").textContent);
+          document.getElementById("copy-api-key").textContent = "Copied";
+        });
+        function escapeAccount(value) {
+          return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" })[char]);
+        }
+        loadCredits().catch((error) => statusNode.textContent = error.message);
+      </script>
+    `
+  });
+}
+
 function appPage({ title, subtitle, active, auth = {}, showHeader = true, body }) {
+  const sectionLabel = active === "human"
+    ? "Provider workspace"
+    : active === "account" ? "Account" : "Agent API hub";
   return page({
     title: `${title} · AgentRouter Markets`,
     auth,
@@ -753,7 +876,7 @@ function appPage({ title, subtitle, active, auth = {}, showHeader = true, body }
       ${showHeader ? `<header class="app-header">
         <div class="shell wide-shell app-title">
           <div>
-            <span class="eyebrow">${html(active === "human" ? "Provider workspace" : "Agent API hub")}</span>
+            <span class="eyebrow">${html(sectionLabel)}</span>
             <h1>${html(title)}</h1>
             <p class="lead">${html(subtitle)}</p>
           </div>
@@ -785,15 +908,19 @@ function page({ title, auth = {}, body }) {
       <a class="brand" href="/" aria-label="AgentRouter home">${brandLogo()}</a>
       <nav class="nav-links" aria-label="Primary">
         <a href="/">Home</a>
+        <a href="/research">Research</a>
         <a href="/agent">Services</a>
         <a href="/human">Provider Studio</a>
       </nav>
-      ${user ? `<a class="auth-link signed-in" href="/auth/login">${html(user.name || user.email || "Account")}</a>` : '<a class="auth-link" href="/auth/login">LOGIN</a>'}
+      ${user ? `<div class="auth-actions">
+        <a class="auth-link signed-in" href="/account">${html(user.name || user.email || "Account")}</a>
+        <a class="logout-link" href="/auth/logout">Sign out</a>
+      </div>` : '<a class="auth-link" href="/auth/login?return_to=%2Faccount">LOGIN</a>'}
     </div>
   </div>
   ${body}
   <footer class="footer">
-    <div class="shell">AgentRouter Markets · <a href="/human">For human</a> · <a href="/agent">For agent</a> · <a href="/studio">Provider Studio</a></div>
+    <div class="shell">AgentRouter Markets · <a href="/research">Creator Research</a> · <a href="/human">For human</a> · <a href="/agent">For agent</a> · <a href="/studio">Provider Studio</a></div>
   </footer>
 </body>
 </html>`;
@@ -839,9 +966,12 @@ function styles() {
     .nav-links { display:flex; align-items:center; justify-content:center; gap:32px; color:#636867; font-size:16px; font-weight:620; white-space:nowrap; text-transform:none; }
     .nav-links a { display:inline-flex; align-items:center; min-height:38px; border-bottom:2px solid transparent; }
     .nav-links a:hover, .nav-links a:focus-visible { color:var(--color-ink); border-bottom-color:var(--color-accent-cool); outline:0; }
+    .auth-actions { justify-self:end; display:flex; align-items:center; gap:12px; min-width:0; }
     .auth-link { justify-self:end; min-height:42px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--color-line); border-radius:14px; padding:0 22px; background:#fff; color:var(--color-ink); font-size:14px; font-weight:800; text-transform:uppercase; }
     .auth-link:hover, .auth-link:focus-visible { border-color:var(--color-strong-line); background:#fbfbfb; outline:0; }
     .auth-link.signed-in { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-transform:none; }
+    .logout-link { color:var(--color-muted); font-size:12px; font-weight:800; text-transform:uppercase; white-space:nowrap; }
+    .logout-link:hover, .logout-link:focus-visible { color:var(--color-ink); outline:0; text-decoration:underline; }
     .button { display:inline-flex; align-items:center; justify-content:center; min-height:40px; border:2px solid var(--color-ink); border-radius:0; background:#fff; color:var(--color-ink); padding:9px 16px; font-weight:760; cursor:pointer; text-transform:uppercase; font-size:12px; letter-spacing:0; }
     .button::before, .path-action::before { content:">"; margin-right:10px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .button.primary { background:var(--color-accent); border-color:var(--color-accent); color:var(--color-accent-ink); }
@@ -1019,6 +1149,29 @@ function styles() {
     .detail-kv { display:grid; grid-template-columns:128px minmax(0,1fr); gap:10px 16px; margin-bottom:20px; }
     .detail-kv div:nth-child(even) { min-width:0; overflow-wrap:anywhere; font-weight:690; }
     .detail-panel h3 { margin:20px 0 10px; font-size:16px; }
+    .account-console { padding-top:18px; }
+    .account-summary { display:grid; grid-template-columns:minmax(260px,.7fr) minmax(420px,1.3fr); gap:28px; align-items:center; border:1px solid var(--color-line); background:var(--color-panel); padding:30px; margin-bottom:22px; }
+    .account-summary > div:first-child { display:grid; gap:8px; }
+    .account-summary strong { display:block; font-size:64px; line-height:1; font-weight:720; overflow-wrap:anywhere; }
+    .account-summary span:last-child, .account-actions small { color:var(--color-muted); }
+    .account-actions form, .account-grid form { display:grid; gap:10px; }
+    .account-actions label, .account-grid label { font-size:13px; font-weight:760; text-transform:uppercase; }
+    .inline-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+    .inline-form input { min-width:0; min-height:46px; border:1px solid var(--color-line); border-radius:0; background:#fff; padding:0 14px; outline:none; }
+    .inline-form input:focus { border-color:var(--color-ink); }
+    .account-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px; }
+    .account-grid h2, .ledger-panel h2 { margin:7px 0 12px; font-size:28px; }
+    .account-grid p { color:var(--color-muted); line-height:1.55; }
+    .key-result { margin-top:18px; border:1px solid var(--color-line); background:var(--color-panel); padding:16px; }
+    .key-result[hidden] { display:none; }
+    .key-result code { display:block; margin:12px 0; padding:14px; overflow:auto; background:var(--color-code); color:#fff; font-family:var(--font-mono); }
+    .ledger-panel { margin-top:22px; }
+    .credit-ledger { overflow-x:auto; }
+    .ledger-row { min-width:760px; display:grid; grid-template-columns:1fr 1.5fr .8fr .8fr 1.2fr; gap:16px; align-items:center; min-height:48px; border-bottom:1px solid var(--color-line); font-size:13px; }
+    .ledger-labels { min-height:34px; color:var(--color-muted); font-size:11px; font-weight:760; text-transform:uppercase; }
+    .ledger-row .credit { color:#16752a; font-weight:760; }
+    .ledger-row .debit { color:#a32b20; font-weight:760; }
+    .form-status { min-height:24px; color:var(--color-muted); font-weight:650; }
     .code-block { margin:0; overflow:auto; max-width:100%; border-radius:8px; background:var(--color-code); color:#f8fafc; padding:16px; font-family:var(--font-mono); font-size:12px; line-height:1.55; }
     .code-block.tall { max-height:520px; }
     .notice-box { display:grid; gap:6px; padding:14px; border:1px solid #b9e4c0; background:#f4fff6; color:#173f1d; border-radius:8px; margin-bottom:18px; }
@@ -1085,7 +1238,10 @@ function styles() {
       .nav-links { display:none; }
       .auth-link { min-height:38px; border-radius:12px; padding:0 14px; font-size:12px; }
       .auth-link.signed-in { max-width:118px; }
-      .hero-grid, .hub-layout, .human-layout, .playground-body, .overview, .market-hero, .provider-hero, .market-shell, .provider-workbench, .detail-hero, .detail-grid { grid-template-columns:1fr; }
+      .auth-actions { gap:8px; }
+      .logout-link { font-size:11px; }
+      .hero-grid, .hub-layout, .human-layout, .playground-body, .overview, .market-hero, .provider-hero, .market-shell, .provider-workbench, .detail-hero, .detail-grid, .account-summary, .account-grid { grid-template-columns:1fr; }
+      .inline-form { grid-template-columns:1fr; }
       .landing-grid, .metrics, .search-row, .step-row, .hero-paths, .stats-grid, .network-tables, .market-grid, .provider-grid, .provider-metrics, .market-toolbar, .provider-toolbar, .provider-imports, .import-options, .guest-provider-grid { grid-template-columns:1fr; }
       .app-title { display:grid; }
       .section-nav { min-width:0; }

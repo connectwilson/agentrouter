@@ -172,9 +172,12 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     .brand-word { font-size: 24px; font-weight: 850; line-height: 1; letter-spacing: 0; }
     .nav-links { display: flex; align-items: center; justify-content: center; gap: 32px; color: #636867; font-size: 16px; font-weight: 620; text-transform: none; }
     .nav-links a:hover, .nav-links a:focus-visible { color: var(--color-ink); outline: 0; }
+    .auth-actions { justify-self: end; display: flex; align-items: center; gap: 12px; min-width: 0; }
     .auth-link { justify-self: end; min-height: 42px; border: 1px solid var(--color-line); border-radius: 14px; padding: 0 22px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-ink); background: #fff; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 800; text-transform: uppercase; }
     .auth-link:hover, .auth-link:focus-visible { border-color: var(--color-strong-line); background: #fbfbfb; outline: 0; }
     .auth-link.signed-in { text-transform: none; }
+    .logout-link { color: var(--color-muted); font-size: 12px; font-weight: 800; text-transform: uppercase; white-space: nowrap; }
+    .logout-link:hover, .logout-link:focus-visible { color: var(--color-ink); outline: 0; text-decoration: underline; }
     .hero-copy { max-width: 1520px; margin: 0 auto; padding: 54px 24px 34px; display: grid; grid-template-columns: minmax(420px, 0.9fr) minmax(360px, 1.1fr); gap: 34px; align-items: end; position: relative; }
     .hero-copy::before { content:""; position:absolute; top:0; left:0; right:0; height:54px; border-bottom:1px solid #ededed; background-image:radial-gradient(#9c9c9c .8px, transparent .8px); background-size:12px 12px; }
     h1 { margin: 0 0 10px; font-size: 42px; letter-spacing: 0; line-height: 1.05; }
@@ -279,6 +282,8 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       .brand-icon img { width: 37px; height: 32px; }
       .brand-word { font-size: 20px; }
       .auth-link { min-height: 38px; border-radius: 12px; padding: 0 14px; font-size: 12px; max-width: 118px; }
+      .auth-actions { gap: 8px; }
+      .logout-link { font-size: 11px; }
       .output { position: static; }
       .grid, .quick-grid, .hero-points, .step-strip { grid-template-columns: 1fr; }
       .draft-row { grid-template-columns: 28px minmax(0, 1fr); }
@@ -298,7 +303,10 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
         <a href="/agent">Services</a>
         <a href="/human">Provider Studio</a>
       </nav>
-      ${user ? `<a class="auth-link signed-in" href="/auth/login">${html(user.name || user.email || "Account")}</a>` : '<a class="auth-link" href="/auth/login">Login</a>'}
+      ${user ? `<div class="auth-actions">
+        <a class="auth-link signed-in" href="/account">${html(user.name || user.email || "Account")}</a>
+        <a class="logout-link" href="/auth/logout">Sign out</a>
+      </div>` : '<a class="auth-link" href="/auth/login?return_to=%2Fstudio">Login</a>'}
     </div>
     <div class="hero-copy">
       <div>
@@ -321,10 +329,10 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       </div>
       <fieldset>
         <legend>Import API</legend>
-        <p class="section-note">Paste a real data endpoint, OpenAPI URL, or Skill page. AgentRouter extracts endpoint drafts, then tests the upstream response before publishing.</p>
+        <p class="section-note">Paste a real data endpoint, OpenAPI URL, Skill page, or the public-apis/public-apis repository. Catalog entries remain discovery candidates until their official docs produce a concrete endpoint that passes validation.</p>
         ${loadedNotice}
         <div class="quick-grid">
-        <label>API / OpenAPI / Skill URL
+        <label>API / OpenAPI / Skill / Public APIs catalog URL
           <input name="import_api_url" value="" />
         </label>
         <label>Method
@@ -361,7 +369,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
           <span class="hint" id="selected-drafts-status">0 selected</span>
         </div>
         <p class="flow-note">Select endpoint cards and click <strong>Verify & Publish Selected</strong>. Service metadata, routing tags, data contract, and runtime wrapper are generated before validation.</p>
-        <p class="hint" id="import-status">Use a concrete endpoint for one API, an OpenAPI/Swagger URL for many endpoints, or a Skill page such as a ClawHub skill.</p>
+        <p class="hint" id="import-status">Use a concrete endpoint, OpenAPI/Swagger URL, Skill page, or https://github.com/public-apis/public-apis as a discovery source.</p>
         <div id="draft-list" class="draft-list"></div>
         <details>
           <summary>Developer debug JSON</summary>
@@ -981,7 +989,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
         '<input type="checkbox" class="draft-selected" ' + checkboxAttrs(draft) + " />",
         "<div>",
         '<div class="draft-title">' + escapeHtml(draft.title || draft.service_id) + "</div>",
-        '<div class="draft-meta">' + escapeHtml(draft.method || "GET") + " " + escapeHtml(draft.path || draft.upstream_url || "") + "</div>",
+        '<div class="draft-meta">' + (draft.publish_blocked ? "Catalog candidate · " + escapeHtml(draft.discovery_url || "documentation required") : escapeHtml(draft.method || "GET") + " " + escapeHtml(draft.path || draft.upstream_url || "")) + "</div>",
         '<div class="draft-meta">' + escapeHtml((draft.capabilities || []).join(", ")) + "</div>",
         '<div class="draft-review">' + draftReviewItems(draft) + '</div>',
         '<div class="draft-contract">' + draftContractChips(draft) + '</div>',
@@ -989,15 +997,15 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
         draft.publish_error ? '<div class="draft-error">' + escapeHtml(publishFailureReason(draft.publish_error)) + '</div>' : "",
         "</div>",
         '<label class="draft-price">Method',
-        '<select class="draft-method-input" ' + (draft.published ? "disabled" : "") + '>',
+        '<select class="draft-method-input" ' + (draft.published || draft.publish_blocked ? "disabled" : "") + '>',
         methodOption("GET", draft.method),
         methodOption("POST", draft.method),
         "</select>",
         "</label>",
         '<label class="draft-price">USDC',
-        '<input class="draft-price-input" value="' + escapeHtml(draft.price || importDefaultPrice.value || "0.01") + '" ' + (draft.published ? "disabled" : "") + " />",
+        '<input class="draft-price-input" value="' + escapeHtml(draft.price || importDefaultPrice.value || "0.01") + '" ' + (draft.published || draft.publish_blocked ? "disabled" : "") + " />",
         "</label>",
-        '<button type="button" class="mini-button use-draft" ' + (draft.published ? "disabled" : "") + ">" + (draft.published ? "Verified" : "Edit Details") + "</button>",
+        '<button type="button" class="mini-button use-draft" ' + (draft.published ? "disabled" : "") + ">" + (draft.published ? "Verified" : draft.publish_blocked ? "Inspect API docs" : "Edit Details") + "</button>",
         "</div>"
       ].join("")).join("");
     }
@@ -1012,6 +1020,15 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       const capabilities = suggestCapabilities(capabilityText).split(",").filter(Boolean);
       const sampleRequest = draft.sample_request || {};
       const previewData = draft.preview_data ?? draft.data_contract?.response_data?.preview ?? {};
+      if (draft.source_type === "public_api_catalog") {
+        return {
+          ...draft,
+          selected: false,
+          capabilities: Array.isArray(draft.capabilities) && draft.capabilities.length ? draft.capabilities : capabilities,
+          sample_request: {},
+          preview_data: {}
+        };
+      }
       return {
         ...draft,
         capabilities,
@@ -1084,6 +1101,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     }
 
     function draftAuthSummary(draft) {
+      if (draft.source_type === "public_api_catalog") return draft.catalog_metadata?.auth || "unknown";
       const header = draft.auth_header || "";
       if (header === "auto") return "auto-detect";
       if (header) return "header: " + header;
@@ -1107,11 +1125,13 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     }
 
     function draftPriceSummary(draft) {
+      if (draft.publish_blocked) return "set after endpoint discovery";
       const price = draft.price || importDefaultPrice.value || "0.01";
       return price + " USDC/call";
     }
 
     function draftFreshnessSummary(draft) {
+      if (draft.publish_blocked) return "not verified";
       return draft.data_contract?.pre_call_context?.freshness_hint || "validated live before publish";
     }
 
@@ -1124,6 +1144,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     }
 
     function draftSourceLabel(draft) {
+      if (draft.source_type === "public_api_catalog") return "Public APIs catalog";
       if (draft.source_type === "api_docs_import") return "API docs";
       if (draft.source_type === "skill_import") return "Skill";
       if (draft.source_type === "direct_endpoint") return "Direct endpoint";
@@ -1175,12 +1196,13 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     function checkboxAttrs(draft) {
       return [
         draft.selected === false ? "" : "checked",
-        draft.published ? "disabled" : ""
+        draft.published || draft.publish_blocked ? "disabled" : ""
       ].join(" ");
     }
 
     function draftBadge(draft) {
       if (draft.published) return "Verified and routable";
+      if (draft.publish_blocked) return "Discovery candidate · inspect docs";
       if (draft.publish_error) return "Validation failed";
       if (draft.existing_service_status && draft.existing_service_status !== "verified") return "Needs verification";
       return draft.selected === false ? "Not selected" : "Selected for verification";
@@ -1188,7 +1210,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
 
     function draftContractChips(draft) {
       const inputKeys = Object.keys(draft.sample_request || {});
-      const source = draft.source_type === "skill_import" ? "Skill import" : draft.discovery_note ? "Direct endpoint" : "OpenAPI";
+      const source = draft.source_type === "public_api_catalog" ? "Public APIs catalog" : draft.source_type === "skill_import" ? "Skill import" : draft.discovery_note ? "Direct endpoint" : "OpenAPI";
       const routeTags = (draft.capabilities || ["data_service"]).slice(0, 8).map((tag) =>
         '<span class="draft-chip route">' + escapeHtml(tag) + '</span>'
       );
@@ -1197,6 +1219,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
         '<span class="draft-chip meta">' + inputKeys.length + ' input fields</span>',
         '<span class="draft-chip meta">' + escapeHtml(source) + '</span>',
         draft.auth_header ? '<span class="draft-chip meta">Auth: ' + escapeHtml(draft.auth_header) + '</span>' : '',
+        draft.publish_blocked ? '<span class="draft-chip warn">Endpoint discovery required</span>' : '',
         draft.publish_error ? '<span class="draft-chip error">Fix before publish</span>' : ''
       ].join("");
     }
@@ -1232,11 +1255,16 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       const row = event.target.closest(".draft-row");
       const index = Number(row.dataset.index);
       syncDraftsFromList();
+      if (discoveredDrafts[index]?.publish_blocked && discoveredDrafts[index]?.discovery_url) {
+        importApiUrl.value = discoveredDrafts[index].discovery_url;
+        discoverApi.click();
+        return;
+      }
       fillDraftIntoForm(discoveredDrafts[index]);
     });
 
     selectAllDrafts.addEventListener("click", () => {
-      discoveredDrafts = discoveredDrafts.map((draft) => ({ ...draft, selected: true }));
+      discoveredDrafts = discoveredDrafts.map((draft) => ({ ...draft, selected: draft.publish_blocked ? false : true }));
       importDrafts.value = JSON.stringify(discoveredDrafts, null, 2);
       renderDraftList(discoveredDrafts);
       updateDraftSelectionUi();
@@ -1250,7 +1278,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     });
 
     function selectedDraftCount() {
-      return discoveredDrafts.filter((draft) => !draft.published && draft.selected !== false).length;
+      return discoveredDrafts.filter((draft) => !draft.published && !draft.publish_blocked && draft.selected !== false).length;
     }
 
     function updateDraftSelectionUi() {
@@ -1279,6 +1307,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
     }
 
     function importModeLabel(mode) {
+      if (mode === "public_api_catalog") return "Public APIs catalog";
       if (mode === "skill_document") return "Skill document";
       if (mode === "direct_endpoint") return "single endpoint";
       if (mode === "openapi") return "OpenAPI";
@@ -1289,7 +1318,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       const rows = [...draftList.querySelectorAll(".draft-row")];
       for (const row of rows) {
         const index = Number(row.dataset.index);
-        if (discoveredDrafts[index].published) continue;
+        if (discoveredDrafts[index].published || discoveredDrafts[index].publish_blocked) continue;
         discoveredDrafts[index].selected = row.querySelector(".draft-selected").checked;
         discoveredDrafts[index].price = row.querySelector(".draft-price-input").value;
         discoveredDrafts[index].method = row.querySelector(".draft-method-input").value;

@@ -74,6 +74,33 @@ Open the Provider Studio GUI:
 http://127.0.0.1:8787/studio
 ```
 
+### Public API catalog discovery
+
+Provider Studio accepts `https://github.com/public-apis/public-apis` as a discovery source. Its README entries are imported as non-executable `catalog_candidate` cards with category, authentication, HTTPS, CORS, documentation URL, and source provenance.
+
+Catalog candidates are deliberately not selectable for publishing. Choose **Inspect API docs** on a candidate to run its official documentation through the existing OpenAPI/API-doc discovery flow. Only a concrete HTTP endpoint that passes AgentRouter's live validation can become registered and routable; appearing in the public catalog is never treated as provider verification or permission to resell an API.
+
+### Read-only external providers
+
+`external_api_query` routes a common request envelope to public or user-connected data providers. GitHub, GDELT, SEC EDGAR, and Open-Meteo are public sources and do not require an AgentRouter account connection. YouTube Data API, VirusTotal, Google Places, Amadeus, EasyPost, and OpenAlex use owner-scoped credentials configured from the connection manager. Existing Brave, Tavily, Serper, Exa, Firecrawl, and Jina connectors remain available.
+
+All of these connectors are read-only from AgentRouter's perspective. Responses are normalized into source-linked items with timestamps and provider-specific metadata; credentials remain server-side and are never included in the result.
+
+The same capability works through HTTP and remote MCP `agentrouter_request`. For credential-backed sources, the MCP client must send the AgentRouter API key created by the same user who connected the Provider. Public sources remain callable without a user connection. Empty results return `no_results` with diagnostics instead of being presented as a successful evidence hit.
+
+## Multi-user social research
+
+Creator Research is available at `http://127.0.0.1:8787/research`. Signed-in users can connect their own X Bearer Token, Reddit OAuth Access Token, or a device-local browser session. Connections are owner-scoped; API responses never return credentials.
+
+Hosted deployments that store credentials must configure:
+
+```text
+DATABASE_URL=postgres://...
+ADN_PROVIDER_SECRET_PASSPHRASE=<random platform encryption secret>
+```
+
+Use HTTPS in production. For local-browser research, use a dedicated Chrome profile without email, financial, exchange, or wallet accounts. Detailed requirements and security boundaries are in [`docs/PRD_MULTI_USER_SOCIAL_RESEARCH.md`](docs/PRD_MULTI_USER_SOCIAL_RESEARCH.md).
+
 ## Persistent Registry
 
 By default, the MVP uses in-memory registry state plus local provider files. That is fine for local development, but hosted instances can restart and lose runtime files.
@@ -268,6 +295,25 @@ Still TODO for production hardening:
 
 ## Payment Modes
 
+For general users, AgentRouter can run a prepaid platform balance backed by PostgreSQL and Stripe Hosted Checkout:
+
+```bash
+ADN_PAYMENT_BACKEND=credits
+DATABASE_URL=postgresql://...
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+Configure Stripe to send `checkout.session.completed` events to:
+
+```text
+https://your-agentrouter-host/webhooks/stripe/credits
+```
+
+After OAuth login, `/account` lets a user purchase credits and create a client API key. Raw client keys are shown once and only their SHA-256 hashes are stored. Each provider invocation atomically debits the persistent append-only ledger; invalid requests are rejected before charging, and failed provider delivery is automatically refunded. `ADN_CREDITS_ALLOW_MANUAL_TOPUP=true` is only for local tests and must not be enabled on a public deployment.
+
+For localhost-only account testing without GitHub OAuth, set `ADN_AUTH_ALLOW_DEV_LOGIN=true`. The development login is rejected in production, for non-local hostnames, and for non-loopback clients.
+
 The MVP defaults to:
 
 ```bash
@@ -291,6 +337,7 @@ AgentRouter treats payment as an adapter boundary. It is not intended to compete
 Supported backend names:
 
 ```bash
+ADN_PAYMENT_BACKEND=credits
 ADN_PAYMENT_BACKEND=dev
 ADN_PAYMENT_BACKEND=x402
 ADN_PAYMENT_BACKEND=omniagentpay
@@ -342,6 +389,28 @@ npx -y agentrouter doctor
 ```
 
 After install, restart or reload the AI client. For the first paid data request, AgentRouter checks the local payment path first and shows wallet funding instructions if the local Arc wallet needs USDC. The agent should not bypass that prompt with web search or a provider-specific MCP tool.
+
+### Update an existing installation
+
+Existing users can refresh the installed Skill and local MCP bridge with one command:
+
+```bash
+npx -y github:connectwilson/agentrouter-markets#main update
+```
+
+After the npm package is published, the equivalent command is:
+
+```bash
+npx -y agentrouter@latest update
+```
+
+The updater only changes AgentRouter entries that are already installed. It preserves the local wallet, `AGENT_ROUTER_API_KEY`, custom AgentRouter environment settings, unrelated MCP servers, and timestamped backups of changed client config files. Restart or reload the updated AI client, then verify readiness:
+
+```bash
+npx -y github:connectwilson/agentrouter-markets#main doctor
+```
+
+Pass `--client cursor`, `--client claude-desktop`, or `--client all` only when you intentionally want to add or repair that client during the update. See [docs/UPGRADING.md](docs/UPGRADING.md) for Remote MCP, Desktop Extension, pinned-package, and rollback guidance.
 
 For a specific local client:
 

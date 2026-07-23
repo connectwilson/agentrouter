@@ -1,4 +1,4 @@
-export const PAYMENT_BACKENDS = ["x402", "omniagentpay", "circle_arc"];
+export const PAYMENT_BACKENDS = ["credits", "x402", "omniagentpay", "circle_arc"];
 
 export function currentPaymentBackend() {
   const backend = process.env.ADN_PAYMENT_BACKEND || process.env.ADN_PAYMENT_MODE || "circle_arc";
@@ -14,7 +14,9 @@ export function describePaymentBackend() {
     execution_layer: backend,
     real_settlement: true,
     supported_backends: PAYMENT_BACKENDS,
-    notes: backend === "circle_arc"
+    notes: backend === "credits"
+      ? "AgentRouter credits are held in a persistent platform ledger. The provider runtime authenticates a consumer API key and atomically debits each successful call."
+      : backend === "circle_arc"
         ? "Circle Arc mode uses an x402-style HTTP 402 challenge, then verifies a real Arc Testnet USDC transfer to the provider wallet before returning data."
         : "Production backends should execute real payment authorization, settlement, and ledger recording."
   };
@@ -92,6 +94,15 @@ function paidDataJustification(manifest = {}) {
 
 export function effectivePricing(manifest = {}) {
   const pricing = manifest.pricing || {};
+  if (currentPaymentBackend() === "credits") {
+    return {
+      ...pricing,
+      currency: "credits",
+      network: "agentrouter",
+      protocol: "platform_credits",
+      settlement_model: "prepaid_ledger"
+    };
+  }
   if (currentPaymentBackend() !== "circle_arc") return pricing;
   return {
     ...pricing,

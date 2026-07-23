@@ -26,6 +26,42 @@ export function authProviders() {
   }));
 }
 
+export function devLoginAvailable(req, baseUrl) {
+  if (process.env.ADN_AUTH_ALLOW_DEV_LOGIN !== "true" || process.env.NODE_ENV === "production") return false;
+  let hostname = "";
+  try {
+    hostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!["127.0.0.1", "localhost", "::1"].includes(hostname)) return false;
+  const remoteAddress = String(req?.socket?.remoteAddress || "").toLowerCase();
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remoteAddress);
+}
+
+export function createDevSession(store, baseUrl) {
+  const sessionId = randomToken();
+  const user = normalizeUser({
+    provider: "local",
+    id: "local-development-user",
+    name: "Local Developer",
+    email: "developer@localhost",
+    handle: "local-developer"
+  });
+  store.authSessions.set(sessionId, {
+    user,
+    created_at: Date.now(),
+    expires_at: Date.now() + SESSION_TTL_MS
+  });
+  return {
+    user,
+    cookie: serializeCookie(SESSION_COOKIE, sessionId, {
+      maxAge: Math.floor(SESSION_TTL_MS / 1000),
+      secure: isHttps(baseUrl)
+    })
+  };
+}
+
 export function currentUser(req, store) {
   const sessionId = parseCookies(req.headers.cookie || "")[SESSION_COOKIE];
   if (!sessionId) return null;
@@ -47,6 +83,7 @@ export function authUserKey(user) {
 
 export function beginOAuth({ providerId, store, baseUrl, returnTo = "/" }) {
   const provider = configuredProvider(providerId);
+  sweepExpiredOAuthStates(store);
   const state = randomToken();
   const redirectUri = callbackUrl(baseUrl, provider.id);
   store.oauthStates.set(state, {
@@ -108,6 +145,13 @@ export function logout(req, store, baseUrl) {
   const sessionId = parseCookies(req.headers.cookie || "")[SESSION_COOKIE];
   if (sessionId) store.authSessions.delete(sessionId);
   return clearSessionCookie(baseUrl);
+}
+
+function sweepExpiredOAuthStates(store) {
+  const now = Date.now();
+  for (const [state, entry] of store.oauthStates) {
+    if (Number(entry?.expires_at || 0) < now) store.oauthStates.delete(state);
+  }
 }
 
 function configuredProvider(providerId) {
