@@ -33,7 +33,7 @@ If AgentRouter returns `payment_required`, `wallet_needs_funding`, `action_requi
 
 When the user asks a data/API question that fits AgentRouter, or asks to use AgentRouter:
 
-1. If MCP tools are already available, use them directly. This is the fastest and preferred path because the MCP bridge is a long-running local process with the wallet already loaded. Do not open a terminal or run `npx` when these tools exist.
+1. If MCP tools are already available, use them directly. This is the fastest and preferred path because the AgentRouter connection is already established. Do not open a terminal or run `npx` when these tools exist.
    - `agentrouter_fetch`: default path for normal user data questions. Use this once. It accepts either the user's natural-language `task` or a main-agent-parsed `data_requirements` array, then AgentRouter handles discovery, routing, quote, payment, invocation, verification, evidence, and feedback request internally.
    - `agentrouter_request`: advanced path for exactly one structured capability request. Use only when you already know the specific capability and want to bypass natural-language compatibility.
    - `agentrouter_capabilities`: integration/debug only; do not call this as a routine first step for normal data questions.
@@ -185,7 +185,7 @@ Use this guidance only when installation is needed.
 - Claude web / hosted Claude / Managed Agents: add `https://agentrouter.network/mcp` as a Remote MCP connector, then use `agentrouter_fetch`.
 - Claude Desktop / Claude Code MCP: prefer the packaged `.mcpb` when available, or add an MCP server named `AgentRouter` with command `npx`, args `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`, and env `AGENT_ROUTER_URL=https://agentrouter.network`.
 - Claude Desktop no-command path: if an official AgentRouter `.mcpb` release is available to the user, install it through Settings -> Extensions -> Install Extension, then use `agentrouter_fetch`.
-- Cursor / Windsurf / Cline / Continue / VS Code: run the hosted installer, or add an MCP server named `AgentRouter` with command `npx`, args `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`, and env `AGENT_ROUTER_URL=https://agentrouter.network`.
+- Cursor / Windsurf / Cline / Continue / VS Code: add the Remote MCP through the current client's native configuration when supported; otherwise add an MCP server named `AgentRouter` with command `npx`, args `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`, and env `AGENT_ROUTER_URL=https://agentrouter.network`.
 - Cross-client npm path: use the same public bridge configuration.
 - ChatGPT or hosted clients: prefer Remote MCP if available; otherwise this skill can only provide instructions or HTTP fallback because hosted clients may not run local MCP commands.
 - Unknown client: return `CLIENT_NOT_DETECTED`, ask which AI client the user is using, and do not modify any configuration yet.
