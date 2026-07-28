@@ -580,6 +580,42 @@ test("agentrouter one-command installer is HTTP-ready without changing MCP confi
   assert.match(installUsage(), /--wallet/);
 });
 
+test("public agentrouter npm installer contains only bootstrap files and completes HTTP setup", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
+    const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
+    assert.equal(packageJson.name, "agentrouter");
+    assert.equal(packageJson.version, "0.1.0");
+    assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
+    assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
+    assert.deepEqual(packageJson.dependencies || {}, {});
+
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-public-package-"));
+    const skillDir = path.join(home, ".agents", "skills", "agentrouter");
+    const cursorConfig = path.join(home, ".cursor", "mcp.json");
+    const result = await runProcess(process.execPath, [
+      path.join(packageDir, "bin", "agentrouter.js"),
+      "--url",
+      baseUrl,
+      "--json"
+    ], {
+      HOME: home,
+      AGENTROUTER_SKILL_DIRS: skillDir,
+      CURSOR_MCP_CONFIG: cursorConfig
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.runtime_mode, "http");
+    assert.equal(payload.health_url, `${baseUrl}/agent-router/health`);
+    assert.equal(payload.fetch_url, `${baseUrl}/agent-router/fetch`);
+    assert.equal(await fs.access(path.join(skillDir, "SKILL.md")).then(() => true, () => false), true);
+    assert.equal(await fs.access(cursorConfig).then(() => true, () => false), false);
+    assert.equal(await fs.access(path.join(home, ".agentrouter", "adn", "wallet.json")).then(() => true, () => false), false);
+  });
+});
+
 test("agentrouter CLI installer configures local MCP clients only when explicitly requested", async () => {
   assert.equal(DEFAULT_PACKAGE_SPEC, "@agentrouternetwork/mcp@latest");
   const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-install-"));
