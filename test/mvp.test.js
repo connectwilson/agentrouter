@@ -129,8 +129,10 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /curl -fsSL https:\/\/agentrouter\.network\/install\.sh \| bash/);
-    assert.match(homeHtml, /New server tools appear after the AI client reconnects/);
+    assert.match(homeHtml, /Set up https:\/\/agentrouter\.network\/SKILL\.md/);
+    assert.match(homeHtml, /Give this to your AI agent/);
+    assert.match(homeHtml, /Installs only AgentRouter for the current AI client/);
+    assert.doesNotMatch(homeHtml, /curl -fsSL https:\/\/agentrouter\.network\/install\.sh \| bash/);
     assert.doesNotMatch(homeHtml, /Remote MCP/);
     assert.doesNotMatch(homeHtml, /Local MCP/);
 
@@ -204,12 +206,17 @@ test("AgentRouter origin document is available from well-known and fallback path
 
 test("AgentRouter skill can be installed without cloning GitHub", async () => {
   await withServer(async ({ baseUrl }) => {
-    const skill = await fetch(`${baseUrl}/skills/AgentRouter/SKILL.md`);
-    assert.equal(skill.status, 200);
-    assert.match(skill.headers.get("content-type"), /text\/markdown/);
-    const skillText = await skill.text();
+    const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
+    assert.equal(canonicalSkill.status, 200);
+    assert.match(canonicalSkill.headers.get("content-type"), /text\/markdown/);
+    const skillText = await canonicalSkill.text();
     assert.match(skillText, /name: AgentRouter/);
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
+    assert.match(skillText, /Set up https:\/\/agentrouter\.network\/SKILL\.md/);
+    assert.match(skillText, /explicit authorization/i);
+    assert.match(skillText, /only the current AI client/i);
+    assert.match(skillText, /initialize.*tools\/list/is);
+    assert.match(skillText, /Do not create or configure a local wallet/i);
     assert.match(skillText, /Agent Data Routing/);
     assert.match(skillText, /Payment Gate/);
     assert.match(skillText, /Do not require the user to mention AgentRouter/);
@@ -220,21 +227,23 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /fund_local_agentrouter_wallet/);
     assert.match(skillText, /Do not continue with web search/);
 
+    const legacySkill = await fetch(`${baseUrl}/skills/AgentRouter/SKILL.md`);
+    assert.equal(legacySkill.status, 200);
+    assert.equal(await legacySkill.text(), skillText);
+
     const installScript = await fetch(`${baseUrl}/install.sh`);
     assert.equal(installScript.status, 200);
     assert.match(installScript.headers.get("content-type"), /text\/x-shellscript/);
     const scriptText = await installScript.text();
-    assert.match(scriptText, /SKILL_URL="\$\{AGENT_ROUTER_URL%\/\}\/skills\/AgentRouter\/SKILL.md"/);
+    assert.match(scriptText, /SKILL_URL="\$\{AGENT_ROUTER_URL%\/\}\/SKILL.md"/);
     assert.match(scriptText, /\$HOME\/\.agents\/skills\/agentrouter/);
     assert.match(scriptText, /claude_desktop_config\.json/);
     assert.match(scriptText, /config\.mcpServers\.AgentRouter/);
     assert.match(scriptText, /CURSOR_MCP_CONFIG/);
-    assert.match(scriptText, /ADN_PAYMENT_BACKEND: "circle_arc"/);
-    assert.match(scriptText, /ADN_DIR: process\.env\.AGENTROUTER_ADN_DIR/);
     assert.match(scriptText, /@agentrouternetwork\/mcp@latest/);
+    assert.doesNotMatch(scriptText, /ADN_|AGENT_ROUTER_MAX_PRICE|wallet/i);
     assert.doesNotMatch(scriptText, /agentrouter-markets/);
     assert.doesNotMatch(scriptText, /wallet create-session/);
-    assert.match(scriptText, /Existing wallet files were not changed/);
     assert.match(scriptText, /No desktop MCP config was changed/);
     assert.match(scriptText, /AGENTROUTER_CONFIGURE_CLAUDE_DESKTOP=1/);
     assert.match(scriptText, /AGENTROUTER_CONFIGURE_CURSOR=1/);
@@ -255,7 +264,7 @@ test("AgentRouter exposes a repository-independent remote update channel", async
     assert.equal(manifest.mcp.package, "@agentrouternetwork/mcp");
     assert.equal(manifest.mcp.spec, "@agentrouternetwork/mcp@latest");
     assert.equal(manifest.remote_mcp_url, `${baseUrl}/mcp`);
-    assert.equal(manifest.skill_url, `${baseUrl}/skills/AgentRouter/SKILL.md`);
+    assert.equal(manifest.skill_url, `${baseUrl}/SKILL.md`);
     assert.equal(manifest.update_script_url, `${baseUrl}/update.sh`);
     assert.equal(manifest.repository_access_required, false);
 
