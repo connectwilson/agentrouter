@@ -206,16 +206,30 @@ test("AgentRouter origin document is available from well-known and fallback path
 
 test("AgentRouter skill can be installed without cloning GitHub", async () => {
   await withServer(async ({ baseUrl }) => {
+    const homeResponse = await fetch(baseUrl);
+    assert.equal(homeResponse.status, 200);
+    const homeHtml = await homeResponse.text();
+    assert.match(
+      homeHtml,
+      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter -g -y/
+    );
+
     const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
     assert.equal(canonicalSkill.status, 200);
     assert.match(canonicalSkill.headers.get("content-type"), /text\/markdown/);
     const skillText = await canonicalSkill.text();
     assert.match(skillText, /name: AgentRouter/);
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
-    assert.match(skillText, /Set up https:\/\/agentrouter\.network\/SKILL\.md/);
+    assert.match(
+      skillText,
+      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter -g -y/
+    );
     assert.match(skillText, /explicit authorization/i);
     assert.match(skillText, /only the current AI client/i);
     assert.match(skillText, /initialize.*tools\/list/is);
+    assert.match(skillText, /MCP is an optional enhancement/i);
+    assert.match(skillText, /AgentRouter READY \(HTTP mode\)/);
+    assert.match(skillText, /do not try to edit a protected host configuration/i);
     assert.match(skillText, /Do not create or configure a local wallet/i);
     assert.match(skillText, /Agent Data Routing/);
     assert.match(skillText, /Payment Gate/);
@@ -226,6 +240,13 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /mcp__market-data__\*/);
     assert.match(skillText, /fund_local_agentrouter_wallet/);
     assert.match(skillText, /Do not continue with web search/);
+
+    const healthResponse = await fetch(`${baseUrl}/agent-router/health`);
+    assert.equal(healthResponse.status, 200);
+    const health = await healthResponse.json();
+    assert.equal(health.ok, true);
+    assert.deepEqual(health.runtime_modes, ["http", "remote_mcp"]);
+    assert.equal(health.http_fetch, `${baseUrl}/agent-router/fetch`);
 
     const legacySkill = await fetch(`${baseUrl}/skills/AgentRouter/SKILL.md`);
     assert.equal(legacySkill.status, 200);
