@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # AgentRouter
@@ -41,7 +41,7 @@ When the user asks a data/API question that fits AgentRouter, or asks to use Age
    - `agentrouter_quote_feedback`: submit this if you receive a quote but choose not to invoke AgentRouter, with the reason such as free source used, price too high, wallet empty, low confidence, or user declined.
    - `agentrouter_ask`: compatibility alias for natural-language fetch; prefer `agentrouter_fetch`.
    - `agentrouter_feedback`: submit post-call consumer feedback after you have judged whether the AgentRouter result answered the user's request. This is part of the default successful-call flow, not something the user should have to ask for.
-2. If MCP tools are not available, follow Agent-Native Setup below. Do not fetch or execute the private AgentRouter source repository, and do not assume that shell access is required.
+2. If MCP tools are not available, use the hosted HTTP runtime below. MCP is an optional enhancement, not a prerequisite for using an installed AgentRouter Skill. Do not fetch or execute the private AgentRouter source repository.
 
 Generic hosted fallback for a user who has an AgentRouter prepaid-credit API key:
 
@@ -121,38 +121,39 @@ Do not create temporary files, run `cat`, `jq`, or start Python just to parse a 
 
 ## Agent-Native Setup
 
-The canonical setup request is:
+The canonical persistent installation command is:
 
-```text
-Set up https://agentrouter.network/SKILL.md
+```bash
+npx skills add connectwilson/agentrouter-skill --skill AgentRouter -g -y
 ```
 
-When the user sends that request, it is explicit authorization to add only AgentRouter to only the current AI client. Do not ask the user to switch to a terminal or repeat the same confirmation. This authorization does not permit changing unrelated MCP servers, installing into other detected clients, creating credentials, or changing wallet/payment settings. If the host application itself displays a mandatory approval dialog, let the user approve that native dialog.
+The user may run this command in a terminal or give it directly to a shell-capable AI agent. When the user asks the agent to run it, that is explicit authorization to install only the AgentRouter Skill for only the current AI client and current user. Do not ask the user to switch to a separate terminal or repeat the same confirmation. This authorization does not permit changing MCP configuration, unrelated tools, credentials, or wallet/payment settings. If the host application itself displays a mandatory approval dialog, let the user approve that native dialog.
 
 Setup flow:
 
-1. Check whether `agentrouter_fetch` is already available. If yes, AgentRouter is ready; do not reinstall it.
-2. Detect the current AI client from the active runtime. Configure only the current AI client. Do not scan for and modify every installed client.
-3. Prefer the native Remote MCP transport and add one server named `AgentRouter` with URL `https://agentrouter.network/mcp`.
-4. If the current client cannot use Remote MCP but supports local stdio MCP, add one server named `AgentRouter` with:
+1. Check whether this Skill is already installed. If it is, do not reinstall it.
+2. If installation was requested and the host permits shell commands, run the canonical Skills CLI command above. The command provides persistence across supported AI clients without editing their protected MCP configuration.
+3. Verify the hosted runtime with `GET https://agentrouter.network/agent-router/health`. When it returns `ok: true`, report exactly `AgentRouter READY (HTTP mode)`. This is a successful installation.
+4. MCP is an optional enhancement. If `agentrouter_fetch` is already present, report `AgentRouter READY (MCP mode)`. Otherwise, only when the current host exposes a native MCP management API, offer to add one server named `AgentRouter` with URL `https://agentrouter.network/mcp`.
+5. If Remote MCP is unavailable but the current host exposes a native local-MCP management API, the optional bridge is:
    - command: `npx`
    - args: `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`
    - env: `{ "AGENT_ROUTER_URL": "https://agentrouter.network" }`
-5. Preserve every unrelated setting. When direct file editing is required, create a backup and merge only the `AgentRouter` entry.
-6. Do not create or configure a local wallet. Do not add Arc RPC, payment-backend, wallet-directory, or default-spend settings. Paid hosted calls use an optional `AGENT_ROUTER_API_KEY` created separately by the user; never ask the user to paste it into chat.
-7. Verify the connection by completing MCP `initialize` and then `tools/list`. Installation is successful only when the tool list includes `agentrouter_fetch`.
-8. If the client cannot hot-reload MCP configuration, report that setup is complete and ask for one client reload. Do not rerun installation after the reload.
+6. Never attempt to bypass host safeguards. If the MCP CLI is missing, the MCP management API is unavailable, or the host protects its own configuration, do not try to edit a protected host configuration and do not ask the user to run a second command. Keep the verified HTTP mode and report MCP as an optional unavailable enhancement.
+7. Preserve every unrelated setting. Do not create or configure a local wallet. Do not add Arc RPC, payment-backend, wallet-directory, or default-spend settings. Paid hosted calls use an optional `AGENT_ROUTER_API_KEY` created separately by the user; never ask the user to paste it into chat.
+8. When an optional MCP connection is added, verify it by completing MCP `initialize` and then `tools/list`. MCP mode is ready when the tool list includes `agentrouter_fetch`. If the client cannot hot-reload, ask for one client reload without rerunning installation.
 
-If the current client cannot be identified, stop with `CLIENT_NOT_DETECTED` and ask for the client name. Do not modify multiple client configurations as a fallback.
+If the current client cannot be identified, HTTP mode remains valid. Do not modify multiple client configurations as a fallback.
 
 ## Bootstrap Flow
 
 When the user asks to install AgentRouter or provides the canonical setup URL:
 
 1. Follow Agent-Native Setup above.
-2. Use client-native MCP management commands or configuration APIs when available.
-3. Use the public npm bridge only when Remote MCP is unavailable.
-4. Treat the hosted Shell installer as a manual compatibility fallback, not the default Agent setup path.
+2. Treat Skill installation plus a successful HTTP health check as complete.
+3. Use client-native MCP management commands or configuration APIs only as an optional enhancement.
+4. Use the public npm bridge only when the user explicitly wants MCP and Remote MCP is unavailable.
+5. Treat the hosted Shell installer as a manual compatibility fallback, not the default Agent setup path.
 
 Manual compatibility fallback:
 
@@ -180,15 +181,11 @@ AGENT_ROUTER_URL=http://127.0.0.1:8800
 
 Use this guidance only when installation is needed.
 
-- Claude Code: add the Remote MCP using the client's native MCP management surface. Use the public bridge only when Remote MCP is unavailable.
-- Codex / OpenClaw / Hermes / Cursor / Windsurf: prefer their native Remote MCP configuration for the current client.
-- Claude web / hosted Claude / Managed Agents: add `https://agentrouter.network/mcp` as a Remote MCP connector, then use `agentrouter_fetch`.
-- Claude Desktop / Claude Code MCP: prefer the packaged `.mcpb` when available, or add an MCP server named `AgentRouter` with command `npx`, args `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`, and env `AGENT_ROUTER_URL=https://agentrouter.network`.
-- Claude Desktop no-command path: if an official AgentRouter `.mcpb` release is available to the user, install it through Settings -> Extensions -> Install Extension, then use `agentrouter_fetch`.
-- Cursor / Windsurf / Cline / Continue / VS Code: add the Remote MCP through the current client's native configuration when supported; otherwise add an MCP server named `AgentRouter` with command `npx`, args `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`, and env `AGENT_ROUTER_URL=https://agentrouter.network`.
-- Cross-client npm path: use the same public bridge configuration.
-- ChatGPT or hosted clients: prefer Remote MCP if available; otherwise this skill can only provide instructions or HTTP fallback because hosted clients may not run local MCP commands.
-- Unknown client: return `CLIENT_NOT_DETECTED`, ask which AI client the user is using, and do not modify any configuration yet.
+- Claude Code, Codex, OpenClaw, Hermes, Cursor, Windsurf, Cline, Continue, and VS Code: install the Skill with the canonical command and validate HTTP mode. Do not edit the client's MCP configuration unless the user separately asks for the optional MCP enhancement.
+- Claude web / hosted Claude / Managed Agents: HTTP mode remains valid when the host can make web requests. If the product exposes a connector UI, the user may optionally add `https://agentrouter.network/mcp`.
+- Claude Desktop: install the Skill where supported and validate HTTP mode. A packaged `.mcpb` is an optional MCP enhancement.
+- Cross-client optional MCP bridge: use `@agentrouternetwork/mcp@latest` only after the user explicitly requests MCP.
+- Unknown client: validate HTTP mode and report ready. Client identification is needed only for an explicitly requested MCP enhancement.
 
 ## Expected Responses
 
@@ -211,7 +208,7 @@ If the response is `no_service_found`, `needs_clarification`, or `quote_blocked`
 
 - Do not hard-code one provider or one query.
 - Do not claim data exists unless AgentRouter returns it.
-- Do not install or modify local tools without an explicit setup request. The canonical `Set up https://agentrouter.network/SKILL.md` request is that confirmation for the scoped Agent-Native Setup flow.
+- Do not install or modify local tools without an explicit setup request. Asking the agent to run the canonical Skills CLI command is confirmation only for installing the AgentRouter Skill.
 - Prefer MCP tools over raw HTTP when both are available.
 - For Arc payments, do not use HTTP fallback to bypass local-wallet balance checks.
 - When AgentRouter says the wallet needs funding, present the recharge/funding instruction and stop; never use cached, previously returned, web-search, validation-sample, or provider-direct MCP data as the answer.

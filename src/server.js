@@ -233,6 +233,8 @@ async function routeRequest(req, res, store, baseUrl, {
       ok: true,
       service: "agent-router",
       origin: baseUrl,
+      runtime_modes: ["http", "remote_mcp"],
+      http_fetch: `${baseUrl}/agent-router/fetch`,
       well_known: `${baseUrl}/.well-known/agentrouter.json`,
       remote_mcp: `${baseUrl}/mcp`
     });
