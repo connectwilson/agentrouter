@@ -124,7 +124,7 @@ Do not create temporary files, run `cat`, `jq`, or start Python just to parse a 
 The canonical persistent installation command is:
 
 ```bash
-npx skills add connectwilson/agentrouter-skill --skill AgentRouter -g -y
+npx skills add connectwilson/agentrouter-skill --skill AgentRouter
 ```
 
 The user may run this command in a terminal or give it directly to a shell-capable AI agent. When the user asks the agent to run it, that is explicit authorization to install only the AgentRouter Skill for only the current AI client and current user. Do not ask the user to switch to a separate terminal or repeat the same confirmation. This authorization does not permit changing MCP configuration, unrelated tools, credentials, or wallet/payment settings. If the host application itself displays a mandatory approval dialog, let the user approve that native dialog.
