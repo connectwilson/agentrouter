@@ -129,7 +129,8 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter -g -y/);
+    assert.match(homeHtml, /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter/);
+    assert.doesNotMatch(homeHtml, /--skill AgentRouter -g -y/);
     assert.match(homeHtml, /Give this to your AI agent/);
     assert.match(homeHtml, /Installs the AgentRouter Skill once/);
     assert.doesNotMatch(homeHtml, /curl -fsSL https:\/\/agentrouter\.network\/install\.sh \| bash/);
@@ -211,7 +212,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     const homeHtml = await homeResponse.text();
     assert.match(
       homeHtml,
-      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter -g -y/
+      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter/
     );
 
     const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
@@ -222,8 +223,9 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
     assert.match(
       skillText,
-      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter -g -y/
+      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter/
     );
+    assert.doesNotMatch(skillText, /--skill AgentRouter -g -y/);
     assert.match(skillText, /explicit authorization/i);
     assert.match(skillText, /only the current AI client/i);
     assert.match(skillText, /initialize.*tools\/list/is);
