@@ -36,7 +36,7 @@ const { verifyServiceResult } = await import("../src/verifier.js");
 const { keccak256Hex } = await import("../src/keccak.js");
 const { currentPaymentBackend } = await import("../src/payment-adapter.js");
 const { invokePaidServiceWithLocalWallet } = await import("../src/local-invoke.js");
-const { DEFAULT_PACKAGE_SPEC, diagnoseAgentRouter, formatDoctorResult, formatInstallResult, installAgentRouter, parseInstallArgs } = await import("../src/agentrouter-installer.js");
+const { DEFAULT_PACKAGE_SPEC, diagnoseAgentRouter, formatDoctorResult, formatInstallResult, installAgentRouter, installUsage, parseInstallArgs } = await import("../src/agentrouter-installer.js");
 const { buildServiceAwareInput, inferIntent } = await import("../src/agent-router.js");
 
 test.after(async () => {
@@ -129,7 +129,7 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter/);
+    assert.match(homeHtml, /npx agentrouter/);
     assert.doesNotMatch(homeHtml, /--skill AgentRouter -g -y/);
     assert.match(homeHtml, /Give this to your AI agent/);
     assert.match(homeHtml, /Installs the AgentRouter Skill once/);
@@ -212,7 +212,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     const homeHtml = await homeResponse.text();
     assert.match(
       homeHtml,
-      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter/
+      /npx agentrouter/
     );
 
     const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
@@ -223,7 +223,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
     assert.match(
       skillText,
-      /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter/
+      /npx agentrouter/
     );
     assert.doesNotMatch(skillText, /--skill AgentRouter -g -y/);
     assert.match(skillText, /explicit authorization/i);
@@ -525,7 +525,62 @@ test("wallet default path is stable outside temporary working directories", asyn
   assert.equal(stdout.trim(), path.join(env.HOME, ".agentrouter", "adn", "wallet.json"));
 });
 
-test("agentrouter CLI installer installs skill and configures local MCP clients", async () => {
+test("agentrouter one-command installer is HTTP-ready without changing MCP config or creating a wallet", async () => {
+  const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-http-install-"));
+  const cursorConfig = path.join(home, ".cursor", "mcp.json");
+  const originalConfig = {
+    mcpServers: {
+      OtherTool: { command: "other-tool", args: ["serve"] }
+    }
+  };
+  await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+  await fs.writeFile(cursorConfig, JSON.stringify(originalConfig, null, 2));
+
+  const previousFetch = globalThis.fetch;
+  const requestedUrls = [];
+  try {
+    globalThis.fetch = async (url) => {
+      requestedUrls.push(String(url));
+      return new Response(JSON.stringify({
+        ok: true,
+        runtime_modes: ["http", "remote_mcp"],
+        http_fetch: "https://agentrouter.network/agent-router/fetch"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    const result = await installAgentRouter({
+      home,
+      cursorConfig,
+      skillText: "---\nname: AgentRouter\n---\n# AgentRouter\n"
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.readiness.status, "READY");
+    assert.equal(result.readiness.runtime_mode, "http");
+    assert.deepEqual(result.configured_clients, []);
+    assert.equal(result.wallet, null);
+    assert.deepEqual(JSON.parse(await fs.readFile(cursorConfig, "utf8")), originalConfig);
+    assert.equal(await fs.access(path.join(home, ".agentrouter", "adn", "wallet.json")).then(() => true, () => false), false);
+    assert.deepEqual(requestedUrls, ["https://agentrouter.network/agent-router/health"]);
+    assert.match(formatInstallResult(result), /AgentRouter installed\. READY \(HTTP mode\)/);
+    assert.doesNotMatch(formatInstallResult(result), /Rerun|wallet|MCP configured/i);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+
+  assert.deepEqual(parseInstallArgs([]), { clients: [] });
+  assert.deepEqual(parseInstallArgs(["--mcp", "--wallet"]), {
+    clients: ["auto"],
+    createWallet: true
+  });
+  assert.match(installUsage(), /npx agentrouter/);
+  assert.match(installUsage(), /--mcp/);
+  assert.match(installUsage(), /--wallet/);
+});
+
+test("agentrouter CLI installer configures local MCP clients only when explicitly requested", async () => {
   assert.equal(DEFAULT_PACKAGE_SPEC, "@agentrouternetwork/mcp@latest");
   const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-install-"));
   const cursorDir = path.join(home, ".cursor");
@@ -539,6 +594,7 @@ test("agentrouter CLI installer installs skill and configures local MCP clients"
     cursorConfig,
     skillText: "---\nname: AgentRouter\n---\n# AgentRouter\n",
     createWallet: false,
+    requireConfiguredClient: true,
     skipNetworkCheck: true
   });
 
