@@ -27,7 +27,7 @@ export async function installAgentRouter(options = {}) {
   const packageSpec = options.packageSpec || process.env.AGENTROUTER_MCP_PACKAGE || DEFAULT_PACKAGE_SPEC;
   const adnDir = path.resolve(options.adnDir || process.env.AGENTROUTER_ADN_DIR || installedSettings.ADN_DIR || path.join(home, ".agentrouter", "adn"));
   const requestedClients = options.clients?.length ? options.clients : parseClients(process.env.AGENTROUTER_CLIENT);
-  const clients = normalizeClients(requestedClients || [update ? "installed" : "all"]);
+  const clients = normalizeClients(requestedClients || (update ? ["installed"] : []));
   const updateEnvOverrides = new Set([
     options.agentRouterUrl || process.env.AGENT_ROUTER_URL ? "AGENT_ROUTER_URL" : "",
     options.maxPrice || process.env.AGENT_ROUTER_MAX_PRICE ? "AGENT_ROUTER_MAX_PRICE" : "",
@@ -76,7 +76,7 @@ export async function installAgentRouter(options = {}) {
     result.skipped_clients.push({ name: "Cursor", reason: "config directory not found" });
   }
 
-  const shouldCreateWallet = options.createWallet === undefined ? !update : options.createWallet !== false;
+  const shouldCreateWallet = options.createWallet === true;
   if (shouldCreateWallet) {
     result.wallet = await createLocalWallet({ adnDir, cwd: options.cwd || repoRoot });
   }
@@ -87,19 +87,21 @@ export async function installAgentRouter(options = {}) {
     adnDir,
     claudeConfig,
     cursorConfig,
-    requireConfiguredClient: options.requireConfiguredClient !== false,
+    requireConfiguredClient: options.requireConfiguredClient === true,
+    includeOptionalChecks: clients.size > 0 || shouldCreateWallet,
     skipNetwork: options.skipNetworkCheck === true
   });
   result.ok = result.readiness.ready;
 
-  if (result.configured_clients.length) result.next_steps.push("Restart or reload the configured AI client to activate AgentRouter MCP tools.");
-  else result.next_steps.push("No desktop MCP config was changed. Rerun with --client cursor, --client claude-desktop, or --client all to force a client config.");
+  if (result.configured_clients.length) {
+    result.next_steps.push("Optional MCP configured. Restart or reload that AI client to activate AgentRouter MCP tools.");
+  } else {
+    result.next_steps.push("AgentRouter is ready in HTTP mode. No additional configuration is required.");
+  }
   if (update) {
     result.next_steps.push("Existing wallet files, API keys, and custom AgentRouter environment settings were preserved.");
   } else if (result.wallet?.address) {
     result.next_steps.push(`Fund ${result.wallet.address} with Arc Testnet USDC before the first paid data call.`);
-  } else {
-    result.next_steps.push("After MCP starts, call agentrouter_wallet_status to see the funding address.");
   }
   result.next_steps.push("Then ask a normal data/API question; AgentRouter is available as the routing tool.");
 
@@ -109,7 +111,9 @@ export async function installAgentRouter(options = {}) {
 export function formatInstallResult(result) {
   const lines = [];
   const action = result.action === "update" ? "updated" : "installed";
-  lines.push(result.ok ? `AgentRouter ${action}. READY` : `AgentRouter ${action}. NOT_READY`);
+  lines.push(result.ok
+    ? `AgentRouter ${action}. READY (${result.readiness?.runtime_mode === "http" ? "HTTP mode" : "runtime ready"})`
+    : `AgentRouter ${action}. NOT_READY`);
   if (result.skill_paths?.length) {
     lines.push(`Skill ${action}: ${result.skill_paths.join(", ")}`);
   }
@@ -174,6 +178,10 @@ export function parseInstallArgs(argv) {
       options.skillUrl = requireValue(args[++i], "--skill-url");
     } else if (arg.startsWith("--skill-url=")) {
       options.skillUrl = arg.slice("--skill-url=".length);
+    } else if (arg === "--mcp") {
+      if (!options.clients.length) options.clients.push("auto");
+    } else if (arg === "--wallet") {
+      options.createWallet = true;
     } else if (arg === "--no-wallet") {
       options.createWallet = false;
     } else if (arg === "--no-skill") {
@@ -193,28 +201,31 @@ export function parseInstallArgs(argv) {
 
 export function installUsage() {
   return `Usage:
-  agentrouter
+  npx agentrouter
   agentrouter install
   agentrouter update
   agentrouter doctor
+  agentrouter --mcp
+  agentrouter --mcp --wallet
   agentrouter install --client cursor
   agentrouter install --client claude-desktop
   agentrouter install --client all
-  agentrouter install --client auto
 
-Update behavior:
-  Refreshes the installed Skill and MCP package command for existing clients.
-  Preserves wallet files, API keys, custom environment settings, and other MCP servers.
-  Restart or reload the updated AI client after the command reports READY.
+Default behavior:
+  Installs the AgentRouter Skill and verifies the hosted HTTP runtime.
+  Does not modify MCP configuration, create a wallet, or require a second command.
 
 Options:
   --url <url>        AgentRouter server URL. Default: https://agentrouter.network
   --max-price <n>   Default max price per data call in USDC. Default: 0.05
   --adn-dir <path>  Local AgentRouter wallet/payment directory.
+  --mcp             Optionally configure detected local MCP clients.
+  --wallet          Optionally create a local payment wallet.
+  --client <name>   Configure one MCP client: cursor, claude-desktop, or all.
   --json            Print machine-readable JSON.
   --no-network-check  Skip remote health check.
-  --no-wallet       Install skill/config only.
-  --no-skill        Configure MCP/wallet only.
+  --no-wallet       Compatibility flag; wallet creation is already off by default.
+  --no-skill        Configure only explicitly requested optional components.
 `;
 }
 
@@ -228,14 +239,18 @@ export async function diagnoseAgentRouter(options = {}) {
   const checks = [];
 
   checks.push(await checkAnySkillInstalled(skillDirs));
-  checks.push(await checkWallet(adnDir));
-  const claude = await checkMcpConfig("Claude Desktop", claudeConfig, { agentRouterUrl, adnDir });
-  const cursor = await checkMcpConfig("Cursor", cursorConfig, { agentRouterUrl, adnDir });
-  checks.push(claude, cursor);
+  let claude = null;
+  let cursor = null;
+  if (options.includeOptionalChecks !== false) {
+    checks.push(await checkWallet(adnDir));
+    claude = await checkMcpConfig("Claude Desktop", claudeConfig, { agentRouterUrl, adnDir });
+    cursor = await checkMcpConfig("Cursor", cursorConfig, { agentRouterUrl, adnDir });
+    checks.push(claude, cursor);
+  }
   if (options.skipNetwork !== true) checks.push(await checkRemoteHealth(agentRouterUrl));
 
-  const hasClient = claude.ok || cursor.ok;
-  if (options.requireConfiguredClient !== false) {
+  const hasClient = Boolean(claude?.ok || cursor?.ok);
+  if (options.requireConfiguredClient === true) {
     checks.push({
       name: "client_config",
       ok: hasClient,
@@ -248,12 +263,13 @@ export async function diagnoseAgentRouter(options = {}) {
     ok: ready,
     ready,
     status: ready ? "READY" : "NOT_READY",
+    runtime_mode: ready ? "http" : null,
     agent_router_url: agentRouterUrl,
     checks,
-    repair_command: "curl -fsSL https://agentrouter.network/update.sh | bash",
+    repair_command: "npx agentrouter",
     next_step: ready
-      ? "Restart or reload the configured AI client, then ask a normal data/API question."
-      : "Run the repair command, restart or reload the AI client, then run agentrouter doctor again."
+      ? "AgentRouter is ready in HTTP mode. Ask a normal data/API question."
+      : "Run the repair command, then run agentrouter doctor again."
   };
 }
 
@@ -303,6 +319,7 @@ async function checkWallet(adnDir) {
   if (!await fileExists(walletPath)) {
     return {
       name: "wallet",
+      required: false,
       ok: false,
       message: `Local payment wallet is missing at ${walletPath}.`,
       wallet_path: walletPath
@@ -312,6 +329,7 @@ async function checkWallet(adnDir) {
     const wallet = JSON.parse(await fs.readFile(walletPath, "utf8"));
     return {
       name: "wallet",
+      required: false,
       ok: Boolean(wallet.address && await fileExists(sessionPath)),
       message: wallet.address && await fileExists(sessionPath)
         ? `Local payment wallet is ready: ${wallet.address}`
@@ -322,6 +340,7 @@ async function checkWallet(adnDir) {
   } catch (error) {
     return {
       name: "wallet",
+      required: false,
       ok: false,
       message: `Local payment wallet is unreadable: ${error.message}`,
       wallet_path: walletPath
@@ -371,14 +390,18 @@ async function checkMcpConfig(clientName, configPath, { agentRouterUrl, adnDir }
 
 async function checkRemoteHealth(agentRouterUrl) {
   try {
-    const response = await fetch(`${agentRouterUrl}/health`, { signal: AbortSignal.timeout(8000) });
+    const response = await fetch(`${agentRouterUrl}/agent-router/health`, { signal: AbortSignal.timeout(8000) });
     let payload = {};
     try {
       payload = await response.json();
     } catch {
       // Health endpoint should be JSON, but the HTTP status is still useful.
     }
-    const ok = response.ok && payload.ok !== false;
+    const ok = response.ok &&
+      payload.ok === true &&
+      Array.isArray(payload.runtime_modes) &&
+      payload.runtime_modes.includes("http") &&
+      typeof payload.http_fetch === "string";
     return {
       name: "remote_health",
       ok,
@@ -424,7 +447,8 @@ async function shouldConfigureClient({ client, clients, configPath, forceEnv }) 
   if (forceEnv === "0" || forceEnv === "false") return false;
   if (clients.has("installed")) return hasAgentRouterConfig(configPath);
   if (clients.has("all") || clients.has(client)) return true;
-  return directoryExists(path.dirname(configPath));
+  if (clients.has("auto")) return directoryExists(path.dirname(configPath));
+  return false;
 }
 
 async function writeMcpConfig(configPath, serverConfig, { preserveAgentRouterSettings = false, overrideEnvKeys = new Set() } = {}) {
