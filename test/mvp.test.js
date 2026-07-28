@@ -129,9 +129,9 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /Set up https:\/\/agentrouter\.network\/SKILL\.md/);
+    assert.match(homeHtml, /npx skills add connectwilson\/agentrouter-skill --skill AgentRouter -g -y/);
     assert.match(homeHtml, /Give this to your AI agent/);
-    assert.match(homeHtml, /Installs only AgentRouter for the current AI client/);
+    assert.match(homeHtml, /Installs the AgentRouter Skill once/);
     assert.doesNotMatch(homeHtml, /curl -fsSL https:\/\/agentrouter\.network\/install\.sh \| bash/);
     assert.doesNotMatch(homeHtml, /Remote MCP/);
     assert.doesNotMatch(homeHtml, /Local MCP/);
