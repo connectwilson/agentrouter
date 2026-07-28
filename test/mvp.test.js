@@ -598,23 +598,21 @@ test("agentrouter CLI installer configures local MCP clients only when explicitl
     skipNetworkCheck: true
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.readiness.status, "NOT_READY");
-  assert.equal(result.configured_clients.length, 2);
-  assert.deepEqual(result.configured_clients.map((client) => client.name).sort(), ["Claude Desktop", "Cursor"]);
+  assert.equal(result.ok, true);
+  assert.equal(result.readiness.status, "READY");
+  assert.equal(result.configured_clients.length, 1);
+  assert.deepEqual(result.configured_clients.map((client) => client.name), ["Claude Desktop"]);
   assert.equal(await fs.readFile(path.join(home, ".agents", "skills", "agentrouter", "SKILL.md"), "utf8"), "---\nname: AgentRouter\n---\n# AgentRouter\n");
 
   const claudeJson = JSON.parse(await fs.readFile(claudeConfig, "utf8"));
-  const cursorJson = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
-  for (const config of [claudeJson, cursorJson]) {
-    assert.equal(config.mcpServers.AgentRouter.command, "npx");
-    assert.deepEqual(config.mcpServers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
-    assert.equal(config.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, "https://agentrouter.network");
-    assert.equal(config.mcpServers.AgentRouter.env.ADN_PAYMENT_BACKEND, "circle_arc");
-    assert.match(config.mcpServers.AgentRouter.env.ADN_DIR, /\.agentrouter\/adn$/);
-  }
+  assert.equal(claudeJson.mcpServers.AgentRouter.command, "npx");
+  assert.deepEqual(claudeJson.mcpServers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
+  assert.equal(claudeJson.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, "https://agentrouter.network");
+  assert.equal(claudeJson.mcpServers.AgentRouter.env.ADN_PAYMENT_BACKEND, "circle_arc");
+  assert.match(claudeJson.mcpServers.AgentRouter.env.ADN_DIR, /\.agentrouter\/adn$/);
+  assert.equal(await fs.access(cursorConfig).then(() => true, () => false), false);
 
-  assert.match(formatInstallResult(result), /AgentRouter installed\. NOT_READY/);
+  assert.match(formatInstallResult(result), /AgentRouter installed\. READY/);
   assert.deepEqual(parseInstallArgs(["install", "--client", "cursor", "--no-wallet"]), {
     clients: ["cursor"],
     createWallet: false
@@ -705,6 +703,7 @@ test("agentrouter doctor reports readiness when skill wallet and MCP config are 
   const result = await installAgentRouter({
     home,
     clients: ["cursor"],
+    createWallet: true,
     adnDir,
     cursorConfig,
     skillText: "---\nname: AgentRouter\n---\n# AgentRouter\n",
