@@ -370,13 +370,15 @@ OAuth is for user identity only. Provider-owned API credentials still belong in 
 
 ## Skill Install
 
-The default AI-agent entrypoint is the hosted AgentRouter installer. It installs the Skill and configures supported local MCP clients to use the public MCP bridge:
+The default installation path is agent-native. Give this one line to the AI agent that should use AgentRouter:
 
-```bash
-curl -fsSL https://agentrouter.network/install.sh | bash
+```text
+Set up https://agentrouter.network/SKILL.md
 ```
 
-After install, restart or reload the AI client. Create an AgentRouter API key from `/account` for paid hosted calls. The key stays in the local MCP configuration and the bridge forwards it only to the configured AgentRouter origin.
+That request authorizes the agent to add only AgentRouter to its current client. The Skill tells it to prefer the hosted Remote MCP, preserve unrelated configuration, avoid wallet/payment setup, and verify `initialize` plus `tools/list`. If the client cannot hot-reload MCP configuration, reload it once after setup.
+
+Create an AgentRouter API key from `/account` only when paid hosted calls are needed. The key stays in the local MCP configuration and the bridge forwards it only to the configured AgentRouter origin.
 
 ### Update an existing installation
 
@@ -388,18 +390,16 @@ curl -fsSL https://agentrouter.network/update.sh | bash
 
 The updater only changes AgentRouter entries that are already installed. It preserves existing wallet files, `AGENT_ROUTER_API_KEY`, custom AgentRouter environment settings, unrelated MCP servers, and timestamped backups of changed client config files. Restart or reload the updated AI client afterward. See [docs/UPGRADING.md](docs/UPGRADING.md) for rollback and pinned-package guidance.
 
-The Skills CLI alone only installs the agent instructions. If that is all you need, the standard Skills CLI still works:
-
-```bash
-npx skills add connectwilson/agentrouter-skill --skill AgentRouter
-```
-
-This mirrors the Surf-style split: one short command teaches the agent when to route data/API needs, and the installed CLI/MCP bridge performs live routing, payment, and invocation.
-
-Manual fallback if npm/npx is unavailable:
+Manual compatibility fallback:
 
 ```bash
 curl -fsSL https://agentrouter.network/install.sh | bash
+```
+
+This fallback installs the Skill only by default. Set exactly one explicit client flag when a desktop config must also be written:
+
+```bash
+curl -fsSL https://agentrouter.network/install.sh | AGENTROUTER_CONFIGURE_CLAUDE_DESKTOP=1 bash
 ```
 
 ## Remote MCP Connector
@@ -433,8 +433,7 @@ Most AI clients configure MCP like this:
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "https://agentrouter.network"
       }
     }
   }
@@ -454,8 +453,7 @@ PORT=8800 npm start
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "http://127.0.0.1:8800"
       }
     }
   }
@@ -527,8 +525,7 @@ MCP config:
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "https://agentrouter.network"
       }
     }
   }
@@ -544,8 +541,7 @@ Local development config before publishing:
       "command": "node",
       "args": ["/Users/huazhenghao/Downloads/Arc/packages/agentrouter-mcp/bin/agentrouter-mcp.js"],
       "env": {
-        "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "http://127.0.0.1:8800"
       }
     }
   }

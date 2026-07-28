@@ -1,9 +1,11 @@
 # Status
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 ## Current MVP
 
+- The public setup path is now agent-native: users give their current agent `Set up https://agentrouter.network/SKILL.md`. The canonical root Skill grants narrowly scoped permission to add only AgentRouter to the current client, prefers Remote MCP, preserves unrelated configuration, avoids wallet/payment setup, and requires an MCP `initialize` plus `tools/list` verification.
+- The hosted Shell installer is now a compatibility fallback. It installs the Skill without editing desktop MCP configuration by default, requires an explicit per-client flag before changing Claude Desktop or Cursor, and no longer injects obsolete Arc RPC, wallet directory, payment backend, or default-spend settings.
 - Replaced the private-GitHub client dependency with a repository-independent update channel. `GET /agent-router/update-manifest.json` declares the stable public MCP package, Skill URL, Remote MCP URL, and updater URL; `GET /update.sh` migrates existing Claude Desktop/Cursor entries while preserving API keys, custom environment values, unrelated MCP servers, config backups, and local wallet files.
 - `@agentrouternetwork/mcp` v0.2.0 and AgentRouter Desktop Extension v0.2.0 are now thin Remote MCP bridges. Their tool lists come from the hosted `/mcp` endpoint, so newly deployed tools and capability schemas appear after client reconnect without republishing or reinstalling the local bridge.
 - The private source repository is no longer referenced by public install, update, MCP config, package metadata, or user-facing Skill instructions. `@agentrouternetwork/mcp@0.2.0`, the hosted installer, and the update manifest are now publicly available.
@@ -93,8 +95,7 @@ For any MCP-capable AI agent client, add the AgentRouter MCP server:
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "https://agentrouter.network"
       }
     }
   }

@@ -203,7 +203,7 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
-  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/skills/AgentRouter/SKILL.md") {
+  if ((req.method === "GET" || req.method === "HEAD") && ["/SKILL.md", "/skills/AgentRouter/SKILL.md"].includes(url.pathname)) {
     await sendAgentRouterSkill(req, res);
     return;
   }
@@ -1529,7 +1529,7 @@ function sendUpdateManifest(req, res, baseUrl) {
     installer_version: "0.2.0",
     repository_access_required: false,
     remote_mcp_url: `${origin}/mcp`,
-    skill_url: `${origin}/skills/AgentRouter/SKILL.md`,
+    skill_url: `${origin}/SKILL.md`,
     update_script_url: `${origin}/update.sh`,
     mcp: {
       package: "@agentrouternetwork/mcp",
@@ -1659,15 +1659,12 @@ function sendInstallScript(req, res, baseUrl) {
 set -euo pipefail
 
 AGENT_ROUTER_URL="\${AGENT_ROUTER_URL:-${origin}}"
-SKILL_URL="\${AGENT_ROUTER_URL%/}/skills/AgentRouter/SKILL.md"
+SKILL_URL="\${AGENT_ROUTER_URL%/}/SKILL.md"
 TARGETS="\${AGENTROUTER_SKILL_DIRS:-$HOME/.agents/skills/agentrouter:$HOME/.claude/skills/agentrouter:$HOME/.codex/skills/agentrouter}"
 CLAUDE_CONFIG="\${CLAUDE_DESKTOP_CONFIG:-$HOME/Library/Application Support/Claude/claude_desktop_config.json}"
 CURSOR_CONFIG="\${CURSOR_MCP_CONFIG:-$HOME/.cursor/mcp.json}"
-CONFIGURE_CLAUDE_DESKTOP="\${AGENTROUTER_CONFIGURE_CLAUDE_DESKTOP:-auto}"
-CONFIGURE_CURSOR="\${AGENTROUTER_CONFIGURE_CURSOR:-auto}"
-AGENTROUTER_ADN_DIR="\${AGENTROUTER_ADN_DIR:-$HOME/.agentrouter/adn}"
-AGENT_ROUTER_MAX_PRICE="\${AGENT_ROUTER_MAX_PRICE:-0.05}"
-ADN_ARC_RPC_URL="\${ADN_ARC_RPC_URL:-https://rpc.testnet.arc.network}"
+CONFIGURE_CLAUDE_DESKTOP="\${AGENTROUTER_CONFIGURE_CLAUDE_DESKTOP:-0}"
+CONFIGURE_CURSOR="\${AGENTROUTER_CONFIGURE_CURSOR:-0}"
 
 tmp_file="$(mktemp)"
 config_tmp="$(mktemp)"
@@ -1691,8 +1688,6 @@ configured_cursor="no"
 should_configure_claude="no"
 if [ "$CONFIGURE_CLAUDE_DESKTOP" = "1" ]; then
   should_configure_claude="yes"
-elif [ "$CONFIGURE_CLAUDE_DESKTOP" = "auto" ] && [ -d "$(dirname "$CLAUDE_CONFIG")" ]; then
-  should_configure_claude="yes"
 fi
 
 if [ "$should_configure_claude" = "yes" ]; then
@@ -1703,7 +1698,7 @@ if [ "$should_configure_claude" = "yes" ]; then
     printf '{}\n' > "$CLAUDE_CONFIG"
   fi
 
-  AGENT_ROUTER_URL="$AGENT_ROUTER_URL" AGENT_ROUTER_MAX_PRICE="$AGENT_ROUTER_MAX_PRICE" ADN_ARC_RPC_URL="$ADN_ARC_RPC_URL" AGENTROUTER_ADN_DIR="$AGENTROUTER_ADN_DIR" CONFIG_PATH="$CLAUDE_CONFIG" OUT_PATH="$config_tmp" node <<'NODE'
+  AGENT_ROUTER_URL="$AGENT_ROUTER_URL" CONFIG_PATH="$CLAUDE_CONFIG" OUT_PATH="$config_tmp" node <<'NODE'
 const fs = require("fs");
 const path = process.env.CONFIG_PATH;
 const out = process.env.OUT_PATH;
@@ -1721,11 +1716,7 @@ config.mcpServers.AgentRouter = {
   command: "npx",
   args: ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
   env: {
-    AGENT_ROUTER_URL: agentRouterUrl,
-    AGENT_ROUTER_MAX_PRICE: process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
-    ADN_PAYMENT_BACKEND: "circle_arc",
-    ADN_ARC_RPC_URL: process.env.ADN_ARC_RPC_URL || "https://rpc.testnet.arc.network",
-    ADN_DIR: process.env.AGENTROUTER_ADN_DIR
+    AGENT_ROUTER_URL: agentRouterUrl
   }
 };
 fs.writeFileSync(out, JSON.stringify(config, null, 2) + "\\n");
@@ -1737,8 +1728,6 @@ fi
 should_configure_cursor="no"
 if [ "$CONFIGURE_CURSOR" = "1" ]; then
   should_configure_cursor="yes"
-elif [ "$CONFIGURE_CURSOR" = "auto" ] && [ -d "$(dirname "$CURSOR_CONFIG")" ]; then
-  should_configure_cursor="yes"
 fi
 
 if [ "$should_configure_cursor" = "yes" ]; then
@@ -1749,7 +1738,7 @@ if [ "$should_configure_cursor" = "yes" ]; then
     printf '{}\n' > "$CURSOR_CONFIG"
   fi
 
-  AGENT_ROUTER_URL="$AGENT_ROUTER_URL" AGENT_ROUTER_MAX_PRICE="$AGENT_ROUTER_MAX_PRICE" ADN_ARC_RPC_URL="$ADN_ARC_RPC_URL" AGENTROUTER_ADN_DIR="$AGENTROUTER_ADN_DIR" CONFIG_PATH="$CURSOR_CONFIG" OUT_PATH="$config_tmp" node <<'NODE'
+  AGENT_ROUTER_URL="$AGENT_ROUTER_URL" CONFIG_PATH="$CURSOR_CONFIG" OUT_PATH="$config_tmp" node <<'NODE'
 const fs = require("fs");
 const path = process.env.CONFIG_PATH;
 const out = process.env.OUT_PATH;
@@ -1767,11 +1756,7 @@ config.mcpServers.AgentRouter = {
   command: "npx",
   args: ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
   env: {
-    AGENT_ROUTER_URL: agentRouterUrl,
-    AGENT_ROUTER_MAX_PRICE: process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
-    ADN_PAYMENT_BACKEND: "circle_arc",
-    ADN_ARC_RPC_URL: process.env.ADN_ARC_RPC_URL || "https://rpc.testnet.arc.network",
-    ADN_DIR: process.env.AGENTROUTER_ADN_DIR
+    AGENT_ROUTER_URL: agentRouterUrl
   }
 };
 fs.writeFileSync(out, JSON.stringify(config, null, 2) + "\\n");
@@ -1787,7 +1772,6 @@ fi
 if [ "$configured_cursor" = "yes" ]; then
   echo "Cursor MCP server configured."
 fi
-echo "Existing wallet files were not changed."
 echo "For paid hosted calls, create an AgentRouter API key at \${AGENT_ROUTER_URL%/}/account."
 if [ "$configured_claude" = "yes" ] || [ "$configured_cursor" = "yes" ]; then
   echo "Restart or reload the configured AI client to activate AgentRouter MCP tools."

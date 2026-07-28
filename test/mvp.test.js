@@ -250,6 +250,39 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(scriptText, /Restart or reload the configured AI client/);
     assert.match(scriptText, /Then ask a normal data\/API question/);
     assert.doesNotMatch(scriptText, /github\.com/);
+
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agent-native-install-"));
+    const cursorConfig = path.join(home, ".cursor", "mcp.json");
+    const scriptPath = path.join(home, "install.sh");
+    const originalConfig = {
+      mcpServers: {
+        OtherTool: { command: "other-tool", args: ["serve"] }
+      }
+    };
+    await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+    await fs.writeFile(cursorConfig, JSON.stringify(originalConfig, null, 2));
+    await fs.writeFile(scriptPath, scriptText, { mode: 0o700 });
+
+    const defaultInstall = await runProcess("bash", [scriptPath], {
+      HOME: home,
+      AGENT_ROUTER_URL: baseUrl,
+      CURSOR_MCP_CONFIG: cursorConfig,
+      CLAUDE_DESKTOP_CONFIG: path.join(home, "missing-claude.json")
+    });
+    assert.equal(defaultInstall.code, 0, defaultInstall.stderr);
+    assert.deepEqual(JSON.parse(await fs.readFile(cursorConfig, "utf8")), originalConfig);
+
+    const explicitInstall = await runProcess("bash", [scriptPath], {
+      HOME: home,
+      AGENT_ROUTER_URL: baseUrl,
+      CURSOR_MCP_CONFIG: cursorConfig,
+      CLAUDE_DESKTOP_CONFIG: path.join(home, "missing-claude.json"),
+      AGENTROUTER_CONFIGURE_CURSOR: "1"
+    });
+    assert.equal(explicitInstall.code, 0, explicitInstall.stderr);
+    const configured = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+    assert.deepEqual(configured.mcpServers.OtherTool, originalConfig.mcpServers.OtherTool);
+    assert.deepEqual(configured.mcpServers.AgentRouter.env, { AGENT_ROUTER_URL: baseUrl });
   });
 });
 

@@ -1,12 +1,11 @@
-const skillInstallCommand = "curl -fsSL https://agentrouter.network/install.sh | bash";
+const skillInstallCommand = "Set up https://agentrouter.network/SKILL.md";
 const localInstallConfig = `{
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "http://127.0.0.1:8800"
       }
     }
   }
@@ -35,17 +34,17 @@ export function homeHtml({ auth = {} } = {}) {
           <p class="lead">AgentRouter gives your agent access to verifiable premium data sources, per call, with no subscriptions.</p>
           <a class="hero-cta" href="/agent">Explore Data/APIs</a>
 
-          <div class="install-strip" aria-label="AgentRouter install command">
+          <div class="install-strip" aria-label="AgentRouter setup instruction">
             <div class="install-top">
               <span class="status-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-              <span class="install-label" id="home-install-label">install agentrouter</span>
+              <span class="install-label" id="home-install-label">Give this to your AI agent</span>
             </div>
             <div class="install-command">
-              <code id="home-install-command"><span class="prompt">$</span> ${html(skillInstallCommand)}</code>
+              <code id="home-install-command">${html(skillInstallCommand)}</code>
               <button type="button" id="home-copy-install">Copy</button>
             </div>
           </div>
-          <p class="install-note" id="home-install-note">Installs the Skill and public MCP bridge. New server tools appear after the AI client reconnects.</p>
+          <p class="install-note" id="home-install-note">Installs only AgentRouter for the current AI client. Future capabilities update automatically.</p>
           <div class="client-row" aria-label="Supported AI agent tools">
             <span>Works with</span>
             <div class="client-logos">

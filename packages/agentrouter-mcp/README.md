@@ -24,7 +24,6 @@ Most AI clients configure MCP like this:
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_MAX_PRICE": "0.05",
         "AGENT_ROUTER_API_KEY": "ar_live_..."
       }
     }
@@ -41,8 +40,7 @@ For a local AgentRouter server:
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "http://127.0.0.1:8800"
       }
     }
   }
