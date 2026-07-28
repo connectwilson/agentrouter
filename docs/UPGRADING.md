@@ -1,66 +1,62 @@
 # Updating AgentRouter
 
-## Local MCP installation
+## What updates automatically
 
-If AgentRouter was installed with the GitHub `npx` command, update it with:
+Clients connected directly to `https://agentrouter.network/mcp` receive server-side tools and capability schemas from the deployed AgentRouter version. The public npm bridge and Claude Desktop extension also discover their tool list from that remote MCP instead of shipping a static list.
 
-```bash
-npx -y github:connectwilson/agentrouter-markets#main update
-```
+Restart or reconnect the AI client when it caches an older tool list.
 
-When the npm package is available, use:
+## Migrate an existing local installation
 
-```bash
-npx -y agentrouter@latest update
-```
-
-The command updates the AgentRouter Skill and the package command in MCP clients that already contain an AgentRouter entry. It does not create a new wallet or add configurations for clients that were not previously configured.
-
-The updater preserves:
-
-- `~/.agentrouter/adn`, including the wallet and local session secret
-- `AGENT_ROUTER_API_KEY` and other custom AgentRouter environment values
-- unrelated MCP server entries
-- the currently configured AgentRouter URL, maximum price, Arc RPC URL, and wallet directory
-- a timestamped backup beside every changed MCP config file
-
-An explicit update option overrides its stored value. For example:
+Run the hosted updater:
 
 ```bash
-npx -y github:connectwilson/agentrouter-markets#main update --max-price 0.10
+curl -fsSL https://agentrouter.network/update.sh | bash
 ```
 
-To add or repair a client while updating, select it explicitly:
+The updater:
 
-```bash
-npx -y github:connectwilson/agentrouter-markets#main update --client cursor
-npx -y github:connectwilson/agentrouter-markets#main update --client claude-desktop
+- downloads the current update manifest and AgentRouter Skill from `agentrouter.network`
+- changes existing AgentRouter MCP entries to the public `@agentrouternetwork/mcp@latest` bridge
+- preserves `AGENT_ROUTER_API_KEY` and every other custom AgentRouter environment value
+- preserves unrelated MCP server entries
+- does not delete, recreate, or modify files under `~/.agentrouter/adn`
+- writes a timestamped backup beside every changed MCP config
+- does not add a client configuration that was not already installed
+
+After it prints `AgentRouter updated. READY`, restart or reload the affected AI client and confirm that `agentrouter_fetch` is available.
+
+## Public update metadata
+
+The stable update channel is machine-readable:
+
+```text
+https://agentrouter.network/agent-router/update-manifest.json
 ```
 
-After the updater prints `AgentRouter updated. READY`:
-
-1. Restart or reload the affected AI client.
-2. Run `npx -y github:connectwilson/agentrouter-markets#main doctor`.
-3. Confirm the client exposes `agentrouter_fetch` and the other expected AgentRouter tools.
-
-If the update reports `NOT_READY`, follow its repair message. The existing wallet should not be deleted or recreated as a general repair step.
-
-## Remote MCP
-
-Clients connected to `https://agentrouter.network/mcp` receive server-side tool updates automatically. Reconnect or reload the client if its cached tool list does not show a new tool.
-
-## Claude Desktop Extension
-
-For an `.mcpb` installation, install the newest AgentRouter extension package over the existing extension, then restart Claude Desktop. Keep the same AgentRouter URL and wallet settings during the replacement.
+It declares the current MCP package, command, remote MCP URL, Skill URL, updater URL, minimum Node.js version, and preservation guarantees. It never requires access to the private AgentRouter source repository.
 
 ## Pinned package versions
 
-The updater normally changes the local MCP command to the current GitHub `main` package. To keep a deliberate package pin, set `AGENTROUTER_MCP_PACKAGE` while updating:
+The hosted updater uses `@agentrouternetwork/mcp@latest` by default. To keep a deliberate package pin:
 
 ```bash
-AGENTROUTER_MCP_PACKAGE=@agentrouter/mcp@0.2.0 npx -y agentrouter@latest update
+curl -fsSL https://agentrouter.network/update.sh |
+  AGENTROUTER_MCP_PACKAGE=@agentrouternetwork/mcp@0.2.0 bash
 ```
+
+Pinned clients still receive server-side tool definitions dynamically; the pin only fixes the local bridge implementation.
+
+## Claude Desktop Extension
+
+AgentRouter Desktop Extension v0.2.0 and later discovers tools from the remote MCP. New server-side tools therefore do not require reinstalling the extension. Install a newer `.mcpb` only when the bridge transport, permissions, or extension metadata itself changes.
 
 ## Rollback
 
-Before rewriting an existing MCP config, the updater saves a sibling file named like `mcp.json.bak.YYYYMMDDHHMMSS`. To roll back, stop the AI client, restore the most recent backup, and restart the client. Wallet files are not changed by updates.
+Before rewriting an existing MCP config, the updater saves a sibling file named like `mcp.json.bak.YYYYMMDDHHMMSS`. To roll back:
+
+1. Stop the AI client.
+2. Restore the most recent backup over the active MCP config.
+3. Restart the client.
+
+Wallet files are not changed by updates.

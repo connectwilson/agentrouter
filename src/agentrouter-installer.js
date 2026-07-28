@@ -11,7 +11,8 @@ const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "..");
 
 export const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
-export const DEFAULT_PACKAGE_SPEC = "github:connectwilson/agentrouter-markets#main";
+export const DEFAULT_PACKAGE_SPEC = "@agentrouternetwork/mcp@latest";
+export const DEFAULT_MCP_COMMAND = "agentrouter-mcp";
 export const DEFAULT_ARC_RPC_URL = "https://rpc.testnet.arc.network";
 
 export async function installAgentRouter(options = {}) {
@@ -249,7 +250,7 @@ export async function diagnoseAgentRouter(options = {}) {
     status: ready ? "READY" : "NOT_READY",
     agent_router_url: agentRouterUrl,
     checks,
-    repair_command: "npx -y github:connectwilson/agentrouter-markets#main --client all",
+    repair_command: "curl -fsSL https://agentrouter.network/update.sh | bash",
     next_step: ready
       ? "Restart or reload the configured AI client, then ask a normal data/API question."
       : "Run the repair command, restart or reload the AI client, then run agentrouter doctor again."
@@ -345,7 +346,7 @@ async function checkMcpConfig(clientName, configPath, { agentRouterUrl, adnDir }
       server &&
       server.command === "npx" &&
       Array.isArray(server.args) &&
-      server.args.includes("agent-router-mcp") &&
+      (server.args.includes("agentrouter-mcp") || server.args.includes("agent-router-mcp")) &&
       server.env?.AGENT_ROUTER_URL === agentRouterUrl &&
       server.env?.ADN_PAYMENT_BACKEND === "circle_arc" &&
       server.env?.ADN_DIR === adnDir
@@ -407,7 +408,7 @@ function resolveSkillDirs({ home, value }) {
 function createMcpServerConfig({ agentRouterUrl, maxPrice, arcRpcUrl, adnDir, packageSpec }) {
   return {
     command: "npx",
-    args: ["-y", "--package", packageSpec, "agent-router-mcp"],
+    args: ["-y", "--package", packageSpec, DEFAULT_MCP_COMMAND],
     env: {
       AGENT_ROUTER_URL: agentRouterUrl,
       AGENT_ROUTER_MAX_PRICE: maxPrice,

@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "agentrouter",
   "display_name": "AgentRouter",
-  "version": "0.1.0",
-  "description": "Route AI agents to paid API/data services, quote calls, invoke providers, and return verified evidence.",
-  "long_description": "AgentRouter is a local Claude Desktop extension for connecting agents to the Agent Native Data Network. It exposes structured MCP tools for capability routing, quote-before-pay, provider invocation, and evidence/trust metadata. The main agent remains responsible for understanding the user's request; AgentRouter handles service discovery, routing, payment adapter calls, verification, and evidence trace generation.",
+  "version": "0.2.0",
+  "description": "Connect Claude Desktop to AgentRouter's remotely updated API/data routing tools.",
+  "long_description": "AgentRouter is a thin Claude Desktop bridge to the hosted Agent Native Data Network. Tool definitions and execution come from the configured remote MCP server, so new AgentRouter capabilities become available after reconnecting without reinstalling the extension. API keys stay in the local extension configuration and are forwarded only to the configured AgentRouter origin.",
   "author": {
     "name": "AgentRouter"
   },
@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/connectwilson/agentrouter-skill.git"
   },
-  "homepage": "https://github.com/connectwilson/agentrouter-skill",
+  "homepage": "https://agentrouter.network",
   "server": {
     "type": "node",
     "entry_point": "server/index.js",

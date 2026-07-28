@@ -213,6 +213,16 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/update.sh") {
+    sendUpdateScript(req, res, baseUrl);
+    return;
+  }
+
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent-router/update-manifest.json") {
+    sendUpdateManifest(req, res, baseUrl);
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/health") {
     sendJson(res, 200, { ok: true });
     return;
@@ -1511,6 +1521,138 @@ async function sendAgentRouterSkill(req, res) {
   }
 }
 
+function sendUpdateManifest(req, res, baseUrl) {
+  const origin = String(baseUrl || "https://agentrouter.network").replace(/\/$/, "");
+  const body = `${JSON.stringify({
+    schema_version: "agentrouter_update_manifest_v1",
+    channel: "stable",
+    installer_version: "0.2.0",
+    repository_access_required: false,
+    remote_mcp_url: `${origin}/mcp`,
+    skill_url: `${origin}/skills/AgentRouter/SKILL.md`,
+    update_script_url: `${origin}/update.sh`,
+    mcp: {
+      package: "@agentrouternetwork/mcp",
+      spec: "@agentrouternetwork/mcp@latest",
+      command: "agentrouter-mcp",
+      minimum_node_version: 18
+    },
+    preserves: [
+      "wallet_files",
+      "agentrouter_api_key",
+      "custom_environment",
+      "unrelated_mcp_servers"
+    ]
+  }, null, 2)}\n`;
+  res.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "public, max-age=300",
+    "content-length": Buffer.byteLength(body)
+  });
+  res.end(req.method === "HEAD" ? undefined : body);
+}
+
+function sendUpdateScript(req, res, baseUrl) {
+  const origin = String(baseUrl || "https://agentrouter.network").replace(/\/$/, "");
+  const body = `#!/usr/bin/env bash
+set -euo pipefail
+
+AGENT_ROUTER_URL="\${AGENT_ROUTER_URL:-${origin}}"
+MANIFEST_URL="\${AGENT_ROUTER_URL%/}/agent-router/update-manifest.json"
+CLAUDE_CONFIG="\${CLAUDE_DESKTOP_CONFIG:-$HOME/Library/Application Support/Claude/claude_desktop_config.json}"
+CURSOR_CONFIG="\${CURSOR_MCP_CONFIG:-$HOME/.cursor/mcp.json}"
+TARGETS="\${AGENTROUTER_SKILL_DIRS:-$HOME/.agents/skills/agentrouter:$HOME/.claude/skills/agentrouter:$HOME/.codex/skills/agentrouter}"
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+curl -fsSL "$MANIFEST_URL" -o "$tmp_dir/manifest.json"
+MCP_SPEC="\${AGENTROUTER_MCP_PACKAGE:-$(MANIFEST_PATH="$tmp_dir/manifest.json" node -e '
+const fs = require("fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8"));
+const spec = String(manifest?.mcp?.spec || "");
+if (!/^@agentrouternetwork\\/mcp@/.test(spec)) process.exit(2);
+process.stdout.write(spec);
+')}"
+MCP_SPEC="\${MCP_SPEC:-@agentrouternetwork/mcp@latest}"
+SKILL_URL="$(MANIFEST_PATH="$tmp_dir/manifest.json" node -e '
+const fs = require("fs");
+const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8"));
+process.stdout.write(String(manifest.skill_url || ""));
+')"
+
+curl -fsSL "$SKILL_URL" -o "$tmp_dir/SKILL.md"
+skill_count=0
+IFS=":" read -r -a target_dirs <<< "$TARGETS"
+for target_dir in "\${target_dirs[@]}"; do
+  [ -d "$target_dir" ] || continue
+  cp "$tmp_dir/SKILL.md" "$target_dir/SKILL.md"
+  skill_count=$((skill_count + 1))
+done
+if [ "$skill_count" -eq 0 ]; then
+  fallback_dir="$HOME/.agents/skills/agentrouter"
+  mkdir -p "$fallback_dir"
+  cp "$tmp_dir/SKILL.md" "$fallback_dir/SKILL.md"
+  skill_count=1
+fi
+
+config_count=0
+for config_path in "$CLAUDE_CONFIG" "$CURSOR_CONFIG"; do
+  [ -f "$config_path" ] || continue
+  if CONFIG_PATH="$config_path" OUT_PATH="$tmp_dir/config.json" MCP_SPEC="$MCP_SPEC" node <<'NODE'
+const fs = require("fs");
+const configPath = process.env.CONFIG_PATH;
+const outPath = process.env.OUT_PATH;
+const config = JSON.parse(fs.readFileSync(configPath, "utf8") || "{}");
+const existing = config?.mcpServers?.AgentRouter;
+if (!existing || typeof existing !== "object") process.exit(3);
+const existingEnv = existing.env && typeof existing.env === "object" ? existing.env : {};
+config.mcpServers.AgentRouter = {
+  ...existing,
+  command: "npx",
+  args: ["-y", "--package", process.env.MCP_SPEC || "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
+  env: existingEnv
+};
+fs.writeFileSync(outPath, JSON.stringify(config, null, 2) + "\\n");
+NODE
+  then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -eq 3 ]; then
+    continue
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "Unable to update invalid MCP config: $config_path" >&2
+    exit "$status"
+  fi
+  backup="$config_path.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$config_path" "$backup"
+  cp "$tmp_dir/config.json" "$config_path"
+  config_count=$((config_count + 1))
+done
+
+echo "AgentRouter updated. READY"
+echo "Skill files updated: $skill_count"
+echo "MCP client configs updated: $config_count"
+echo "MCP package: $MCP_SPEC"
+echo "Existing wallet files were not changed."
+echo "API keys, custom AgentRouter environment values, and unrelated MCP servers were preserved."
+echo "Restart or reload each updated AI client."
+echo "Remote MCP: \${AGENT_ROUTER_URL%/}/mcp"
+`;
+  res.writeHead(200, {
+    "content-type": "text/x-shellscript; charset=utf-8",
+    "cache-control": "no-store",
+    "content-length": Buffer.byteLength(body)
+  });
+  res.end(req.method === "HEAD" ? undefined : body);
+}
+
 function sendInstallScript(req, res, baseUrl) {
   const origin = String(baseUrl || "https://agentrouter.network").replace(/\/$/, "");
   const body = `#!/usr/bin/env bash
@@ -1577,7 +1719,7 @@ try {
 config.mcpServers = config.mcpServers && typeof config.mcpServers === "object" ? config.mcpServers : {};
 config.mcpServers.AgentRouter = {
   command: "npx",
-  args: ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+  args: ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
   env: {
     AGENT_ROUTER_URL: agentRouterUrl,
     AGENT_ROUTER_MAX_PRICE: process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
@@ -1623,7 +1765,7 @@ try {
 config.mcpServers = config.mcpServers && typeof config.mcpServers === "object" ? config.mcpServers : {};
 config.mcpServers.AgentRouter = {
   command: "npx",
-  args: ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+  args: ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
   env: {
     AGENT_ROUTER_URL: agentRouterUrl,
     AGENT_ROUTER_MAX_PRICE: process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
@@ -1638,15 +1780,6 @@ NODE
   configured_cursor="yes"
 fi
 
-wallet_json="$(ADN_DIR="$AGENTROUTER_ADN_DIR" npx -y --package github:connectwilson/agentrouter-markets#main adn wallet create-session 2>/dev/null || true)"
-wallet_address="$(WALLET_JSON="$wallet_json" node <<'NODE'
-try {
-  const payload = JSON.parse(process.env.WALLET_JSON || "{}");
-  process.stdout.write(payload.address || "");
-} catch {}
-NODE
-)"
-
 echo "AgentRouter skill installed."
 if [ "$configured_claude" = "yes" ]; then
   echo "Claude Desktop MCP server configured."
@@ -1654,15 +1787,8 @@ fi
 if [ "$configured_cursor" = "yes" ]; then
   echo "Cursor MCP server configured."
 fi
-if [ -n "$wallet_address" ]; then
-  echo "AgentRouter local payment wallet ready."
-  echo "Fund address: $wallet_address"
-  echo "Network: Arc Testnet"
-  echo "Token: USDC"
-  echo "Suggested first top-up: 0.05 USDC"
-else
-  echo "Wallet was not created automatically. After MCP starts, call agentrouter_wallet_status to see the funding address."
-fi
+echo "Existing wallet files were not changed."
+echo "For paid hosted calls, create an AgentRouter API key at \${AGENT_ROUTER_URL%/}/account."
 if [ "$configured_claude" = "yes" ] || [ "$configured_cursor" = "yes" ]; then
   echo "Restart or reload the configured AI client to activate AgentRouter MCP tools."
 else

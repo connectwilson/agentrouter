@@ -1,9 +1,9 @@
-const skillInstallCommand = "npx -y github:connectwilson/agentrouter-markets#main";
+const skillInstallCommand = "curl -fsSL https://agentrouter.network/install.sh | bash";
 const localInstallConfig = `{
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
         "AGENT_ROUTER_MAX_PRICE": "0.05"
@@ -45,7 +45,7 @@ export function homeHtml({ auth = {} } = {}) {
               <button type="button" id="home-copy-install">Copy</button>
             </div>
           </div>
-          <p class="install-note" id="home-install-note">Installs the Skill, configures MCP clients, creates a local payment wallet, and prints READY with the funding address.</p>
+          <p class="install-note" id="home-install-note">Installs the Skill and public MCP bridge. New server tools appear after the AI client reconnects.</p>
           <div class="client-row" aria-label="Supported AI agent tools">
             <span>Works with</span>
             <div class="client-logos">

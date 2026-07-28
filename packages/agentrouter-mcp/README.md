@@ -1,8 +1,8 @@
-# @agentrouter/mcp
+# @agentrouternetwork/mcp
 
-Universal MCP server for AgentRouter.
+Public, zero-configuration MCP bridge for AgentRouter.
 
-AgentRouter routes AI agents to paid API/data services, supports quote-before-pay, invokes providers, verifies returned data, and returns an evidence envelope with trace hashes.
+The package forwards MCP JSON-RPC to `https://agentrouter.network/mcp`. Tool definitions come from the hosted AgentRouter server, so newly deployed capabilities appear after the AI client reconnects without requiring a new package release.
 
 Create `AGENT_ROUTER_API_KEY` from the signed-in AgentRouter account page. When present, the MCP server uses the prepaid credits balance and does not require a local Arc wallet.
 
@@ -11,13 +11,7 @@ Create `AGENT_ROUTER_API_KEY` from the signed-in AgentRouter account page. When 
 Run with npx:
 
 ```bash
-npx -y @agentrouter/mcp
-```
-
-Before the npm package is published, use the GitHub package form:
-
-```bash
-npx -y --package github:connectwilson/agentrouter-markets#main agent-router-mcp
+npx -y --package @agentrouternetwork/mcp@latest agentrouter-mcp
 ```
 
 Most AI clients configure MCP like this:
@@ -27,7 +21,7 @@ Most AI clients configure MCP like this:
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "@agentrouter/mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "https://agentrouter.network",
         "AGENT_ROUTER_MAX_PRICE": "0.05",
@@ -45,7 +39,7 @@ For a local AgentRouter server:
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "@agentrouter/mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
         "AGENT_ROUTER_MAX_PRICE": "0.05"
@@ -55,14 +49,17 @@ For a local AgentRouter server:
 }
 ```
 
-## Tools
+## Updates
 
-- `agentrouter_request`: preferred structured capability request path for specialized, real-time, paid, or verifiable external data/API needs. Use this first whenever the main agent can parse the user request. Successful calls record verification/evidence and return a feedback request.
-- `agentrouter_quote`: route and quote without invoking a provider. Quotes include `agent_decision.auto_invoke_allowed`, expected data, budget status, and why paid data is justified.
-- `agentrouter_quote_feedback`: submit this when a main agent receives a quote but chooses not to invoke, so AgentRouter can learn skipped-call reasons.
-- `agentrouter_capabilities`: list capability schemas when the main agent has a data/API need and needs to discover what AgentRouter can route.
-- `agentrouter_feedback`: submit post-call usefulness/intent-fit feedback after answering.
-- `agentrouter_ask`: natural-language routing helper when a structured capability request cannot be produced.
+Server-side tools and capability schemas update automatically. Restart or reconnect the AI client if it caches the MCP tool list.
+
+To refresh the Skill and migrate an older GitHub-based MCP config:
+
+```bash
+curl -fsSL https://agentrouter.network/update.sh | bash
+```
+
+The updater preserves AgentRouter API keys, custom environment settings, unrelated MCP servers, and existing wallet files.
 
 ## Protocol Boundary
 

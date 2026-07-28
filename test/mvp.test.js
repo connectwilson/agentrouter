@@ -36,7 +36,7 @@ const { verifyServiceResult } = await import("../src/verifier.js");
 const { keccak256Hex } = await import("../src/keccak.js");
 const { currentPaymentBackend } = await import("../src/payment-adapter.js");
 const { invokePaidServiceWithLocalWallet } = await import("../src/local-invoke.js");
-const { diagnoseAgentRouter, formatDoctorResult, formatInstallResult, installAgentRouter, parseInstallArgs } = await import("../src/agentrouter-installer.js");
+const { DEFAULT_PACKAGE_SPEC, diagnoseAgentRouter, formatDoctorResult, formatInstallResult, installAgentRouter, parseInstallArgs } = await import("../src/agentrouter-installer.js");
 const { buildServiceAwareInput, inferIntent } = await import("../src/agent-router.js");
 
 test.after(async () => {
@@ -90,6 +90,25 @@ async function withServer(fn, options = {}) {
   }
 }
 
+function runProcess(command, args, env = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
 test("registry seeds and validates demo service", async () => {
   await withServer(async ({ server }) => {
     const record = server.store.services.get("chain_fund_flow_7d_base");
@@ -110,8 +129,8 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /npx -y github:connectwilson\/agentrouter-markets#main/);
-    assert.match(homeHtml, /prints READY with the funding address/);
+    assert.match(homeHtml, /curl -fsSL https:\/\/agentrouter\.network\/install\.sh \| bash/);
+    assert.match(homeHtml, /New server tools appear after the AI client reconnects/);
     assert.doesNotMatch(homeHtml, /Remote MCP/);
     assert.doesNotMatch(homeHtml, /Local MCP/);
 
@@ -212,15 +231,94 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(scriptText, /CURSOR_MCP_CONFIG/);
     assert.match(scriptText, /ADN_PAYMENT_BACKEND: "circle_arc"/);
     assert.match(scriptText, /ADN_DIR: process\.env\.AGENTROUTER_ADN_DIR/);
-    assert.match(scriptText, /adn wallet create-session/);
-    assert.match(scriptText, /Fund address:/);
-    assert.match(scriptText, /github:connectwilson\/agentrouter-markets#main/);
+    assert.match(scriptText, /@agentrouternetwork\/mcp@latest/);
+    assert.doesNotMatch(scriptText, /agentrouter-markets/);
+    assert.doesNotMatch(scriptText, /wallet create-session/);
+    assert.match(scriptText, /Existing wallet files were not changed/);
     assert.match(scriptText, /No desktop MCP config was changed/);
     assert.match(scriptText, /AGENTROUTER_CONFIGURE_CLAUDE_DESKTOP=1/);
     assert.match(scriptText, /AGENTROUTER_CONFIGURE_CURSOR=1/);
     assert.match(scriptText, /Restart or reload the configured AI client/);
     assert.match(scriptText, /Then ask a normal data\/API question/);
     assert.doesNotMatch(scriptText, /github\.com/);
+  });
+});
+
+test("AgentRouter exposes a repository-independent remote update channel", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const manifestResponse = await fetch(`${baseUrl}/agent-router/update-manifest.json`);
+    assert.equal(manifestResponse.status, 200);
+    assert.match(manifestResponse.headers.get("content-type"), /application\/json/);
+    const manifest = await manifestResponse.json();
+    assert.equal(manifest.schema_version, "agentrouter_update_manifest_v1");
+    assert.equal(manifest.channel, "stable");
+    assert.equal(manifest.mcp.package, "@agentrouternetwork/mcp");
+    assert.equal(manifest.mcp.spec, "@agentrouternetwork/mcp@latest");
+    assert.equal(manifest.remote_mcp_url, `${baseUrl}/mcp`);
+    assert.equal(manifest.skill_url, `${baseUrl}/skills/AgentRouter/SKILL.md`);
+    assert.equal(manifest.update_script_url, `${baseUrl}/update.sh`);
+    assert.equal(manifest.repository_access_required, false);
+
+    const updateResponse = await fetch(`${baseUrl}/update.sh`);
+    assert.equal(updateResponse.status, 200);
+    assert.match(updateResponse.headers.get("content-type"), /text\/x-shellscript/);
+    const updateScript = await updateResponse.text();
+    assert.match(updateScript, /agent-router\/update-manifest\.json/);
+    assert.match(updateScript, /@agentrouternetwork\/mcp@latest/);
+    assert.match(updateScript, /AgentRouter updated\. READY/);
+    assert.doesNotMatch(updateScript, /agentrouter-markets/);
+    assert.doesNotMatch(updateScript, /github\.com/);
+  });
+});
+
+test("hosted update script migrates an existing install without touching user state", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "hosted-update-"));
+    const skillDir = path.join(home, ".codex", "skills", "agentrouter");
+    const cursorConfig = path.join(home, ".cursor", "mcp.json");
+    const walletDir = path.join(home, ".agentrouter", "adn");
+    const walletSecret = path.join(walletDir, "wallet-session.key");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+    await fs.mkdir(walletDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# old skill\n");
+    await fs.writeFile(walletSecret, "preserve-wallet-secret");
+    await fs.writeFile(cursorConfig, JSON.stringify({
+      mcpServers: {
+        OtherTool: { command: "other-tool", args: ["serve"] },
+        AgentRouter: {
+          command: "npx",
+          args: ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+          env: {
+            AGENT_ROUTER_URL: "https://custom.agentrouter.example",
+            AGENT_ROUTER_API_KEY: "ar_live_preserve",
+            USER_DEFINED_SETTING: "keep-me",
+            ADN_DIR: walletDir
+          }
+        }
+      }
+    }, null, 2));
+
+    const scriptPath = path.join(home, "update.sh");
+    await fs.writeFile(scriptPath, await fetch(`${baseUrl}/update.sh`).then((response) => response.text()), { mode: 0o700 });
+    const result = await runProcess("bash", [scriptPath], {
+      HOME: home,
+      AGENT_ROUTER_URL: baseUrl,
+      CURSOR_MCP_CONFIG: cursorConfig,
+      CLAUDE_DESKTOP_CONFIG: path.join(home, "missing-claude.json")
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /AgentRouter updated\. READY/);
+    const updated = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+    assert.deepEqual(updated.mcpServers.OtherTool, { command: "other-tool", args: ["serve"] });
+    assert.deepEqual(updated.mcpServers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
+    assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, "https://custom.agentrouter.example");
+    assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_API_KEY, "ar_live_preserve");
+    assert.equal(updated.mcpServers.AgentRouter.env.USER_DEFINED_SETTING, "keep-me");
+    assert.equal(await fs.readFile(walletSecret, "utf8"), "preserve-wallet-secret");
+    assert.match(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8"), /name: AgentRouter/);
+    assert.equal((await fs.readdir(path.dirname(cursorConfig))).some((name) => name.startsWith("mcp.json.bak.")), true);
   });
 });
 
@@ -363,6 +461,7 @@ test("wallet default path is stable outside temporary working directories", asyn
 });
 
 test("agentrouter CLI installer installs skill and configures local MCP clients", async () => {
+  assert.equal(DEFAULT_PACKAGE_SPEC, "@agentrouternetwork/mcp@latest");
   const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-install-"));
   const cursorDir = path.join(home, ".cursor");
   await fs.mkdir(cursorDir, { recursive: true });
@@ -388,7 +487,7 @@ test("agentrouter CLI installer installs skill and configures local MCP clients"
   const cursorJson = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
   for (const config of [claudeJson, cursorJson]) {
     assert.equal(config.mcpServers.AgentRouter.command, "npx");
-    assert.deepEqual(config.mcpServers.AgentRouter.args, ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"]);
+    assert.deepEqual(config.mcpServers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
     assert.equal(config.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, "https://agentrouter.network");
     assert.equal(config.mcpServers.AgentRouter.env.ADN_PAYMENT_BACKEND, "circle_arc");
     assert.match(config.mcpServers.AgentRouter.env.ADN_DIR, /\.agentrouter\/adn$/);
@@ -450,7 +549,7 @@ test("agentrouter update refreshes existing installs without replacing user sett
 
   const updated = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
   assert.deepEqual(updated.mcpServers.OtherTool, { command: "other-tool", args: ["serve"] });
-  assert.deepEqual(updated.mcpServers.AgentRouter.args, ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"]);
+  assert.deepEqual(updated.mcpServers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
   assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, "https://custom.agentrouter.example");
   assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_MAX_PRICE, "0.12");
   assert.equal(updated.mcpServers.AgentRouter.env.AGENT_ROUTER_API_KEY, "ar_live_keep_me");
@@ -1665,16 +1764,112 @@ test("AgentRouter npm MCP package exposes the same structured tools", async () =
   });
 });
 
+test("AgentRouter npm MCP package discovers new tools from remote MCP without a package update", async () => {
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const result = message.method === "initialize"
+      ? {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "AgentRouter", version: "remote" }
+        }
+      : {
+          tools: [{
+            name: "server_added_after_client_publish",
+            description: "A tool defined only by the remote server.",
+            inputSchema: { type: "object", properties: {} }
+          }]
+        };
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const client = createMcpClient(
+    { AGENT_ROUTER_URL: `http://127.0.0.1:${server.address().port}` },
+    "packages/agentrouter-mcp/bin/agentrouter-mcp.js"
+  );
+  try {
+    await client.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "npm-remote-discovery-test", version: "0.1.0" }
+    });
+    const listed = await client.request("tools/list", {});
+    assert.deepEqual(listed.tools.map((tool) => tool.name), ["server_added_after_client_publish"]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("AgentRouter desktop extension discovers new tools from remote MCP without reinstalling", async () => {
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const result = message.method === "initialize"
+      ? {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "AgentRouter", version: "remote" }
+        }
+      : {
+          tools: [{
+            name: "desktop_remote_tool",
+            description: "A remotely defined desktop tool.",
+            inputSchema: { type: "object", properties: {} }
+          }]
+        };
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const client = createMcpClient(
+    { AGENT_ROUTER_URL: `http://127.0.0.1:${server.address().port}` },
+    "mcpb/agentrouter/server/index.js"
+  );
+  try {
+    await client.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "desktop-remote-discovery-test", version: "0.1.0" }
+    });
+    const listed = await client.request("tools/list", {});
+    assert.deepEqual(listed.tools.map((tool) => tool.name), ["desktop_remote_tool"]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("AgentRouter npm MCP forwards the prepaid credits API key", async () => {
   let receivedKey = "";
   const server = http.createServer(async (request, response) => {
     receivedKey = String(request.headers["x-agentrouter-api-key"] || "");
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const result = message.method === "initialize"
+      ? {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "AgentRouter", version: "remote" }
+        }
+      : {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              ok: true,
+              status: "data_returned",
+              result: { status: "success", data: { value: 42 } }
+            })
+          }],
+          isError: false
+        };
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({
-      ok: true,
-      status: "data_returned",
-      result: { status: "success", data: { value: 42 } }
-    }));
+    response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -4248,7 +4443,7 @@ test("agent-router ask does not silently fall back to quote-only when local paym
     assert.equal(payload.ok, false);
     assert.equal(payload.status, "local_payment_not_ready");
     assert.equal(payload.data_returned, false);
-    assert.match(payload.repair_command, /agentrouter-markets#main --client all/);
+    assert.equal(payload.repair_command, "curl -fsSL https://agentrouter.network/update.sh | bash");
 
     const quoteOnly = await runAgentRouterCli(["ask", "--quote-only", "BTC 当前最大爆仓痛点是多少"], {
       ADN_REGISTRY_URL: baseUrl,

@@ -1,9 +1,12 @@
 # Status
 
-Last updated: 2026-07-23
+Last updated: 2026-07-27
 
 ## Current MVP
 
+- Replaced the private-GitHub client dependency with a repository-independent update channel. `GET /agent-router/update-manifest.json` declares the stable public MCP package, Skill URL, Remote MCP URL, and updater URL; `GET /update.sh` migrates existing Claude Desktop/Cursor entries while preserving API keys, custom environment values, unrelated MCP servers, config backups, and local wallet files.
+- `@agentrouternetwork/mcp` v0.2.0 and AgentRouter Desktop Extension v0.2.0 are now thin Remote MCP bridges. Their tool lists come from the hosted `/mcp` endpoint, so newly deployed tools and capability schemas appear after client reconnect without republishing or reinstalling the local bridge.
+- The private source repository is no longer referenced by public install, update, MCP config, package metadata, or user-facing Skill instructions. Publishing `@agentrouternetwork/mcp@0.2.0` as a public npm package is the remaining distribution prerequisite before deploying the new installer/update manifest.
 - Expanded `external_api_query` into a read-only high-frequency provider layer. Public providers now include GitHub, GDELT, SEC EDGAR, and Open-Meteo; user-connected providers now include YouTube Data API, VirusTotal, Google Places, Amadeus, EasyPost, and OpenAlex. Public sources can run without login, while credential-backed sources remain owner-scoped and never expose credentials in results.
 - Remote MCP `agentrouter_request` now dispatches built-in external API and social-user-voice capabilities consistently with the HTTP request endpoint. A valid AgentRouter credit API key resolves its owning user for private Provider connections; anonymous MCP calls remain limited to public/local sources. Provider-specific validation, unsupported operations, and zero-result responses now return machine-readable diagnostics.
 - Provider Studio now accepts `public-apis/public-apis` as an API discovery source. Catalog entries retain category/auth/HTTPS/CORS/documentation provenance, remain non-publishable candidates, and must continue through official-doc endpoint discovery plus live validation before entering the AgentRouter registry.
@@ -48,7 +51,7 @@ Last updated: 2026-07-23
 - Added lightweight `agent_router_route_observation_v1` records and `GET /agent-router/observations` so structured routing accumulates candidate, score, selection, verification, and feedback data for future learned routing without adding a heavy training system.
 - Added Claude Desktop Extension package source in `mcpb/agentrouter` and generated `/Users/huazhenghao/Downloads/Arc/agentrouter.mcpb` for no-command local installation.
 - `mcpb validate mcpb/agentrouter` passes and `mcpb pack mcpb/agentrouter` succeeds.
-- Added publish-ready npm/npx MCP package source in `packages/agentrouter-mcp` with target package name `@agentrouter/mcp`.
+- Added publish-ready npm/npx MCP package source in `packages/agentrouter-mcp` with target package name `@agentrouternetwork/mcp`.
 - Added `npm run mcp:npm:check` and `npm run mcp:npm:pack` to validate the npm package before publication.
 - Provider Studio now treats validation as a registration gate: services are only published when the endpoint can be invoked and returns a valid AgentRouter envelope. Failed API calls are reported with validation details and are not persisted into the registry.
 - Imported provider manifests now include inferred input schemas and an `agent_data_service_contract_v1` block with example questions, shape summaries, and quality expectations.
@@ -88,7 +91,7 @@ For any MCP-capable AI agent client, add the AgentRouter MCP server:
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "@agentrouter/mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "https://agentrouter.network",
         "AGENT_ROUTER_MAX_PRICE": "0.05"

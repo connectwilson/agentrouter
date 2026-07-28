@@ -1,10 +1,10 @@
 {
-  "name": "@agentrouter/mcp",
-  "version": "0.1.0",
-  "description": "MCP server for AgentRouter: route AI agents to paid API/data services and return verified evidence.",
+  "name": "@agentrouternetwork/mcp",
+  "version": "0.2.0",
+  "description": "Public MCP bridge for AgentRouter. Tool definitions and execution stay current through the hosted remote MCP.",
   "type": "module",
   "bin": {
-    "agentrouter-mcp": "./bin/agentrouter-mcp.js"
+    "agentrouter-mcp": "bin/agentrouter-mcp.js"
   },
   "files": [
     "bin",
@@ -27,13 +27,5 @@
   "engines": {
     "node": ">=18"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/connectwilson/agentrouter-markets.git",
-    "directory": "packages/agentrouter-mcp"
-  },
-  "homepage": "https://github.com/connectwilson/agentrouter-markets/tree/main/packages/agentrouter-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/connectwilson/agentrouter-markets/issues"
-  }
+  "homepage": "https://agentrouter.network"
 }

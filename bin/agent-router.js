@@ -354,9 +354,10 @@ function localDiagnostics() {
     local_payment: readiness,
     mcp_hint: {
       server_command: "npx",
-      server_args: ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"]
+      server_args: ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]
     },
-    repair_command: "npx -y github:connectwilson/agentrouter-markets#main --client all"
+    repair_command: "curl -fsSL https://agentrouter.network/update.sh | bash",
+    credit_setup_url: `${baseUrl}/account`
   };
 }
 
@@ -368,7 +369,8 @@ function localPaymentNotReadyResponse(readiness) {
     data_returned: false,
     stop_reason: "AgentRouter paid data calls require the local payment wallet/MCP bridge. The CLI did not fall back to quote-only mode.",
     local_payment: readiness,
-    repair_command: "npx -y github:connectwilson/agentrouter-markets#main --client all",
+    repair_command: "curl -fsSL https://agentrouter.network/update.sh | bash",
+    credit_setup_url: `${baseUrl}/account`,
     quote_only_command: 'agent-router fetch --quote-only "<task>"',
     next_step: "Run the repair command once, restart or reload the AI client, then retry the same data question."
   };

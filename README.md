@@ -370,56 +370,25 @@ OAuth is for user identity only. Provider-owned API credentials still belong in 
 
 ## Skill Install
 
-The default AI-agent entrypoint is the AgentRouter installer. It installs the Skill, configures supported local MCP clients, creates a local encrypted AgentRouter wallet, checks readiness, and prints the Arc Testnet USDC funding address:
+The default AI-agent entrypoint is the hosted AgentRouter installer. It installs the Skill and configures supported local MCP clients to use the public MCP bridge:
 
 ```bash
-npx -y agentrouter
+curl -fsSL https://agentrouter.network/install.sh | bash
 ```
 
-Before the npm package is published, the same installer can run from GitHub:
-
-```bash
-npx -y github:connectwilson/agentrouter-markets#main
-```
-
-The installer must print `READY`. If it prints `NOT_READY`, run:
-
-```bash
-npx -y agentrouter doctor
-```
-
-After install, restart or reload the AI client. For the first paid data request, AgentRouter checks the local payment path first and shows wallet funding instructions if the local Arc wallet needs USDC. The agent should not bypass that prompt with web search or a provider-specific MCP tool.
+After install, restart or reload the AI client. Create an AgentRouter API key from `/account` for paid hosted calls. The key stays in the local MCP configuration and the bridge forwards it only to the configured AgentRouter origin.
 
 ### Update an existing installation
 
 Existing users can refresh the installed Skill and local MCP bridge with one command:
 
 ```bash
-npx -y github:connectwilson/agentrouter-markets#main update
+curl -fsSL https://agentrouter.network/update.sh | bash
 ```
 
-After the npm package is published, the equivalent command is:
+The updater only changes AgentRouter entries that are already installed. It preserves existing wallet files, `AGENT_ROUTER_API_KEY`, custom AgentRouter environment settings, unrelated MCP servers, and timestamped backups of changed client config files. Restart or reload the updated AI client afterward. See [docs/UPGRADING.md](docs/UPGRADING.md) for rollback and pinned-package guidance.
 
-```bash
-npx -y agentrouter@latest update
-```
-
-The updater only changes AgentRouter entries that are already installed. It preserves the local wallet, `AGENT_ROUTER_API_KEY`, custom AgentRouter environment settings, unrelated MCP servers, and timestamped backups of changed client config files. Restart or reload the updated AI client, then verify readiness:
-
-```bash
-npx -y github:connectwilson/agentrouter-markets#main doctor
-```
-
-Pass `--client cursor`, `--client claude-desktop`, or `--client all` only when you intentionally want to add or repair that client during the update. See [docs/UPGRADING.md](docs/UPGRADING.md) for Remote MCP, Desktop Extension, pinned-package, and rollback guidance.
-
-For a specific local client:
-
-```bash
-npx -y agentrouter --client cursor
-npx -y agentrouter --client claude-desktop
-```
-
-The installer is the paid-call path. The Skills CLI alone only installs the agent instructions; it cannot safely edit MCP config or create a local payment wallet inside hosted agent sandboxes. If you only need quote-only Skill behavior, the standard Skills CLI still works:
+The Skills CLI alone only installs the agent instructions. If that is all you need, the standard Skills CLI still works:
 
 ```bash
 npx skills add connectwilson/agentrouter-skill --skill AgentRouter
@@ -445,12 +414,12 @@ Claude custom connectors can connect to any third-party remote MCP server URL. M
 
 ## Universal MCP Integration
 
-The runtime integration is a universal MCP server: any MCP-capable AI client calls AgentRouter locally, and the MCP server forwards requests to either the Render deployment at `https://agentrouter.network` or your local AgentRouter server.
+The runtime integration is a thin universal MCP bridge. It forwards JSON-RPC to the configured AgentRouter Remote MCP, so server-side tools and capability schemas update without republishing the client package.
 
 Run the MCP server with npx:
 
 ```bash
-npx -y --package github:connectwilson/agentrouter-markets#main agent-router-mcp
+npx -y --package @agentrouternetwork/mcp@latest agentrouter-mcp
 ```
 
 Run this MCP command in a terminal or put the command/args into an MCP client config. For Claude Code chat-style installation, use the Skill install command above.
@@ -462,7 +431,7 @@ Most AI clients configure MCP like this:
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "https://agentrouter.network",
         "AGENT_ROUTER_MAX_PRICE": "0.05"
@@ -483,7 +452,7 @@ PORT=8800 npm start
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "http://127.0.0.1:8800",
         "AGENT_ROUTER_MAX_PRICE": "0.05"
@@ -546,13 +515,7 @@ packages/agentrouter-mcp
 Target package name:
 
 ```text
-@agentrouter/mcp
-```
-
-Until `@agentrouter/mcp` is published to npm, use the GitHub npx package form:
-
-```bash
-npx -y --package github:connectwilson/agentrouter-markets#main agent-router-mcp
+@agentrouternetwork/mcp
 ```
 
 MCP config:
@@ -562,7 +525,7 @@ MCP config:
   "mcpServers": {
     "AgentRouter": {
       "command": "npx",
-      "args": ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
         "AGENT_ROUTER_URL": "https://agentrouter.network",
         "AGENT_ROUTER_MAX_PRICE": "0.05"
