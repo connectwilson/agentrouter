@@ -1,4 +1,4 @@
-const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
+const skillInstallCommand = "npx @agentrouternetwork/agentrouter --full";
 const localInstallConfig = `{
   "mcpServers": {
     "AgentRouter": {
@@ -44,7 +44,7 @@ export function homeHtml({ auth = {} } = {}) {
               <button type="button" id="home-copy-install">Copy</button>
             </div>
           </div>
-          <p class="install-note" id="home-install-note">Installs the AgentRouter Skill once. Hosted capabilities and providers update automatically.</p>
+          <p class="install-note" id="home-install-note">Installs the Skill, connects one detected AI client, and verifies AgentRouter tools. Hosted capabilities update automatically.</p>
           <div class="client-row" aria-label="Supported AI agent tools">
             <span>Works with</span>
             <div class="client-logos">
