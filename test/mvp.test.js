@@ -213,7 +213,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     const homeHtml = await homeResponse.text();
     assert.match(
       homeHtml,
-      /npx @agentrouternetwork\/agentrouter/
+      /npx @agentrouternetwork\/agentrouter --full/
     );
 
     const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
@@ -224,7 +224,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
     assert.match(
       skillText,
-      /npx @agentrouternetwork\/agentrouter/
+      /npx @agentrouternetwork\/agentrouter --full/
     );
     assert.doesNotMatch(skillText, /--skill AgentRouter -g -y/);
     assert.match(skillText, /explicit authorization/i);
