@@ -1,5 +1,16 @@
 const PLATFORM_POLICIES = Object.freeze({
-  x: policy("keyword_user_voice", ["search", "read_post", "read_user_posts"], ["x.com", "twitter.com"], ["opencli-twitter", "twitter-cli"]),
+  x: policy(
+    "keyword_user_voice",
+    ["search", "read_post", "read_user_posts"],
+    ["x.com", "twitter.com"],
+    ["opencli-twitter"],
+    ["twitter-cli"],
+    {
+      default_auth: "browser_managed",
+      requires_system_password: false,
+      fallback_activation: "explicit_opt_in"
+    }
+  ),
   reddit: policy("keyword_user_voice", ["search", "read_post", "read_community"], ["reddit.com", "oauth.reddit.com"], ["opencli-reddit", "rdt-cli"]),
   xiaohongshu: policy("keyword_user_voice", ["search", "read_post", "read_comments"], ["xiaohongshu.com", "edith.xiaohongshu.com"], ["opencli-xiaohongshu", "xhs-skills-local", "xhs-cli"]),
   bilibili: policy("keyword_user_voice", ["search", "read_video", "read_subtitles"], ["bilibili.com", "api.bilibili.com"], ["bili-cli", "opencli-bilibili"]),
@@ -41,6 +52,10 @@ export function buildLocalSocialExecutionPlan(input = {}) {
     execution_location: "user_device",
     allowed_domains: [...platformPolicy.allowed_domains],
     adapter_candidates: [...platformPolicy.adapter_candidates],
+    optional_adapter_candidates: [...platformPolicy.optional_adapter_candidates],
+    ...(platformPolicy.connector_policy
+      ? { connector_policy: { ...platformPolicy.connector_policy } }
+      : {}),
     permissions: {
       access: "read_only",
       user_confirmation: "required_first_use",
@@ -105,8 +120,15 @@ function safePublicUrl(value) {
   }
 }
 
-function policy(researchSuitability, operations, allowedDomains, adapterCandidates) {
-  return Object.freeze({ research_suitability: researchSuitability, operations: Object.freeze(operations), allowed_domains: Object.freeze(allowedDomains), adapter_candidates: Object.freeze(adapterCandidates) });
+function policy(researchSuitability, operations, allowedDomains, adapterCandidates, optionalAdapterCandidates = [], connectorPolicy = null) {
+  return Object.freeze({
+    research_suitability: researchSuitability,
+    operations: Object.freeze(operations),
+    allowed_domains: Object.freeze(allowedDomains),
+    adapter_candidates: Object.freeze(adapterCandidates),
+    optional_adapter_candidates: Object.freeze(optionalAdapterCandidates),
+    connector_policy: connectorPolicy ? Object.freeze(connectorPolicy) : null
+  });
 }
 
 function clean(value, max) {

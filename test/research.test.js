@@ -198,6 +198,68 @@ test("local social routing falls back in backend order without shell interpolati
   assert.deepEqual(calls[0].args.slice(0, 3), ["reddit", "search", "Kimi K3 complaints"]);
 });
 
+test("X research keeps the credential-reading CLI disabled by default", async () => {
+  const calls = [];
+  const result = await searchLocalSocialPlatform("x", "Kimi K3 complaints", 10, {
+    runCommand: async (command, args) => {
+      calls.push({ command, args });
+      return { status: "provider_error", error: "Browser extension is not connected" };
+    }
+  });
+
+  assert.deepEqual(calls, [{
+    command: "opencli",
+    args: ["twitter", "search", "Kimi K3 complaints", "--limit", "10", "-f", "json"]
+  }]);
+  assert.equal(result.status, "browser_connector_offline");
+  assert.equal(result.action_required.code, "BROWSER_CONNECTOR_OFFLINE");
+  assert.equal(result.action_required.requires_system_password, false);
+});
+
+test("X research credential fallback requires explicit opt-in", async () => {
+  const calls = [];
+  const result = await searchLocalSocialPlatform("x", "Kimi K3 complaints", 10, {
+    allowCredentialFallback: true,
+    runCommand: async (command, args) => {
+      calls.push({ command, args });
+      if (command === "opencli") return { status: "provider_error", error: "Browser connector offline" };
+      return {
+        status: "completed",
+        data: [{ url: "https://x.com/example/status/123", text: "Explicit fallback result" }]
+      };
+    }
+  });
+
+  assert.deepEqual(calls.map((item) => item.command), ["opencli", "twitter"]);
+  assert.equal(result.status, "completed");
+  assert.equal(result.backend_id, "twitter-cli");
+});
+
+test("creator research preserves the browser-extension reconnect action", async () => {
+  const result = await searchPublicDiscussions(
+    { question: "Kimi K3 complaints", platforms: ["x"] },
+    {
+      apiKey: "",
+      configPath: "/tmp/agentrouter-test-no-xcrawl-config.json",
+      localSearch: async () => ({
+        status: "browser_connector_offline",
+        backend_id: null,
+        rows: [],
+        attempts: [{ backend_id: "opencli-twitter", status: "provider_error" }]
+      }),
+      semanticSearch: async () => ({ status: "no_results", rows: [], attempts: [] })
+    }
+  );
+
+  assert.equal(result.searches[0].local_status, "browser_connector_offline");
+  assert.equal(result.searches[0].status, "browser_connector_offline");
+  assert.deepEqual(result.action_required, [{
+    platform: "x",
+    action: "connect_opencli_browser_extension",
+    recommendation: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying"
+  }]);
+});
+
 test("local research routes all suitable keyword platforms through read-only adapters", async () => {
   const expected = {
     bilibili: ["search", "Kimi K3 complaints", "--type", "video", "-n", "10"],

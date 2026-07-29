@@ -40,6 +40,12 @@ test("local execution plans are declarative, read-only, and upload nothing by de
 
   const youtubePlan = buildLocalSocialExecutionPlan({ platform: "youtube", operation: "search", query: "KIMI K3" });
   assert.deepEqual(youtubePlan.adapter_candidates, ["opencli-youtube", "yt-dlp"]);
+
+  const xPlan = buildLocalSocialExecutionPlan({ platform: "x", operation: "read_post", target: "https://x.com/example/status/123" });
+  assert.deepEqual(xPlan.adapter_candidates, ["opencli-twitter"]);
+  assert.deepEqual(xPlan.optional_adapter_candidates, ["twitter-cli"]);
+  assert.equal(xPlan.connector_policy.default_auth, "browser_managed");
+  assert.equal(xPlan.connector_policy.requires_system_password, false);
 });
 
 test("local execution plans reject write operations and unsupported platform operations", () => {

@@ -5,7 +5,7 @@ import path from "node:path";
 const BACKENDS = {
   x: [
     { id: "opencli-twitter", command: "opencli", args: (query, limit) => ["twitter", "search", query, "--limit", String(limit), "-f", "json"] },
-    { id: "twitter-cli", command: "twitter", args: (query, limit) => ["search", query, "-n", String(limit), "--json"] }
+    { id: "twitter-cli", command: "twitter", explicitOptIn: true, args: (query, limit) => ["search", query, "-n", String(limit), "--json"] }
   ],
   reddit: [
     { id: "opencli-reddit", command: "opencli", timeout: 40000, args: (query, limit) => ["reddit", "search", query, "--limit", String(limit), "-f", "json"] },
@@ -44,13 +44,35 @@ export async function searchLocalSocialPlatform(platform, query, limit = 10, opt
     }
     if (result.status === "auth_required") continue;
   }
-  for (const backend of BACKENDS[platform] || []) {
+  const backends = (BACKENDS[platform] || []).filter(
+    (backend) => !backend.explicitOptIn || options.allowCredentialFallback === true
+  );
+  for (const backend of backends) {
     const result = await run(backend.command, backend.args(query, limit), { timeout: backend.timeout });
     attempts.push({ backend_id: backend.id, status: result.status, error: result.error || null });
     if (result.status !== "completed") continue;
     const rows = extractRows(result.data);
     if (!rows.length) continue;
     return { status: "completed", backend_id: backend.id, rows, attempts };
+  }
+  if (
+    platform === "x"
+    && options.allowCredentialFallback !== true
+    && attempts.some((item) => item.backend_id === "opencli-twitter" && item.status !== "completed")
+  ) {
+    return {
+      status: "browser_connector_offline",
+      backend_id: null,
+      rows: [],
+      attempts,
+      action_required: {
+        code: "BROWSER_CONNECTOR_OFFLINE",
+        connector_id: "opencli-twitter",
+        message: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying.",
+        requires_system_password: false,
+        credential_access: "browser_managed"
+      }
+    };
   }
   return {
     status: attempts.some((item) => item.status === "auth_required") ? "auth_required" : attempts.some((item) => item.status === "provider_error") ? "provider_error" : "not_configured",

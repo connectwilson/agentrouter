@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.5.0"
+  version: "0.6.0"
 ---
 
 # AgentRouter
@@ -144,9 +144,15 @@ Setup flow:
 7. If the client cannot hot-reload, ask for one client reload without rerunning installation.
 
 For `social_post_read`, never replace the local connector with a generic web
-scrape when AgentRouter reports `local_connector_required`, `auth_required`, or
-`local_connector_unavailable`. Ask the user to sign in to X locally or install
-the supported read-only Twitter connector. Never request cookies in chat.
+scrape when AgentRouter reports `local_connector_required`,
+`browser_connector_offline`, `auth_required`, or
+`local_connector_unavailable`. The default local connector is the read-only
+OpenCLI browser extension, which uses the browser-managed X session without
+exporting or decrypting cookies. When it is offline, ask the user only to open
+Chrome, enable the OpenCLI extension, and reconnect it. Do not ask for a system
+password, Keychain access, cookie values, `auth_token`, or `ct0`. The legacy
+Twitter CLI is an explicit opt-in fallback and must not be recommended by
+default.
 
 If the current client cannot be identified, the command exits with an actionable error. Do not modify multiple client configurations as a fallback. For Skill plus HTTP verification without changing an MCP configuration, use `npx @agentrouternetwork/agentrouter`.
 

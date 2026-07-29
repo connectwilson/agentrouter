@@ -9,6 +9,7 @@ import {
   runSocialPostReadCapability
 } from "../src/social-post-read.js";
 import {
+  buildLocalCliEnvironment,
   localSocialPostRequest,
   runLocalSocialPostRead
 } from "../packages/agentrouter-mcp/server/local-social-post.js";
@@ -107,12 +108,11 @@ test("hosted fetch recognizes an X URL and requests local execution instead of n
   }
 });
 
-test("public MCP bridge reads an X post locally with fixed read-only commands", async () => {
+test("public MCP bridge reads an X post through the browser connector first", async () => {
   const calls = [];
   const result = await runLocalSocialPostRead(xUrl, {
     runCommand: async (command, args) => {
       calls.push({ command, args });
-      if (command === "opencli") return { status: "missing", rows: [] };
       return {
         status: "completed",
         data: {
@@ -129,14 +129,83 @@ test("public MCP bridge reads an X post locally with fixed read-only commands", 
   });
 
   assert.deepEqual(calls, [
-    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] },
-    { command: "twitter", args: ["tweet", xUrl, "-n", "0", "--json"] }
+    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] }
   ]);
   assert.equal(result.ok, true);
   assert.equal(result.result.post.text, "Local browser session result");
   assert.equal(result.result.post.canonical_url, xUrl);
   assert.equal(result.protocol.execution_location, "user_device");
   assert.equal(result.protocol.credential_policy, "never_upload");
+});
+
+test("public MCP bridge does not request keychain access when the browser connector is offline", async () => {
+  const calls = [];
+  const result = await runLocalSocialPostRead(xUrl, {
+    runCommand: async (command, args) => {
+      calls.push({ command, args });
+      return { status: "provider_error", error: "Failed to start opencli daemon" };
+    }
+  });
+
+  assert.deepEqual(calls, [
+    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] }
+  ]);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "browser_connector_offline");
+  assert.equal(result.action_required.code, "BROWSER_CONNECTOR_OFFLINE");
+  assert.equal(result.action_required.connector_id, "opencli-twitter");
+  assert.equal(result.action_required.requires_system_password, false);
+  assert.equal(result.action_required.credential_access, "browser_managed");
+  assert.match(result.action_required.message, /OpenCLI browser extension/i);
+  assert.doesNotMatch(JSON.stringify(result.action_required), /auth_token|ct0|keychain/i);
+});
+
+test("Twitter CLI credential fallback requires explicit opt-in", async () => {
+  const calls = [];
+  const result = await runLocalSocialPostRead(xUrl, {
+    allowCredentialFallback: true,
+    runCommand: async (command, args) => {
+      calls.push({ command, args });
+      if (command === "opencli") {
+        return { status: "provider_error", error: "Browser extension is not connected" };
+      }
+      return {
+        status: "completed",
+        data: {
+          tweet: {
+            id: "2081890388298874880",
+            text: "Explicit fallback result",
+            author: { username: "marclou" }
+          }
+        }
+      };
+    }
+  });
+
+  assert.deepEqual(calls, [
+    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] },
+    { command: "twitter", args: ["tweet", xUrl, "-n", "0", "--json"] }
+  ]);
+  assert.equal(result.ok, true);
+  assert.equal(result.source.backend_id, "twitter-cli");
+});
+
+test("MCP bridge discovers user-installed OpenCLI without forwarding secrets", () => {
+  const env = buildLocalCliEnvironment({
+    HOME: "/Users/example",
+    PATH: "/usr/bin",
+    LANG: "en_US.UTF-8",
+    AGENT_ROUTER_API_KEY: "secret",
+    TWITTER_AUTH_TOKEN: "secret"
+  });
+
+  assert.equal(
+    env.PATH,
+    "/Users/example/.npm-global/bin:/Users/example/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin"
+  );
+  assert.equal(env.LANG, "en_US.UTF-8");
+  assert.equal("AGENT_ROUTER_API_KEY" in env, false);
+  assert.equal("TWITTER_AUTH_TOKEN" in env, false);
 });
 
 test("public MCP bridge intercepts natural and structured X reads only", () => {

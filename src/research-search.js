@@ -33,7 +33,7 @@ export async function searchPublicDiscussions(input = {}, options = {}) {
         localRows = relevantRows;
         break;
       }
-      if (attempt.status === "auth_required") break;
+      if (["auth_required", "browser_connector_offline"].includes(attempt.status)) break;
     }
     const nativeQuery = nativeQueries.join(" | ");
     if (localRows.length) {
@@ -54,11 +54,11 @@ export async function searchPublicDiscussions(input = {}, options = {}) {
       })).filter(Boolean));
       continue;
     }
-    if (local.status === "auth_required") {
+    if (["auth_required", "browser_connector_offline"].includes(local.status)) {
       searches.push({
         platform,
         query: nativeQuery,
-        status: "auth_required",
+        status: local.status,
         result_count: 0,
         credits_used: 0,
         provider_id: "agentrouter-social-local",
@@ -170,7 +170,11 @@ export async function searchPublicDiscussions(input = {}, options = {}) {
     question,
     provider_id: "agentrouter-social-router",
     searched_at: new Date().toISOString(),
-    status: uniqueCandidates.length ? "review_required" : searches.some((item) => item.status === "provider_error") ? "partial_or_failed" : "no_results",
+    status: uniqueCandidates.length
+      ? "review_required"
+      : searches.some((item) => ["provider_error", "browser_connector_offline"].includes(item.status))
+        ? "partial_or_failed"
+        : "no_results",
     searches,
     candidates: uniqueCandidates,
     action_required: buildActionRequired(searches),
@@ -300,10 +304,18 @@ function normalizeEngagement(row) {
 }
 
 function buildActionRequired(searches) {
-  const missing = searches.filter((item) => ["not_configured", "auth_required", "provider_error"].includes(item.local_status)).map((item) => ({
+  const missing = searches.filter((item) => ["not_configured", "auth_required", "provider_error", "browser_connector_offline"].includes(item.local_status)).map((item) => ({
     platform: item.platform,
-    action: item.local_status === "auth_required" ? "login_with_dedicated_account" : item.local_status === "provider_error" ? "inspect_local_browser_session" : "install_local_social_connector",
-    recommendation: item.platform === "x" ? "Connect the AgentRouter X connector or sign in through the browser bridge" : item.platform === "reddit" ? "Sign in to Reddit in the dedicated AgentRouter browser profile" : item.platform === "xiaohongshu" ? "Open the local browser profile, confirm Xiaohongshu is signed in, then retry" : item.platform === "bilibili" ? "Install or inspect the local Bilibili read-only connector" : item.platform === "youtube" ? "Inspect the local YouTube browser session or install yt-dlp" : item.platform === "facebook" ? "Sign in to Facebook in the dedicated AgentRouter browser profile" : "Configure an AgentRouter platform connector"
+    action: item.local_status === "browser_connector_offline"
+      ? "connect_opencli_browser_extension"
+      : item.local_status === "auth_required"
+        ? "login_with_dedicated_account"
+        : item.local_status === "provider_error"
+          ? "inspect_local_browser_session"
+          : "install_local_social_connector",
+    recommendation: item.local_status === "browser_connector_offline"
+      ? "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying"
+      : item.platform === "x" ? "Connect the AgentRouter X connector or sign in through the browser bridge" : item.platform === "reddit" ? "Sign in to Reddit in the dedicated AgentRouter browser profile" : item.platform === "xiaohongshu" ? "Open the local browser profile, confirm Xiaohongshu is signed in, then retry" : item.platform === "bilibili" ? "Install or inspect the local Bilibili read-only connector" : item.platform === "youtube" ? "Inspect the local YouTube browser session or install yt-dlp" : item.platform === "facebook" ? "Sign in to Facebook in the dedicated AgentRouter browser profile" : "Configure an AgentRouter platform connector"
   }));
   return missing.length ? missing : [];
 }

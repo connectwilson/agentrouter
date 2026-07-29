@@ -1,9 +1,10 @@
 # Status
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 ## Current MVP
 
+- X local reads now use a no-password browser-connector policy. OpenCLI is the only default adapter for single-post reads and creator research; the legacy Twitter CLI is explicit opt-in. The public MCP bridge discovers OpenCLI in user-level npm/local bin directories, keeps secrets out of child-process environments, and returns `browser_connector_offline` with a browser-extension reconnect action instead of prompting for Keychain access or cookie values.
 - The public setup path is now agent-native: users give their current agent `Set up https://agentrouter.network/SKILL.md`. The canonical root Skill grants narrowly scoped permission to add only AgentRouter to the current client, prefers Remote MCP, preserves unrelated configuration, avoids wallet/payment setup, and requires an MCP `initialize` plus `tools/list` verification.
 - The hosted Shell installer is now a compatibility fallback. It installs the Skill without editing desktop MCP configuration by default, requires an explicit per-client flag before changing Claude Desktop or Cursor, and no longer injects obsolete Arc RPC, wallet directory, payment backend, or default-spend settings.
 - Replaced the private-GitHub client dependency with a repository-independent update channel. `GET /agent-router/update-manifest.json` declares the stable public MCP package, Skill URL, Remote MCP URL, and updater URL; `GET /update.sh` migrates existing Claude Desktop/Cursor entries while preserving API keys, custom environment values, unrelated MCP servers, config backups, and local wallet files.

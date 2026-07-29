@@ -6,9 +6,16 @@ The package forwards MCP JSON-RPC to `https://agentrouter.network/mcp`. Tool def
 
 For a public X status URL, `agentrouter_fetch` and the structured
 `social_post_read` capability execute through a fixed read-only connector on
-the user's device. The bridge tries OpenCLI and then the `twitter` CLI. Browser
-login state remains local; credentials, cookies, and raw connector output are
-not uploaded to AgentRouter.
+the user's device. OpenCLI is the default connector: its browser extension reads
+the public post inside the already signed-in browser without exporting or
+decrypting cookies. Browser login state remains local; credentials, cookies, and
+raw connector output are not uploaded to AgentRouter.
+
+If the browser bridge is offline, AgentRouter returns
+`browser_connector_offline` with a reconnect action. It does not ask for a
+system password, Keychain access, or cookie values. The legacy `twitter` CLI is
+disabled by default and is attempted only when the MCP process is explicitly
+configured with `AGENTROUTER_ALLOW_TWITTER_CLI_FALLBACK=1`.
 
 Create `AGENT_ROUTER_API_KEY` from the signed-in AgentRouter account page. When present, the MCP server uses the prepaid credits balance and does not require a local Arc wallet.
 

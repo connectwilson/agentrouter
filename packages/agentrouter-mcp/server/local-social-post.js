@@ -1,13 +1,22 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 export async function runLocalSocialPostRead(value, options = {}) {
   const parsed = parseXStatusUrl(value);
   if (!parsed) return invalidUrl();
   const runCommand = options.runCommand || spawnCommand;
-  const attempts = [
-    { command: "opencli", args: ["twitter", "tweet", parsed.canonical_url, "-f", "json"] },
-    { command: "twitter", args: ["tweet", parsed.canonical_url, "-n", "0", "--json"] }
-  ];
+  const attempts = [{
+    command: "opencli",
+    args: ["twitter", "tweet", parsed.canonical_url, "-f", "json"]
+  }];
+  const allowCredentialFallback = options.allowCredentialFallback === true
+    || process.env.AGENTROUTER_ALLOW_TWITTER_CLI_FALLBACK === "1";
+  if (allowCredentialFallback) {
+    attempts.push({
+      command: "twitter",
+      args: ["tweet", parsed.canonical_url, "-n", "0", "--json"]
+    });
+  }
   const diagnostics = [];
   for (const attempt of attempts) {
     const result = await runCommand(attempt.command, attempt.args, { timeout: 45000 });
@@ -20,6 +29,7 @@ export async function runLocalSocialPostRead(value, options = {}) {
     const row = extractTweet(result.data, parsed);
     if (row) return completed(parsed, row, diagnostics.at(-1).backend_id, diagnostics);
   }
+  if (!allowCredentialFallback) return browserConnectorOffline(parsed, diagnostics);
   return {
     ok: false,
     status: diagnostics.some((item) => item.status === "auth_required") ? "auth_required" : "local_connector_unavailable",
@@ -29,6 +39,29 @@ export async function runLocalSocialPostRead(value, options = {}) {
       message: "Install the read-only Twitter CLI or sign in to X in the local browser session, then retry."
     },
     attempts: diagnostics
+  };
+}
+
+function browserConnectorOffline(parsed, attempts) {
+  return {
+    ok: false,
+    status: "browser_connector_offline",
+    request: {
+      capability: "social_post_read",
+      params: { url: parsed.canonical_url, platform: "x" }
+    },
+    action_required: {
+      code: "BROWSER_CONNECTOR_OFFLINE",
+      connector_id: "opencli-twitter",
+      message: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying.",
+      requires_system_password: false,
+      credential_access: "browser_managed",
+      permissions: {
+        access: "read_only",
+        write_actions: "denied"
+      }
+    },
+    attempts
   };
 }
 
@@ -166,7 +199,7 @@ function spawnCommand(command, args, options = {}) {
     let stderr = "";
     let settled = false;
     const child = spawn(command, args, {
-      env: localCliEnvironment(),
+      env: buildLocalCliEnvironment(),
       stdio: ["ignore", "pipe", "pipe"]
     });
     const finish = (result) => {
@@ -194,9 +227,8 @@ function spawnCommand(command, args, options = {}) {
   });
 }
 
-function localCliEnvironment() {
+export function buildLocalCliEnvironment(environment = process.env) {
   const allowed = [
-    "PATH",
     "HOME",
     "USER",
     "LOGNAME",
@@ -207,9 +239,19 @@ function localCliEnvironment() {
     "XDG_CACHE_HOME",
     "XDG_DATA_HOME"
   ];
-  return Object.fromEntries(
+  const safeEnvironment = Object.fromEntries(
     allowed
-      .filter((key) => typeof process.env[key] === "string")
-      .map((key) => [key, process.env[key]])
+      .filter((key) => typeof environment[key] === "string")
+      .map((key) => [key, environment[key]])
   );
+  const userHome = environment.HOME || environment.USERPROFILE;
+  const searchPaths = [
+    userHome && path.join(userHome, ".npm-global", "bin"),
+    userHome && path.join(userHome, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    environment.PATH
+  ].filter(Boolean);
+  safeEnvironment.PATH = [...new Set(searchPaths)].join(path.delimiter);
+  return safeEnvironment;
 }
