@@ -129,7 +129,8 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /npx agentrouter/);
+    assert.match(homeHtml, /npx @agentrouternetwork\/agentrouter/);
+    assert.doesNotMatch(homeHtml, /npx agentrouter(?:\s|$)/);
     assert.doesNotMatch(homeHtml, /--skill AgentRouter -g -y/);
     assert.match(homeHtml, /Give this to your AI agent/);
     assert.match(homeHtml, /Installs the AgentRouter Skill once/);
@@ -212,7 +213,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     const homeHtml = await homeResponse.text();
     assert.match(
       homeHtml,
-      /npx agentrouter/
+      /npx @agentrouternetwork\/agentrouter/
     );
 
     const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
@@ -223,7 +224,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
     assert.match(
       skillText,
-      /npx agentrouter/
+      /npx @agentrouternetwork\/agentrouter/
     );
     assert.doesNotMatch(skillText, /--skill AgentRouter -g -y/);
     assert.match(skillText, /explicit authorization/i);
@@ -575,7 +576,7 @@ test("agentrouter one-command installer is HTTP-ready without changing MCP confi
     clients: ["auto"],
     createWallet: true
   });
-  assert.match(installUsage(), /npx agentrouter/);
+  assert.match(installUsage(), /npx @agentrouternetwork\/agentrouter/);
   assert.match(installUsage(), /--mcp/);
   assert.match(installUsage(), /--wallet/);
 });
@@ -584,7 +585,7 @@ test("public agentrouter npm installer contains only bootstrap files and complet
   await withServer(async ({ baseUrl }) => {
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
-    assert.equal(packageJson.name, "agentrouter");
+    assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
     assert.equal(packageJson.version, "0.1.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
