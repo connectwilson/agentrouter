@@ -586,7 +586,7 @@ test("public agentrouter npm installer contains only bootstrap files and complet
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.1.0");
+    assert.equal(packageJson.version, "0.2.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -613,6 +613,53 @@ test("public agentrouter npm installer contains only bootstrap files and complet
     assert.equal(payload.fetch_url, `${baseUrl}/agent-router/fetch`);
     assert.equal(await fs.access(path.join(skillDir, "SKILL.md")).then(() => true, () => false), true);
     assert.equal(await fs.access(cursorConfig).then(() => true, () => false), false);
+    assert.equal(await fs.access(path.join(home, ".agentrouter", "adn", "wallet.json")).then(() => true, () => false), false);
+  });
+});
+
+test("public agentrouter --full configures one MCP client and verifies agentrouter_fetch", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-public-full-"));
+    const claudeCodeConfig = path.join(home, ".claude.json");
+    const originalConfig = {
+      mcpServers: {
+        OtherTool: { command: "other-tool", args: ["serve"] }
+      }
+    };
+    await fs.writeFile(claudeCodeConfig, JSON.stringify(originalConfig, null, 2));
+
+    const result = await runProcess(process.execPath, [
+      path.join(packageDir, "bin", "agentrouter.js"),
+      "--full",
+      "--url",
+      baseUrl,
+      "--json"
+    ], {
+      HOME: home,
+      CLAUDE_CODE_CONFIG: claudeCodeConfig
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.runtime_mode, "mcp");
+    assert.equal(payload.mcp_verified, true);
+    assert.ok(payload.mcp_tools.includes("agentrouter_fetch"));
+    assert.deepEqual(payload.configured_clients.map((client) => client.name), ["Claude Code"]);
+
+    const configured = JSON.parse(await fs.readFile(claudeCodeConfig, "utf8"));
+    assert.deepEqual(configured.mcpServers.OtherTool, originalConfig.mcpServers.OtherTool);
+    assert.equal(configured.mcpServers.AgentRouter.command, "npx");
+    assert.deepEqual(configured.mcpServers.AgentRouter.args, [
+      "-y",
+      "--package",
+      "@agentrouternetwork/mcp@latest",
+      "agentrouter-mcp"
+    ]);
+    assert.deepEqual(configured.mcpServers.AgentRouter.env, {
+      AGENT_ROUTER_URL: baseUrl
+    });
     assert.equal(await fs.access(path.join(home, ".agentrouter", "adn", "wallet.json")).then(() => true, () => false), false);
   });
 });
