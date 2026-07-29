@@ -1,5 +1,5 @@
 {
-  "name": "agentrouter",
+  "name": "@agentrouternetwork/agentrouter",
   "version": "0.1.0",
   "description": "One-command AgentRouter Skill installer with hosted HTTP runtime verification.",
   "type": "module",

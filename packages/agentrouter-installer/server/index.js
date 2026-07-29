@@ -76,9 +76,9 @@ export function parseInstallArgs(argv) {
 
 export function installUsage() {
   return `Usage:
-  npx agentrouter
-  npx agentrouter --json
-  npx agentrouter --url https://agentrouter.network
+  npx @agentrouternetwork/agentrouter
+  npx @agentrouternetwork/agentrouter --json
+  npx @agentrouternetwork/agentrouter --url https://agentrouter.network
 
 Installs the AgentRouter Skill and verifies the hosted HTTP runtime.
 It does not edit MCP configuration or create a local wallet.

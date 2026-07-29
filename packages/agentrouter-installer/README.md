@@ -3,7 +3,7 @@
 Install AgentRouter and verify its hosted HTTP runtime:
 
 ```bash
-npx agentrouter
+npx @agentrouternetwork/agentrouter
 ```
 
 The installer:

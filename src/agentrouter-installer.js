@@ -201,7 +201,7 @@ export function parseInstallArgs(argv) {
 
 export function installUsage() {
   return `Usage:
-  npx agentrouter
+  npx @agentrouternetwork/agentrouter
   agentrouter install
   agentrouter update
   agentrouter doctor
@@ -266,7 +266,7 @@ export async function diagnoseAgentRouter(options = {}) {
     runtime_mode: ready ? "http" : null,
     agent_router_url: agentRouterUrl,
     checks,
-    repair_command: "npx agentrouter",
+    repair_command: "npx @agentrouternetwork/agentrouter",
     next_step: ready
       ? "AgentRouter is ready in HTTP mode. Ask a normal data/API question."
       : "Run the repair command, then run agentrouter doctor again."

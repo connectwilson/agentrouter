@@ -1,4 +1,4 @@
-const skillInstallCommand = "npx agentrouter";
+const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
   "mcpServers": {
     "AgentRouter": {
