@@ -92,6 +92,43 @@ test("X API provider searches with the secret internally and returns normalized 
   assert.equal(JSON.stringify(result).includes("x-secret-token"), false);
 });
 
+test("X API provider reads one public status URL without exposing its credential", async () => {
+  const store = createMemoryStore();
+  const secrets = memorySecretStore();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "x",
+    provider_type: "x_api",
+    credentials: { bearer_token: "x-read-secret" }
+  }, secrets);
+  const requests = [];
+  const providers = await socialProvidersForUser(store, "github:user-a", {
+    ...secrets,
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            id: "2081890388298874880",
+            text: "One public X post",
+            author_id: "u1",
+            created_at: "2026-07-29T00:00:00Z",
+            public_metrics: { like_count: 8, reply_count: 2, retweet_count: 1, impression_count: 100 }
+          },
+          includes: { users: [{ id: "u1", username: "marclou" }] }
+        })
+      };
+    }
+  });
+
+  const result = await providers.x[0].readPost("https://x.com/marclou/status/2081890388298874880");
+  assert.match(requests[0].url, /api\.x\.com\/2\/tweets\/2081890388298874880/);
+  assert.equal(requests[0].options.headers.authorization, "Bearer x-read-secret");
+  assert.equal(result.rows[0].url, "https://x.com/marclou/status/2081890388298874880");
+  assert.deepEqual(result.rows[0].engagement, { likes: 8, comments: 2, shares: 1, views: 100 });
+  assert.equal(JSON.stringify(result).includes("x-read-secret"), false);
+});
+
 test("Reddit API provider uses the user's OAuth token and normalizes permalink results", async () => {
   const store = createMemoryStore();
   const secrets = memorySecretStore();

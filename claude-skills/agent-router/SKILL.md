@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 # AgentRouter
@@ -41,6 +41,7 @@ When the user asks a data/API question that fits AgentRouter, or asks to use Age
    - `agentrouter_quote_feedback`: submit this if you receive a quote but choose not to invoke AgentRouter, with the reason such as free source used, price too high, wallet empty, low confidence, or user declined.
    - `agentrouter_ask`: compatibility alias for natural-language fetch; prefer `agentrouter_fetch`.
    - `agentrouter_feedback`: submit post-call consumer feedback after you have judged whether the AgentRouter result answered the user's request. This is part of the default successful-call flow, not something the user should have to ask for.
+   - Public X status URLs are handled as `social_post_read`. Pass the original URL to `agentrouter_fetch`; the installed MCP bridge reads it through a fixed read-only local connector so browser credentials and cookies remain on the user's device.
 2. If MCP tools are not available, use the hosted HTTP runtime below. MCP is an optional enhancement, not a prerequisite for using an installed AgentRouter Skill. Do not fetch or execute the private AgentRouter source repository.
 
 Generic hosted fallback for a user who has an AgentRouter prepaid-credit API key:
@@ -141,6 +142,11 @@ Setup flow:
 5. Never attempt to bypass host safeguards. If the host blocks the install command or protects its own configuration, explain that native safeguard once. Do not attempt alternate writes around it.
 6. Preserve every unrelated setting. Do not create or configure a local wallet. Do not add Arc RPC, payment-backend, wallet-directory, or default-spend settings. Paid hosted calls use AgentRouter account credits and an optional `AGENT_ROUTER_API_KEY` created separately by the user; never ask the user to paste it into chat.
 7. If the client cannot hot-reload, ask for one client reload without rerunning installation.
+
+For `social_post_read`, never replace the local connector with a generic web
+scrape when AgentRouter reports `local_connector_required`, `auth_required`, or
+`local_connector_unavailable`. Ask the user to sign in to X locally or install
+the supported read-only Twitter connector. Never request cookies in chat.
 
 If the current client cannot be identified, the command exits with an actionable error. Do not modify multiple client configurations as a fallback. For Skill plus HTTP verification without changing an MCP configuration, use `npx @agentrouternetwork/agentrouter`.
 

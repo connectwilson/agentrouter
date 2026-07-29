@@ -4,6 +4,12 @@ Public, zero-configuration MCP bridge for AgentRouter.
 
 The package forwards MCP JSON-RPC to `https://agentrouter.network/mcp`. Tool definitions come from the hosted AgentRouter server, so newly deployed capabilities appear after the AI client reconnects without requiring a new package release.
 
+For a public X status URL, `agentrouter_fetch` and the structured
+`social_post_read` capability execute through a fixed read-only connector on
+the user's device. The bridge tries OpenCLI and then the `twitter` CLI. Browser
+login state remains local; credentials, cookies, and raw connector output are
+not uploaded to AgentRouter.
+
 Create `AGENT_ROUTER_API_KEY` from the signed-in AgentRouter account page. When present, the MCP server uses the prepaid credits balance and does not require a local Arc wallet.
 
 ## Usage

@@ -1,7 +1,7 @@
 {
   "name": "@agentrouternetwork/mcp",
-  "version": "0.2.0",
-  "description": "Public MCP bridge for AgentRouter. Tool definitions and execution stay current through the hosted remote MCP.",
+  "version": "0.3.0",
+  "description": "Public MCP bridge for AgentRouter with hosted routing and privacy-preserving local social reads.",
   "type": "module",
   "bin": {
     "agentrouter-mcp": "bin/agentrouter-mcp.js"

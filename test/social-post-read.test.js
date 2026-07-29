@@ -8,7 +8,10 @@ import {
   parseSocialPostUrl,
   runSocialPostReadCapability
 } from "../src/social-post-read.js";
-import { runLocalSocialPostRead } from "../packages/agentrouter-mcp/server/local-social-post.js";
+import {
+  localSocialPostRequest,
+  runLocalSocialPostRead
+} from "../packages/agentrouter-mcp/server/local-social-post.js";
 
 const xUrl = "https://x.com/marclou/status/2081890388298874880";
 
@@ -134,4 +137,29 @@ test("public MCP bridge reads an X post locally with fixed read-only commands", 
   assert.equal(result.result.post.canonical_url, xUrl);
   assert.equal(result.protocol.execution_location, "user_device");
   assert.equal(result.protocol.credential_policy, "never_upload");
+});
+
+test("public MCP bridge intercepts natural and structured X reads only", () => {
+  const natural = localSocialPostRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: { task: `读取 ${xUrl}` }
+    }
+  });
+  assert.equal(natural.canonical_url, xUrl);
+
+  const structured = localSocialPostRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_request",
+      arguments: { capability: "social_post_read", params: { url: xUrl } }
+    }
+  });
+  assert.equal(structured.post_id, "2081890388298874880");
+
+  assert.equal(localSocialPostRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: "BTC price" } }
+  }), null);
 });

@@ -16,6 +16,29 @@ export const ROUTER_STATUSES = {
 
 const CAPABILITY_ALIASES = [
   {
+    capability: "social_post_read",
+    capabilities: ["social_post_read", "social_content", "data_service"],
+    keywords: ["x.com", "twitter.com", "read post", "read tweet", "抓取帖子", "读取帖子", "推文"],
+    agent_description: "Read a single public social post by URL through an official API or a read-only connector on the user's device.",
+    not_for: ["posting", "replying", "liking", "following", "private messages", "non-public content"],
+    input_schema: {
+      type: "object",
+      required: ["url"],
+      properties: {
+        url: { type: "string", description: "Public X status URL." },
+        platform: { type: "string", enum: ["x"] }
+      }
+    },
+    examples: [{
+      user_query: "读取这个 X 帖子 https://x.com/example/status/123",
+      request: {
+        capability: "social_post_read",
+        params: { url: "https://x.com/example/status/123", platform: "x" }
+      }
+    }],
+    defaultInput: (intent) => ({ url: intent.url || intent.target, platform: "x" })
+  },
+  {
     capability: "external_api_query",
     capabilities: ["external_api_query", "web_search", "web_scrape", "search_api", "data_service"],
     keywords: ["search api", "搜索 API", "brave", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec edgar", "weather", "youtube", "virustotal", "places", "amadeus", "tracking", "openalex"],

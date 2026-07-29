@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { localSocialPostRequest, runLocalSocialPostRead } from "./local-social-post.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const creditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
@@ -56,6 +57,19 @@ function readMessages() {
 
 async function forwardRequest(message) {
   try {
+    const localSocialPost = localSocialPostRequest(message);
+    if (localSocialPost) {
+      const result = await runLocalSocialPostRead(localSocialPost.canonical_url);
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          isError: result.status === "invalid_request"
+        }
+      });
+      return;
+    }
     const response = await postRemote(message);
     const text = await response.text();
     if (!response.ok) {

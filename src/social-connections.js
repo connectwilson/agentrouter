@@ -121,38 +121,70 @@ export async function socialProvidersForUser(store, ownerKey, options = {}) {
 function createXApiProvider(record, bearerToken, fetchImpl) {
   return {
     id: `x-api:${record.connection_id}`,
+    async readPost(target) {
+      const postId = xPostId(target);
+      if (!postId) return { status: "provider_error", error: "A valid X status URL is required.", rows: [] };
+      const url = new URL(`https://api.x.com/2/tweets/${postId}`);
+      addXResponseFields(url);
+      const response = await fetchImpl(url, { headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json" } });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) return providerFailure(response.status, payload);
+      const users = new Map((payload.includes?.users || []).map((user) => [user.id, user]));
+      return {
+        status: payload.data ? "completed" : "provider_error",
+        rows: payload.data ? [normalizeXTweet(payload.data, users)] : [],
+        error: payload.data ? null : "X returned no post data."
+      };
+    },
     async search(query, limit) {
       const url = new URL("https://api.x.com/2/tweets/search/recent");
       url.searchParams.set("query", query);
       url.searchParams.set("max_results", String(Math.max(10, Math.min(100, Number(limit) || 10))));
-      url.searchParams.set("tweet.fields", "author_id,created_at,public_metrics,lang");
-      url.searchParams.set("expansions", "author_id");
-      url.searchParams.set("user.fields", "username,name");
+      addXResponseFields(url);
       const response = await fetchImpl(url, { headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json" } });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) return providerFailure(response.status, payload);
       const users = new Map((payload.includes?.users || []).map((user) => [user.id, user]));
       return {
         status: "completed",
-        rows: (payload.data || []).map((tweet) => {
-          const user = users.get(tweet.author_id) || {};
-          const author = user.username || tweet.author_id || null;
-          return {
-            id: tweet.id,
-            text: tweet.text,
-            author,
-            published_at: tweet.created_at || null,
-            url: author ? `https://x.com/${author}/status/${tweet.id}` : `https://x.com/i/status/${tweet.id}`,
-            engagement: {
-              likes: tweet.public_metrics?.like_count,
-              comments: tweet.public_metrics?.reply_count,
-              shares: tweet.public_metrics?.retweet_count
-            }
-          };
-        })
+        rows: (payload.data || []).map((tweet) => normalizeXTweet(tweet, users))
       };
     }
   };
+}
+
+function addXResponseFields(url) {
+  url.searchParams.set("tweet.fields", "author_id,created_at,public_metrics,lang");
+  url.searchParams.set("expansions", "author_id");
+  url.searchParams.set("user.fields", "username,name");
+}
+
+function normalizeXTweet(tweet, users) {
+  const user = users.get(tweet.author_id) || {};
+  const author = user.username || tweet.author_id || null;
+  return {
+    id: tweet.id,
+    text: tweet.text,
+    author,
+    published_at: tweet.created_at || null,
+    url: author ? `https://x.com/${author}/status/${tweet.id}` : `https://x.com/i/status/${tweet.id}`,
+    engagement: {
+      likes: tweet.public_metrics?.like_count,
+      comments: tweet.public_metrics?.reply_count,
+      shares: tweet.public_metrics?.retweet_count,
+      views: tweet.public_metrics?.impression_count
+    }
+  };
+}
+
+function xPostId(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(url.hostname.toLowerCase())) return null;
+    return url.pathname.match(/\/status\/(\d+)(?:\/)?$/)?.[1] || null;
+  } catch {
+    return null;
+  }
 }
 
 function createRedditApiProvider(record, accessToken, fetchImpl) {

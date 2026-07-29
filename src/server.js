@@ -31,6 +31,7 @@ import { runSocialResearchCapability } from "./research-capability.js";
 import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
 import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
+import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 
 const clientLogoPaths = {
   "claude.svg": new URL("../public/assets/client-logos/claude.svg", import.meta.url),
@@ -873,6 +874,12 @@ async function routeRequest(req, res, store, baseUrl, {
       sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
       return;
     }
+    if (body.capability === "social_post_read") {
+      const providers = await socialProviderFactory(store, authUserKey(auth.user) || paymentContext.ownerKey || "", socialConnectionOptions);
+      const result = await runSocialPostReadCapability(body.params || {}, { providers });
+      sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
+      return;
+    }
     if (!paymentContext.invoke) {
       const result = quoteCapabilityRequest(store, body);
       const payload = requestPaymentRequired(result);
@@ -887,7 +894,9 @@ async function routeRequest(req, res, store, baseUrl, {
   if (req.method === "POST" && url.pathname === "/agent-router/fetch") {
     const body = await readJson(req);
     const result = await runRemoteAgentRouterFetch(store, body, {
-      ...paymentContext
+      ...paymentContext,
+      socialConnectionOptions,
+      socialProviderFactory
     });
     sendJson(res, paymentBoundaryStatusCode(result), result);
     return;
@@ -1263,6 +1272,12 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
       const providers = await providerFactory(store, ownerKey, paymentContext.socialConnectionOptions || {});
       return researchRunner(request.params, { searchOptions: { localOptions: { providers } } });
     }
+    if (request.capability === "social_post_read") {
+      const ownerKey = paymentContext.ownerKey || "";
+      const providerFactory = paymentContext.socialProviderFactory || socialProvidersForUser;
+      const providers = await providerFactory(store, ownerKey, paymentContext.socialConnectionOptions || {});
+      return runSocialPostReadCapability(request.params, { providers });
+    }
     if (!paymentContext.invoke) {
       return requestPaymentRequired(quoteCapabilityRequest(store, request));
     }
@@ -1317,12 +1332,23 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
   };
 }
 
-async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true, consumerApiKey = "" } = {}) {
+async function runRemoteAgentRouterFetch(store, args = {}, {
+  invoke = true,
+  consumerApiKey = "",
+  ownerKey = "",
+  socialConnectionOptions = {},
+  socialProviderFactory = socialProvidersForUser
+} = {}) {
   const requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
   const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
   const currency = args.currency || args.budget?.currency || "USDC";
 
   if (!requirements.length) {
+    const socialPost = findSocialPostUrl(args.task || args.query || "");
+    if (socialPost) {
+      const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
+      return runSocialPostReadCapability({ url: socialPost.canonical_url, platform: socialPost.platform }, { providers });
+    }
     return askAgentRouter(store, {
       task: args.task || args.query || "",
       max_price: maxPrice,
@@ -1342,6 +1368,11 @@ async function runRemoteAgentRouterFetch(store, args = {}, { invoke = true, cons
         requirement,
         message: "Each data requirement needs capability or type."
       });
+      continue;
+    }
+    if (request.capability === "social_post_read") {
+      const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
+      results.push(await runSocialPostReadCapability(request.params, { providers }));
       continue;
     }
     if (invoke) {
