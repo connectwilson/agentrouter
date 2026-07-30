@@ -115,21 +115,21 @@ test("public MCP bridge reads an X post through the browser connector first", as
       calls.push({ command, args });
       return {
         status: "completed",
-        data: {
-          tweet: {
-            id: "2081890388298874880",
-            text: "Local browser session result",
-            author: { username: "marclou" },
-            created_at: "2026-07-29T00:00:00Z",
-            public_metrics: { like_count: 9, reply_count: 2, retweet_count: 1 }
-          }
-        }
+        data: [{
+          id: "2081890388298874880",
+          text: "Local browser session result",
+          author: "marclou",
+          created_at: "2026-07-29T00:00:00Z",
+          likes: 9,
+          replies: 2,
+          retweets: 1
+        }]
       };
     }
   });
 
   assert.deepEqual(calls, [
-    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] }
+    { command: "opencli", args: ["twitter", "thread", xUrl, "--limit", "1", "-f", "json"] }
   ]);
   assert.equal(result.ok, true);
   assert.equal(result.result.post.text, "Local browser session result");
@@ -143,12 +143,12 @@ test("public MCP bridge does not request keychain access when the browser connec
   const result = await runLocalSocialPostRead(xUrl, {
     runCommand: async (command, args) => {
       calls.push({ command, args });
-      return { status: "provider_error", error: "Failed to start opencli daemon" };
+      return { status: "provider_error", error: "Browser extension is not connected" };
     }
   });
 
   assert.deepEqual(calls, [
-    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] }
+    { command: "opencli", args: ["twitter", "thread", xUrl, "--limit", "1", "-f", "json"] }
   ]);
   assert.equal(result.ok, false);
   assert.equal(result.status, "browser_connector_offline");
@@ -183,7 +183,7 @@ test("Twitter CLI credential fallback requires explicit opt-in", async () => {
   });
 
   assert.deepEqual(calls, [
-    { command: "opencli", args: ["twitter", "tweet", xUrl, "-f", "json"] },
+    { command: "opencli", args: ["twitter", "thread", xUrl, "--limit", "1", "-f", "json"] },
     { command: "twitter", args: ["tweet", xUrl, "-n", "0", "--json"] }
   ]);
   assert.equal(result.ok, true);

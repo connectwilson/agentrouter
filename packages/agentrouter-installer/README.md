@@ -1,6 +1,7 @@
 # AgentRouter installer
 
-Install AgentRouter and verify its hosted HTTP runtime:
+Install the AgentRouter Skill, configure one detected current AI client with
+the local MCP bridge, and verify the hosted runtime:
 
 ```bash
 npx @agentrouternetwork/agentrouter
@@ -9,20 +10,31 @@ npx @agentrouternetwork/agentrouter
 The installer:
 
 - installs the AgentRouter Skill into standard AI-agent Skill directories;
+- prioritizes the invoking AI client and migrates an older AgentRouter entry;
+- changes exactly one client configuration and preserves unrelated MCP servers;
+- creates a timestamped backup before changing an existing configuration;
 - verifies `https://agentrouter.network/agent-router/health`;
-- reports `READY (HTTP mode)`;
-- does not edit MCP configuration or create a wallet.
+- verifies the hosted MCP tool list;
+- does not create a wallet.
 
 AgentRouter providers, capabilities, routing logic, and hosted tools update server-side without reinstalling this package.
 
-For a one-command full setup, including the current supported AI client's
-MCP configuration and a real `initialize` + `tools/list` verification:
+Reload the AI client once after installation so it starts the local bridge. If
+the invoking client cannot be detected from its environment, keep the setup as
+one command and identify it explicitly:
 
 ```bash
-npx @agentrouternetwork/agentrouter --full
+npx @agentrouternetwork/agentrouter --client claude-code
 ```
 
-`--full` changes exactly one detected client configuration, preserves unrelated
-MCP servers, and writes a timestamped backup before editing. It does not create
-a local crypto wallet. Hosted paid calls use AgentRouter account credits and an
-optional API key created outside the installer.
+Supported values are `claude-code`, `cursor`, and `claude-desktop`.
+
+For Skill installation plus HTTP verification without changing an MCP
+configuration:
+
+```bash
+npx @agentrouternetwork/agentrouter --http-only
+```
+
+Hosted paid calls use AgentRouter account credits and an optional API key
+created outside the installer.

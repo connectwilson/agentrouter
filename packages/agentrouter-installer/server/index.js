@@ -4,7 +4,7 @@ import path from "node:path";
 
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
-const INSTALLER_VERSION = "0.2.0";
+const INSTALLER_VERSION = "0.3.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -45,13 +45,17 @@ export async function installAgentRouter(options = {}) {
     updates: "Hosted capabilities, providers, routing, and tools update automatically."
   };
 
-  if (!options.full) return result;
+  if (options.full === false) return result;
 
-  const client = await resolveCurrentClient({ home, env: options.env || process.env });
+  const client = await resolveCurrentClient({
+    home,
+    env: options.env || process.env,
+    preferredClient: options.client || ""
+  });
   if (!client) {
     throw new Error(
       "No supported current AI client configuration was found. " +
-      "Open Claude Code or Cursor once, then rerun with --full."
+      "Rerun the same command with --client claude-code, --client cursor, or --client claude-desktop."
     );
   }
 
@@ -64,7 +68,8 @@ export async function installAgentRouter(options = {}) {
   return {
     ...result,
     runtime_mode: "mcp",
-    mcp_verified: true,
+    bridge_configured: true,
+    remote_mcp_verified: true,
     mcp_tools: verification.tools,
     configured_clients: [configuredClient]
   };
@@ -73,10 +78,11 @@ export async function installAgentRouter(options = {}) {
 export function formatInstallResult(result) {
   if (result.runtime_mode === "mcp") {
     return [
-      "AgentRouter installed. READY (MCP mode)",
+      "AgentRouter installed. SETUP COMPLETE (client reload required)",
       `Skill installed: ${result.skill_paths.join(", ")}`,
       `MCP configured: ${result.configured_clients.map((client) => client.name).join(", ")}`,
-      `MCP verified: ${result.mcp_tools.join(", ")}`,
+      `Remote MCP tools verified: ${result.mcp_tools.join(", ")}`,
+      "Local MCP bridge configured. Reload the AI client once to activate local browser routing.",
       "No local wallet was created. Hosted paid calls use AgentRouter account credits.",
       "Reload the AI client once if the new tools are not visible yet."
     ].join("\n") + "\n";
@@ -91,7 +97,7 @@ export function formatInstallResult(result) {
 }
 
 export function parseInstallArgs(argv) {
-  const options = {};
+  const options = { full: true };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "install" || arg === "setup") continue;
@@ -103,6 +109,12 @@ export function parseInstallArgs(argv) {
       options.json = true;
     } else if (arg === "--full") {
       options.full = true;
+    } else if (arg === "--http-only") {
+      options.full = false;
+    } else if (arg === "--client") {
+      options.client = requireValue(argv[++index], "--client");
+    } else if (arg.startsWith("--client=")) {
+      options.client = arg.slice("--client=".length);
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
@@ -115,42 +127,82 @@ export function parseInstallArgs(argv) {
 export function installUsage() {
   return `Usage:
   npx @agentrouternetwork/agentrouter
-  npx @agentrouternetwork/agentrouter --full
+  npx @agentrouternetwork/agentrouter --client claude-code
+  npx @agentrouternetwork/agentrouter --http-only
   npx @agentrouternetwork/agentrouter --json
   npx @agentrouternetwork/agentrouter --url https://agentrouter.network
 
-Installs the AgentRouter Skill and verifies the hosted HTTP runtime.
-Use --full to also configure the current supported AI client and verify
-that its AgentRouter MCP endpoint exposes agentrouter_fetch.
-Neither mode creates a local wallet.
+Installs the AgentRouter Skill, configures one detected current AI client with
+the local MCP bridge, and verifies the hosted AgentRouter tools. Use
+--http-only to skip MCP configuration. Neither mode creates a local wallet.
 `;
 }
 
-async function resolveCurrentClient({ home, env }) {
+async function resolveCurrentClient({ home, env, preferredClient = "" }) {
   const candidates = [
     {
+      id: "claude-code",
       name: "Claude Code",
       explicit: env.CLAUDE_CODE_CONFIG,
       configPath: env.CLAUDE_CODE_CONFIG || path.join(home, ".claude.json")
     },
     {
+      id: "cursor",
       name: "Cursor",
       explicit: env.CURSOR_MCP_CONFIG,
       configPath: env.CURSOR_MCP_CONFIG || path.join(home, ".cursor", "mcp.json")
     },
     {
+      id: "claude-desktop",
       name: "Claude Desktop",
       explicit: env.CLAUDE_DESKTOP_MCP_CONFIG,
       configPath: env.CLAUDE_DESKTOP_MCP_CONFIG ||
         path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
     }
   ];
+  const requested = normalizeClientId(preferredClient);
+  if (requested) {
+    const selected = candidates.find((candidate) => candidate.id === requested);
+    if (!selected) throw new Error(`Unsupported client: ${preferredClient}`);
+    return selected;
+  }
   const explicit = candidates.find((candidate) => candidate.explicit);
   if (explicit) return explicit;
+  const hostClientId = detectedHostClient(env);
+  const hostClient = candidates.find((candidate) => candidate.id === hostClientId);
+  if (hostClient) return hostClient;
+  const existing = [];
   for (const candidate of candidates) {
-    if (await exists(candidate.configPath)) return candidate;
+    if (!await exists(candidate.configPath)) continue;
+    existing.push({
+      ...candidate,
+      hasAgentRouter: await configHasAgentRouter(candidate.configPath),
+      modifiedAt: await fs.stat(candidate.configPath).then((stat) => stat.mtimeMs, () => 0)
+    });
   }
-  return null;
+  return existing.sort((left, right) =>
+    Number(right.hasAgentRouter) - Number(left.hasAgentRouter)
+    || right.modifiedAt - left.modifiedAt
+  )[0] || null;
+}
+
+function detectedHostClient(env) {
+  if (env.CLAUDECODE || env.CLAUDE_CODE || env.CLAUDE_CODE_ENTRYPOINT) return "claude-code";
+  if (env.CURSOR_AGENT || env.CURSOR_TRACE_ID || env.CURSOR_SESSION_ID) return "cursor";
+  if (env.CLAUDE_DESKTOP) return "claude-desktop";
+  return "";
+}
+
+function normalizeClientId(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  const aliases = {
+    claude: "claude-code",
+    "claude-code": "claude-code",
+    cursor: "cursor",
+    desktop: "claude-desktop",
+    "claude-desktop": "claude-desktop"
+  };
+  return aliases[normalized] || normalized;
 }
 
 async function configureMcpClient(client, origin) {
@@ -171,17 +223,42 @@ async function configureMcpClient(client, origin) {
   const mcpServers = config.mcpServers && typeof config.mcpServers === "object" && !Array.isArray(config.mcpServers)
     ? config.mcpServers
     : {};
+  const existing = mcpServers.AgentRouter && typeof mcpServers.AgentRouter === "object"
+    ? mcpServers.AgentRouter
+    : {};
+  const {
+    command: _oldCommand,
+    args: _oldArgs,
+    url: _oldUrl,
+    type: _oldType,
+    transport: _oldTransport,
+    env: existingEnv,
+    ...preservedSettings
+  } = existing;
   config.mcpServers = {
     ...mcpServers,
     AgentRouter: {
+      ...preservedSettings,
       command: "npx",
       args: ["-y", "--package", MCP_PACKAGE, "agentrouter-mcp"],
-      env: { AGENT_ROUTER_URL: origin }
+      env: {
+        ...(existingEnv && typeof existingEnv === "object" ? existingEnv : {}),
+        AGENT_ROUTER_URL: existingEnv?.AGENT_ROUTER_URL || origin
+      }
     }
   };
   await fs.mkdir(path.dirname(client.configPath), { recursive: true });
   await fs.writeFile(client.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   return { name: client.name, config_path: client.configPath };
+}
+
+async function configHasAgentRouter(filePath) {
+  try {
+    const config = JSON.parse(await fs.readFile(filePath, "utf8"));
+    return Boolean(config?.mcpServers?.AgentRouter);
+  } catch {
+    return false;
+  }
 }
 
 async function verifyRemoteMcp(url) {

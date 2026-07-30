@@ -7,7 +7,7 @@ export async function runLocalSocialPostRead(value, options = {}) {
   const runCommand = options.runCommand || spawnCommand;
   const attempts = [{
     command: "opencli",
-    args: ["twitter", "tweet", parsed.canonical_url, "-f", "json"]
+    args: ["twitter", "thread", parsed.canonical_url, "--limit", "1", "-f", "json"]
   }];
   const allowCredentialFallback = options.allowCredentialFallback === true
     || process.env.AGENTROUTER_ALLOW_TWITTER_CLI_FALLBACK === "1";
@@ -119,13 +119,16 @@ function extractTweet(payload, parsed) {
   return {
     id: tweet.id || tweet.tweet_id || tweet.rest_id || parsed.post_id,
     text: tweet.text || tweet.full_text || legacy.full_text || tweet.content,
-    author: tweet.author?.username || tweet.user?.screen_name || tweet.username || legacy.screen_name,
+    author: (typeof tweet.author === "string" ? tweet.author : tweet.author?.username)
+      || tweet.user?.screen_name
+      || tweet.username
+      || legacy.screen_name,
     published_at: tweet.published_at || tweet.created_at || legacy.created_at || null,
     engagement: tweet.engagement || tweet.public_metrics || {
-      like_count: legacy.favorite_count,
-      reply_count: legacy.reply_count,
-      retweet_count: legacy.retweet_count,
-      view_count: tweet.views?.count
+      like_count: tweet.likes ?? legacy.favorite_count,
+      reply_count: tweet.replies ?? legacy.reply_count,
+      retweet_count: tweet.retweets ?? legacy.retweet_count,
+      view_count: (typeof tweet.views === "object" ? tweet.views?.count : tweet.views)
     }
   };
 }

@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.6.0"
+  version: "0.7.0"
 ---
 
 # AgentRouter
@@ -125,7 +125,7 @@ Do not create temporary files, run `cat`, `jq`, or start Python just to parse a 
 The canonical persistent installation command is:
 
 ```bash
-npx @agentrouternetwork/agentrouter --full
+npx @agentrouternetwork/agentrouter
 ```
 
 The user may run this command in a terminal or give it directly to a shell-capable AI agent. When the user asks the agent to run it, that is explicit authorization to install the AgentRouter Skill and add only the AgentRouter MCP entry to one detected current-user AI client. Do not ask the user to switch to a separate terminal or repeat the same confirmation. This authorization does not permit changing unrelated tools, credentials, or wallet/payment settings. The installer preserves unrelated MCP entries and creates a timestamped backup before editing. If the host application itself displays a mandatory approval dialog, let the user approve that native dialog.
@@ -133,8 +133,9 @@ The user may run this command in a terminal or give it directly to a shell-capab
 Setup flow:
 
 1. Check whether this Skill is already installed. If it is, do not reinstall it.
-2. If installation was requested and the host permits shell commands, run the canonical command above once. It installs the Skill, detects one supported current client, merges only the AgentRouter MCP entry, and verifies the hosted runtime.
-3. The installer completes MCP `initialize` and `tools/list`. When the returned tool list includes `agentrouter_fetch`, report exactly `AgentRouter READY (MCP mode)`.
+2. If installation was requested and the host permits shell commands, run the canonical command above once. It installs the Skill, prioritizes and migrates an existing AgentRouter entry when present, otherwise detects one supported current client, merges only the AgentRouter MCP entry, and verifies the hosted runtime.
+   - When the host is known but automatic environment detection is unavailable, keep it as one command and append `--client claude-code`, `--client cursor`, or `--client claude-desktop`.
+3. The installer verifies the hosted MCP endpoint with `initialize` and `tools/list`, then configures the local bridge. Report `AgentRouter SETUP COMPLETE (client reload required)`. Only report `AgentRouter READY (MCP mode)` after the client has reloaded and the local `agentrouter_fetch` tool is visible.
 4. The installed local bridge configuration is:
    - command: `npx`
    - args: `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`
@@ -154,7 +155,7 @@ password, Keychain access, cookie values, `auth_token`, or `ct0`. The legacy
 Twitter CLI is an explicit opt-in fallback and must not be recommended by
 default.
 
-If the current client cannot be identified, the command exits with an actionable error. Do not modify multiple client configurations as a fallback. For Skill plus HTTP verification without changing an MCP configuration, use `npx @agentrouternetwork/agentrouter`.
+If the current client cannot be identified, the command exits with an actionable error. Do not modify multiple client configurations as a fallback. For Skill plus HTTP verification without changing an MCP configuration, use `npx @agentrouternetwork/agentrouter --http-only`.
 
 ## Bootstrap Flow
 
@@ -216,7 +217,7 @@ If the response is `no_service_found`, `needs_clarification`, or `quote_blocked`
 
 - Do not hard-code one provider or one query.
 - Do not claim data exists unless AgentRouter returns it.
-- Do not install or modify local tools without an explicit setup request. Asking the agent to run the canonical `--full` command authorizes only the AgentRouter Skill and one AgentRouter MCP entry in one detected current-user client.
+- Do not install or modify local tools without an explicit setup request. Asking the agent to run the canonical installation command authorizes only the AgentRouter Skill and one AgentRouter MCP entry in one detected current-user client.
 - Prefer MCP tools over raw HTTP when both are available.
 - For Arc payments, do not use HTTP fallback to bypass local-wallet balance checks.
 - When AgentRouter says the wallet needs funding, present the recharge/funding instruction and stop; never use cached, previously returned, web-search, validation-sample, or provider-direct MCP data as the answer.

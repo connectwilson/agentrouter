@@ -129,7 +129,8 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(homeHtml, /Network snapshot/);
     assert.match(homeHtml, /Open provider dashboard/);
     assert.match(homeHtml, /Open agent API hub/);
-    assert.match(homeHtml, /npx @agentrouternetwork\/agentrouter --full/);
+    assert.match(homeHtml, /npx @agentrouternetwork\/agentrouter/);
+    assert.doesNotMatch(homeHtml, /npx @agentrouternetwork\/agentrouter --full/);
     assert.doesNotMatch(homeHtml, /npx agentrouter(?:\s|$)/);
     assert.doesNotMatch(homeHtml, /--skill AgentRouter -g -y/);
     assert.match(homeHtml, /Give this to your AI agent/);
@@ -213,7 +214,7 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     const homeHtml = await homeResponse.text();
     assert.match(
       homeHtml,
-      /npx @agentrouternetwork\/agentrouter --full/
+      /npx @agentrouternetwork\/agentrouter/
     );
 
     const canonicalSkill = await fetch(`${baseUrl}/SKILL.md`);
@@ -224,12 +225,13 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /https:\/\/agentrouter\.network\/mcp/);
     assert.match(
       skillText,
-      /npx @agentrouternetwork\/agentrouter --full/
+      /npx @agentrouternetwork\/agentrouter/
     );
     assert.doesNotMatch(skillText, /--skill AgentRouter -g -y/);
     assert.match(skillText, /explicit authorization/i);
     assert.match(skillText, /one detected current-user AI client/i);
     assert.match(skillText, /initialize.*tools\/list/is);
+    assert.match(skillText, /AgentRouter SETUP COMPLETE \(client reload required\)/);
     assert.match(skillText, /AgentRouter READY \(MCP mode\)/);
     assert.match(skillText, /timestamped backup/i);
     assert.match(skillText, /Do not attempt alternate writes around it/i);
@@ -581,12 +583,12 @@ test("agentrouter one-command installer is HTTP-ready without changing MCP confi
   assert.match(installUsage(), /--wallet/);
 });
 
-test("public agentrouter npm installer contains only bootstrap files and completes HTTP setup", async () => {
+test("public agentrouter npm installer configures one local MCP bridge by default", async () => {
   await withServer(async ({ baseUrl }) => {
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.2.0");
+    assert.equal(packageJson.version, "0.3.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -608,12 +610,140 @@ test("public agentrouter npm installer contains only bootstrap files and complet
     assert.equal(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.ok, true);
-    assert.equal(payload.runtime_mode, "http");
+    assert.equal(payload.runtime_mode, "mcp");
     assert.equal(payload.health_url, `${baseUrl}/agent-router/health`);
     assert.equal(payload.fetch_url, `${baseUrl}/agent-router/fetch`);
     assert.equal(await fs.access(path.join(skillDir, "SKILL.md")).then(() => true, () => false), true);
-    assert.equal(await fs.access(cursorConfig).then(() => true, () => false), false);
+    const configured = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+    assert.deepEqual(configured.mcpServers.AgentRouter.args, [
+      "-y",
+      "--package",
+      "@agentrouternetwork/mcp@latest",
+      "agentrouter-mcp"
+    ]);
     assert.equal(await fs.access(path.join(home, ".agentrouter", "adn", "wallet.json")).then(() => true, () => false), false);
+  });
+});
+
+test("public agentrouter installer migrates an existing legacy bridge before choosing an unrelated client", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-public-migrate-"));
+    const claudeCodeConfig = path.join(home, ".claude.json");
+    const cursorConfig = path.join(home, ".cursor", "mcp.json");
+    await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+    await fs.writeFile(claudeCodeConfig, JSON.stringify({
+      mcpServers: { OtherTool: { command: "other-tool" } }
+    }));
+    await fs.writeFile(cursorConfig, JSON.stringify({
+      mcpServers: {
+        OtherTool: { command: "keep-me" },
+        AgentRouter: {
+          command: "npx",
+          args: ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"],
+          env: {
+            AGENT_ROUTER_URL: baseUrl,
+            AGENT_ROUTER_API_KEY: "keep-this-secret-reference",
+            USER_DEFINED_SETTING: "keep-me"
+          }
+        }
+      }
+    }));
+
+    const result = await runProcess(process.execPath, [
+      path.join(packageDir, "bin", "agentrouter.js"),
+      "--url",
+      baseUrl,
+      "--json"
+    ], {
+      HOME: home,
+      // No invoking client: scrub host-detection vars the parent shell may export.
+      CLAUDECODE: "",
+      CLAUDE_CODE: "",
+      CLAUDE_CODE_ENTRYPOINT: "",
+      CLAUDE_CODE_CONFIG: "",
+      CURSOR_AGENT: "",
+      CURSOR_TRACE_ID: "",
+      CURSOR_SESSION_ID: "",
+      CURSOR_MCP_CONFIG: "",
+      CLAUDE_DESKTOP: "",
+      CLAUDE_DESKTOP_MCP_CONFIG: ""
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.configured_clients.map((client) => client.name), ["Cursor"]);
+    const claude = JSON.parse(await fs.readFile(claudeCodeConfig, "utf8"));
+    assert.equal(claude.mcpServers.AgentRouter, undefined);
+    const cursor = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+    assert.deepEqual(cursor.mcpServers.OtherTool, { command: "keep-me" });
+    assert.deepEqual(cursor.mcpServers.AgentRouter.args, [
+      "-y",
+      "--package",
+      "@agentrouternetwork/mcp@latest",
+      "agentrouter-mcp"
+    ]);
+    assert.equal(cursor.mcpServers.AgentRouter.env.AGENT_ROUTER_API_KEY, "keep-this-secret-reference");
+    assert.equal(cursor.mcpServers.AgentRouter.env.USER_DEFINED_SETTING, "keep-me");
+  });
+});
+
+test("public agentrouter installer prefers the invoking AI client over a legacy entry elsewhere", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-public-current-client-"));
+    const claudeCodeConfig = path.join(home, ".claude.json");
+    const cursorConfig = path.join(home, ".cursor", "mcp.json");
+    await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+    await fs.writeFile(claudeCodeConfig, JSON.stringify({ mcpServers: {} }));
+    await fs.writeFile(cursorConfig, JSON.stringify({
+      mcpServers: {
+        AgentRouter: {
+          command: "npx",
+          args: ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"]
+        }
+      }
+    }));
+
+    const result = await runProcess(process.execPath, [
+      path.join(packageDir, "bin", "agentrouter.js"),
+      "--url",
+      baseUrl,
+      "--json"
+    ], { HOME: home, CLAUDECODE: "1" });
+
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(payload.configured_clients.map((client) => client.name), ["Claude Code"]);
+    const claude = JSON.parse(await fs.readFile(claudeCodeConfig, "utf8"));
+    assert.equal(claude.mcpServers.AgentRouter.command, "npx");
+    const cursor = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+    assert.match(cursor.mcpServers.AgentRouter.args.join(" "), /github:connectwilson/);
+  });
+});
+
+test("public agentrouter installer keeps an explicit HTTP-only escape hatch", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-public-http-only-"));
+    const cursorConfig = path.join(home, ".cursor", "mcp.json");
+    await fs.mkdir(path.dirname(cursorConfig), { recursive: true });
+    await fs.writeFile(cursorConfig, JSON.stringify({
+      mcpServers: { OtherTool: { command: "other-tool" } }
+    }));
+
+    const result = await runProcess(process.execPath, [
+      path.join(packageDir, "bin", "agentrouter.js"),
+      "--http-only",
+      "--url",
+      baseUrl,
+      "--json"
+    ], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).runtime_mode, "http");
+    const configured = JSON.parse(await fs.readFile(cursorConfig, "utf8"));
+    assert.equal(configured.mcpServers.AgentRouter, undefined);
   });
 });
 
@@ -644,7 +774,8 @@ test("public agentrouter --full configures one MCP client and verifies agentrout
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.ok, true);
     assert.equal(payload.runtime_mode, "mcp");
-    assert.equal(payload.mcp_verified, true);
+    assert.equal(payload.bridge_configured, true);
+    assert.equal(payload.remote_mcp_verified, true);
     assert.ok(payload.mcp_tools.includes("agentrouter_fetch"));
     assert.deepEqual(payload.configured_clients.map((client) => client.name), ["Claude Code"]);
 
