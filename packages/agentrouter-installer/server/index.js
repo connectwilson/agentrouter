@@ -1,10 +1,13 @@
+import { spawn } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
-const INSTALLER_VERSION = "0.3.0";
+const OPENCLI_PACKAGE = "@jackwener/opencli";
+const INSTALLER_VERSION = "0.4.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -65,14 +68,103 @@ export async function installAgentRouter(options = {}) {
     throw new Error(`AgentRouter MCP at ${result.remote_mcp_url} did not expose agentrouter_fetch.`);
   }
 
+  const env = options.env || process.env;
+  const browserConnector = await ensureLocalBrowserConnector({
+    home,
+    env,
+    autoInstall: options.setupBrowserConnector !== false && !env.AGENTROUTER_SKIP_BROWSER_SETUP,
+    runCommand: options.runCommand || runShell
+  });
+
   return {
     ...result,
     runtime_mode: "mcp",
     bridge_configured: true,
     remote_mcp_verified: true,
     mcp_tools: verification.tools,
-    configured_clients: [configuredClient]
+    configured_clients: [configuredClient],
+    browser_connector: browserConnector
   };
+}
+
+// Free local social reads (e.g. X posts) run through the OpenCLI browser
+// connector on the user's device. Hosted MCP/API tools work without it; this
+// step best-effort installs OpenCLI and always returns the manual next steps,
+// because connecting the Chrome extension and signing in cannot be scripted.
+export async function ensureLocalBrowserConnector({ home, env = process.env, autoInstall = true, runCommand = runShell }) {
+  const guide = {
+    package: OPENCLI_PACKAGE,
+    install_command: `npm install -g ${OPENCLI_PACKAGE}`,
+    next_steps: [
+      "Install the OpenCLI browser extension in Google Chrome.",
+      "Run `opencli doctor` and confirm the extension shows connected.",
+      "Sign in to X once in that Chrome profile so reads use your own session."
+    ]
+  };
+  let binPath = await findOpencli(home, env);
+  let installAttempted = false;
+  let installOk = null;
+  if (!binPath && autoInstall) {
+    installAttempted = true;
+    const result = await runCommand("npm", ["install", "-g", OPENCLI_PACKAGE], { timeout: 180000 });
+    installOk = result.status === "completed";
+    binPath = await findOpencli(home, env);
+  }
+  if (!binPath) {
+    return { ...guide, status: "not_installed", installed: false, install_attempted: installAttempted, install_ok: installOk };
+  }
+  return { ...guide, status: "installed", installed: true, path: binPath, install_attempted: installAttempted, install_ok: installOk };
+}
+
+function browserConnectorSearchDirs(home, env) {
+  return [
+    path.join(home, ".npm-global", "bin"),
+    path.join(home, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    ...String(env.PATH || "").split(path.delimiter)
+  ].filter(Boolean);
+}
+
+async function findOpencli(home, env) {
+  for (const dir of [...new Set(browserConnectorSearchDirs(home, env))]) {
+    const candidate = path.join(dir, "opencli");
+    try {
+      await fs.access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // keep scanning
+    }
+  }
+  return null;
+}
+
+function runShell(command, args, options = {}) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let child;
+    try {
+      child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      return resolve({ status: "error", error: error.message, stdout, stderr });
+    }
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => finish({ status: error.code === "ENOENT" ? "missing" : "error", error: error.message, stdout, stderr }));
+    child.on("close", (code) => finish({ status: code === 0 ? "completed" : "failed", code, stdout, stderr }));
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ status: "timeout", stdout, stderr });
+    }, Number(options.timeout) || 180000);
+  });
 }
 
 export function formatInstallResult(result) {
@@ -83,6 +175,7 @@ export function formatInstallResult(result) {
       `MCP configured: ${result.configured_clients.map((client) => client.name).join(", ")}`,
       `Remote MCP tools verified: ${result.mcp_tools.join(", ")}`,
       "Local MCP bridge configured. Reload the AI client once to activate local browser routing.",
+      ...formatBrowserConnectorLines(result.browser_connector),
       "No local wallet was created. Hosted paid calls use AgentRouter account credits.",
       "Reload the AI client once if the new tools are not visible yet."
     ].join("\n") + "\n";
@@ -94,6 +187,20 @@ export function formatInstallResult(result) {
     "No MCP configuration or local wallet was changed.",
     "Ask a normal data/API question to use AgentRouter."
   ].join("\n") + "\n";
+}
+
+function formatBrowserConnectorLines(connector) {
+  if (!connector) return [];
+  if (connector.installed) {
+    return [
+      `Browser connector ready: OpenCLI at ${connector.path}.`,
+      "To enable FREE local X/social reads, connect the OpenCLI Chrome extension (`opencli doctor`) and sign in to X once."
+    ];
+  }
+  return [
+    `Browser connector NOT installed (needed only for free local X/social reads). Install: ${connector.install_command}`,
+    "Then connect the OpenCLI Chrome extension (`opencli doctor`) and sign in to X once. Hosted API/MCP tools work without this."
+  ];
 }
 
 export function parseInstallArgs(argv) {
@@ -111,6 +218,8 @@ export function parseInstallArgs(argv) {
       options.full = true;
     } else if (arg === "--http-only") {
       options.full = false;
+    } else if (arg === "--no-browser-setup") {
+      options.setupBrowserConnector = false;
     } else if (arg === "--client") {
       options.client = requireValue(argv[++index], "--client");
     } else if (arg.startsWith("--client=")) {
@@ -133,8 +242,10 @@ export function installUsage() {
   npx @agentrouternetwork/agentrouter --url https://agentrouter.network
 
 Installs the AgentRouter Skill, configures one detected current AI client with
-the local MCP bridge, and verifies the hosted AgentRouter tools. Use
---http-only to skip MCP configuration. Neither mode creates a local wallet.
+the local MCP bridge, verifies the hosted AgentRouter tools, and best-effort
+installs the OpenCLI browser connector used for free local X/social reads. Use
+--http-only to skip MCP configuration and --no-browser-setup to skip the
+OpenCLI install. Neither mode creates a local wallet.
 `;
 }
 

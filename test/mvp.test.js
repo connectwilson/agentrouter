@@ -588,7 +588,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.3.0");
+    assert.equal(packageJson.version, "0.4.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -604,7 +604,8 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     ], {
       HOME: home,
       AGENTROUTER_SKILL_DIRS: skillDir,
-      CURSOR_MCP_CONFIG: cursorConfig
+      CURSOR_MCP_CONFIG: cursorConfig,
+      AGENTROUTER_SKIP_BROWSER_SETUP: "1"
     });
 
     assert.equal(result.code, 0, result.stderr);
@@ -667,7 +668,8 @@ test("public agentrouter installer migrates an existing legacy bridge before cho
       CURSOR_SESSION_ID: "",
       CURSOR_MCP_CONFIG: "",
       CLAUDE_DESKTOP: "",
-      CLAUDE_DESKTOP_MCP_CONFIG: ""
+      CLAUDE_DESKTOP_MCP_CONFIG: "",
+      AGENTROUTER_SKIP_BROWSER_SETUP: "1"
     });
 
     assert.equal(result.code, 0, result.stderr);
@@ -710,7 +712,7 @@ test("public agentrouter installer prefers the invoking AI client over a legacy 
       "--url",
       baseUrl,
       "--json"
-    ], { HOME: home, CLAUDECODE: "1" });
+    ], { HOME: home, CLAUDECODE: "1", AGENTROUTER_SKIP_BROWSER_SETUP: "1" });
 
     assert.equal(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
@@ -767,7 +769,8 @@ test("public agentrouter --full configures one MCP client and verifies agentrout
       "--json"
     ], {
       HOME: home,
-      CLAUDE_CODE_CONFIG: claudeCodeConfig
+      CLAUDE_CODE_CONFIG: claudeCodeConfig,
+      AGENTROUTER_SKIP_BROWSER_SETUP: "1"
     });
 
     assert.equal(result.code, 0, result.stderr);
@@ -793,6 +796,46 @@ test("public agentrouter --full configures one MCP client and verifies agentrout
     });
     assert.equal(await fs.access(path.join(home, ".agentrouter", "adn", "wallet.json")).then(() => true, () => false), false);
   });
+});
+
+test("installer browser connector best-effort installs OpenCLI and always returns guidance", async () => {
+  const { ensureLocalBrowserConnector } = await import("../packages/agentrouter-installer/server/index.js");
+  const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-connector-"));
+  const binDir = path.join(home, ".npm-global", "bin");
+
+  // Missing + autoInstall: the mock "npm install" drops the opencli bin into place.
+  const calls = [];
+  const missing = await ensureLocalBrowserConnector({
+    home,
+    env: { PATH: "" },
+    autoInstall: true,
+    runCommand: async (command, args) => {
+      calls.push([command, ...args]);
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(path.join(binDir, "opencli"), "#!/bin/sh\n", { mode: 0o755 });
+      return { status: "completed" };
+    }
+  });
+  assert.deepEqual(calls[0], ["npm", "install", "-g", "@jackwener/opencli"]);
+  assert.equal(missing.installed, true);
+  assert.equal(missing.install_attempted, true);
+  assert.equal(missing.install_ok, true);
+  assert.equal(missing.package, "@jackwener/opencli");
+  assert.ok(missing.path.endsWith(path.join("bin", "opencli")));
+
+  // Already present + autoInstall disabled: detect only, never spawn, still guide.
+  let spawned = false;
+  const present = await ensureLocalBrowserConnector({
+    home,
+    env: { PATH: binDir },
+    autoInstall: false,
+    runCommand: async () => { spawned = true; return { status: "completed" }; }
+  });
+  assert.equal(spawned, false);
+  assert.equal(present.installed, true);
+  assert.equal(present.install_attempted, false);
+  assert.equal(present.install_command, "npm install -g @jackwener/opencli");
+  assert.ok(Array.isArray(present.next_steps) && present.next_steps.length >= 1);
 });
 
 test("agentrouter CLI installer configures local MCP clients only when explicitly requested", async () => {
