@@ -123,6 +123,6 @@ function safeJson(value) {
 }
 
 function send(message) {
-  const body = JSON.stringify(message);
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
+  // MCP stdio replies are newline-delimited JSON, not LSP Content-Length framing.
+  process.stdout.write(`${JSON.stringify(message)}\n`);
 }
