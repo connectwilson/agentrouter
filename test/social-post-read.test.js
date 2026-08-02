@@ -232,3 +232,15 @@ test("public MCP bridge intercepts natural and structured X reads only", () => {
     params: { name: "agentrouter_fetch", arguments: { task: "BTC price" } }
   }), null);
 });
+
+test("MCP bridge frames stdout as newline-delimited JSON, not LSP Content-Length", async () => {
+  const { encodeMessage } = await import("../packages/agentrouter-mcp/server/index.js");
+  const wire = encodeMessage({ jsonrpc: "2.0", id: 1, result: { ok: true } });
+  assert.equal(wire.endsWith("\n"), true);
+  assert.equal(wire.includes("Content-Length"), false);
+  assert.equal(wire.includes("\r"), false);
+  // Each frame must be one parseable line — the client splits on newlines.
+  const lines = wire.split("\n").filter(Boolean);
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]), { jsonrpc: "2.0", id: 1, result: { ok: true } });
+});

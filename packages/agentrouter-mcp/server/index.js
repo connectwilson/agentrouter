@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pathToFileURL } from "node:url";
 import { localSocialPostRequest, runLocalSocialPostRead } from "./local-social-post.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
@@ -7,16 +8,20 @@ let remoteSessionId = "";
 let buffer = Buffer.alloc(0);
 let processing = Promise.resolve();
 
-process.stdin.on("data", (chunk) => {
-  buffer = Buffer.concat([buffer, chunk]);
-  processing = processing.then(processBufferedMessages).catch((error) => {
-    process.stderr.write(`${error.stack || error.message}\n`);
+// Wire stdio only when the bin calls start(); importing the module (e.g. tests)
+// must not hijack stdin or exit the process.
+export function start() {
+  process.stdin.on("data", (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    processing = processing.then(processBufferedMessages).catch((error) => {
+      process.stderr.write(`${error.stack || error.message}\n`);
+    });
   });
-});
 
-process.stdin.on("end", () => {
-  processing.finally(() => process.exit(0));
-});
+  process.stdin.on("end", () => {
+    processing.finally(() => process.exit(0));
+  });
+}
 
 async function processBufferedMessages() {
   for (const message of readMessages()) {
@@ -29,19 +34,22 @@ async function processBufferedMessages() {
   }
 }
 
+// MCP stdio replies MUST be newline-delimited JSON (see send/encodeMessage) —
+// Content-Length framing never completes the client handshake. Input is read
+// liberally: newline-delimited (real MCP clients) with a Content-Length
+// fallback for LSP-style callers.
 function readMessages() {
   const messages = [];
   while (buffer.length) {
     const headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd === -1) {
-      const lineEnd = buffer.indexOf("\n");
+    const lineEnd = buffer.indexOf("\n");
+    if (headerEnd === -1 || (lineEnd !== -1 && lineEnd < headerEnd)) {
       if (lineEnd === -1) break;
       const line = buffer.subarray(0, lineEnd).toString("utf8").trim();
       buffer = buffer.subarray(lineEnd + 1);
       if (line) messages.push(JSON.parse(line));
       continue;
     }
-
     const header = buffer.subarray(0, headerEnd).toString("utf8");
     const match = header.match(/content-length:\s*(\d+)/i);
     if (!match) throw new Error("Missing Content-Length header");
@@ -139,7 +147,16 @@ function safeJson(value) {
   }
 }
 
+export function encodeMessage(message) {
+  return `${JSON.stringify(message)}\n`;
+}
+
 function send(message) {
-  const body = JSON.stringify(message);
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
+  process.stdout.write(encodeMessage(message));
+}
+
+// Auto-start when executed directly (node server/index.js). The bin also calls
+// start(); importing the module (tests) triggers neither.
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  start();
 }

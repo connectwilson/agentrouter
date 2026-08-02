@@ -5147,7 +5147,15 @@ function createMcpClient(env = {}, serverPath = "bin/agent-router-mcp.js") {
     const messages = [];
     while (buffer.length) {
       const headerEnd = buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) break;
+      const lineEnd = buffer.indexOf("\n");
+      // Newline-delimited JSON (MCP stdio) — no Content-Length header first.
+      if (headerEnd === -1 || (lineEnd !== -1 && lineEnd < headerEnd)) {
+        if (lineEnd === -1) break;
+        const line = buffer.subarray(0, lineEnd).toString("utf8").trim();
+        buffer = buffer.subarray(lineEnd + 1);
+        if (line) messages.push(JSON.parse(line));
+        continue;
+      }
       const header = buffer.subarray(0, headerEnd).toString("utf8");
       const match = header.match(/content-length:\s*(\d+)/i);
       if (!match) throw new Error("Missing Content-Length header");

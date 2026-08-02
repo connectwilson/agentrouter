@@ -1,2 +1,4 @@
 #!/usr/bin/env node
-import "../server/index.js";
+import { start } from "../server/index.js";
+
+start();
