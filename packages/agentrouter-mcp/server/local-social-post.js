@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 export async function runLocalSocialPostRead(value, options = {}) {
-  const parsed = parseXStatusUrl(value) || parseTikTokVideoUrl(value);
+  const parsed = parseXStatusUrl(value) || parseTikTokVideoUrl(value) || parseYouTubeVideoUrl(value);
   if (!parsed) return invalidUrl();
   if (parsed.platform === "tiktok") return runTikTokRead(parsed, options);
+  if (parsed.platform === "youtube") return runYouTubeRead(parsed, options);
   const runCommand = options.runCommand || spawnCommand;
   const attempts = [{
     command: "opencli",
@@ -72,7 +73,7 @@ export function localSocialPostRequest(message) {
   const args = message.params?.arguments || {};
   if (name === "agentrouter_request" && args.capability === "social_post_read") {
     const value = args.params?.url || args.params?.target;
-    return parseXStatusUrl(value) || parseTikTokVideoUrl(value);
+    return parseXStatusUrl(value) || parseTikTokVideoUrl(value) || parseYouTubeVideoUrl(value);
   }
   if (name !== "agentrouter_fetch" && name !== "agentrouter_ask") return null;
   return findSocialPostUrl(args.task || args.query);
@@ -121,10 +122,89 @@ function findSocialPostUrl(value) {
   const candidates = String(value || "").match(/https:\/\/[^\s<>"']+/gi) || [];
   for (const candidate of candidates) {
     const cleaned = candidate.replace(/[),.;!?，。；！？]+$/, "");
-    const parsed = parseXStatusUrl(cleaned) || parseTikTokVideoUrl(cleaned);
+    const parsed = parseXStatusUrl(cleaned) || parseTikTokVideoUrl(cleaned) || parseYouTubeVideoUrl(cleaned);
     if (parsed) return parsed;
   }
   return null;
+}
+
+// youtube.com/watch?v=ID, youtu.be/ID, and /shorts/ID all name one video.
+function parseYouTubeVideoUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:") return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    let id = null;
+    if (host === "youtu.be") {
+      id = url.pathname.slice(1);
+    } else if (host === "youtube.com" || host === "m.youtube.com") {
+      id = url.pathname === "/watch"
+        ? url.searchParams.get("v")
+        : (url.pathname.match(/^\/(?:shorts|live|embed)\/([^/]+)/)?.[1] || null);
+    }
+    if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+    return {
+      platform: "youtube",
+      post_id: id,
+      canonical_url: `https://www.youtube.com/watch?v=${id}`
+    };
+  } catch {
+    return null;
+  }
+}
+
+// YouTube reads work without a login, so there is no whoami disambiguation.
+async function runYouTubeRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const result = await runCommand("opencli", ["youtube", "video", parsed.canonical_url, "-f", "json"], { timeout: 90000 });
+  const diagnostics = [{ backend_id: "opencli-youtube", status: result.status, error: result.error || null }];
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  if (result.status === "completed") {
+    const row = extractYouTubeVideo(result.data, parsed);
+    if (row) return completed(parsed, row, "opencli-youtube", diagnostics);
+    return postNotFound(parsed, diagnostics);
+  }
+  return browserConnectorOffline(parsed, diagnostics);
+}
+
+function extractYouTubeVideo(payload, parsed) {
+  const value = typeof payload === "string" ? safeJson(payload) : payload;
+  // OpenCLI returns YouTube metadata as [{ field, value }] pairs.
+  const fields = Array.isArray(value) && value.some((item) => item && "field" in item)
+    ? Object.fromEntries(value.map((item) => [item.field, item.value]))
+    : (Array.isArray(value) ? value[0] : value);
+  if (!fields || typeof fields !== "object") return null;
+  const id = fields.videoId || fields.id || parsed.post_id;
+  if (!fields.title && !fields.description) return null;
+  const duration = String(fields.duration || "").match(/(\d+)/)?.[1];
+  return {
+    id,
+    text: fields.title,
+    description: fields.description,
+    author: fields.channel || fields.author,
+    published_at: fields.publishDate || fields.published_at || null,
+    engagement: { view_count: parseCount(fields.views), like_count: parseCount(fields.likes) },
+    extra: {
+      channel_id: fields.channelId || null,
+      duration_seconds: duration ? Number(duration) : null,
+      category: fields.category || null,
+      is_live: fields.isLive === true || fields.isLive === "true",
+      thumbnail: fields.thumbnail || null
+    }
+  };
+}
+
+// Counts arrive localized ("1930万", "19M", "1.9K"); keep them numeric.
+export function parseCount(value) {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  const text = String(value).replace(/[,\s]/g, "");
+  const match = text.match(/^([\d.]+)\s*([万亿KkMmBb])?/);
+  if (!match) return undefined;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base)) return undefined;
+  const scale = { 万: 1e4, 亿: 1e8, K: 1e3, k: 1e3, M: 1e6, m: 1e6, B: 1e9, b: 1e9 }[match[2]] || 1;
+  return Math.round(base * scale);
 }
 
 async function runTikTokRead(parsed, options = {}) {
@@ -202,8 +282,10 @@ function postNotFound(parsed, attempts) {
     status: "post_not_found",
     request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: parsed.platform } },
     action_required: {
-      code: "POST_NOT_IN_RECENT",
-      message: `OpenCLI has no single-video reader for ${platformLabel(parsed.platform)}; this post was not in @${parsed.username}'s recent uploads. Try a recent post, or fetch the creator's profile/videos instead.`
+      code: "POST_NOT_FOUND",
+      message: parsed.username
+        ? `OpenCLI has no single-video reader for ${platformLabel(parsed.platform)}; this post was not in @${parsed.username}'s recent uploads. Try a recent post, or fetch the creator's profile/videos instead.`
+        : `${platformLabel(parsed.platform)} returned no readable data for this URL. The video may be private, removed, or region-locked.`
     },
     attempts
   };
@@ -214,7 +296,7 @@ function connectorId(platform) {
 }
 
 function platformLabel(platform) {
-  return platform === "x" ? "X (x.com)" : platform === "tiktok" ? "TikTok (tiktok.com)" : platform;
+  return { x: "X (x.com)", tiktok: "TikTok (tiktok.com)", youtube: "YouTube (youtube.com)" }[platform] || platform;
 }
 
 function extractTweet(payload, parsed) {
@@ -270,6 +352,8 @@ function completed(parsed, row, backendId, attempts) {
         author_handle: String(row.author || "").trim().slice(0, 120) || null,
         published_at: row.published_at || null,
         engagement: normalizeEngagement(row.engagement),
+        ...(row.description ? { description: String(row.description).trim().slice(0, 20000) } : {}),
+        ...(row.extra || {}),
         verification_status: "source_url_verified"
       }
     },

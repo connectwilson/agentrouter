@@ -288,3 +288,72 @@ test("MCP bridge intercepts TikTok video URLs and reads via local opencli", asyn
   });
   assert.equal(miss.status, "post_not_found");
 });
+
+test("local bridge reads TikTok and YouTube video URLs, not just X", async () => {
+  const { localSocialPostRequest, runLocalSocialPostRead, parseCount } =
+    await import("../packages/agentrouter-mcp/server/local-social-post.js");
+
+  // YouTube: watch / youtu.be / shorts all resolve to the same video.
+  for (const url of [
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ"
+  ]) {
+    const hit = localSocialPostRequest({
+      method: "tools/call",
+      params: { name: "agentrouter_fetch", arguments: { task: `read ${url}` } }
+    });
+    assert.equal(hit?.platform, "youtube");
+    assert.equal(hit.post_id, "dQw4w9WgXcQ");
+  }
+  assert.equal(localSocialPostRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: "https://www.youtube.com/@channel" } }
+  }), null);
+
+  // OpenCLI returns YouTube metadata as [{field,value}] with localized counts.
+  const youtube = await runLocalSocialPostRead("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+    runCommand: async () => ({ status: "completed", data: [
+      { field: "videoId", value: "dQw4w9WgXcQ" },
+      { field: "title", value: "Never Gonna Give You Up" },
+      { field: "channel", value: "Rick Astley" },
+      { field: "views", value: "1799955450" },
+      { field: "likes", value: "1930万" },
+      { field: "duration", value: "213s" }
+    ] })
+  });
+  assert.equal(youtube.status, "completed");
+  assert.equal(youtube.result.post.platform, "youtube");
+  assert.equal(youtube.result.post.author_handle, "Rick Astley");
+  assert.equal(youtube.result.post.engagement.likes, 19300000);
+  assert.equal(youtube.result.post.duration_seconds, 213);
+
+  // TikTok has no single-video reader: match the id inside the creator's uploads.
+  const tiktokUrl = "https://www.tiktok.com/@someone/video/7300000000000000000";
+  assert.equal(localSocialPostRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_request", arguments: { capability: "social_post_read", params: { url: tiktokUrl } } }
+  })?.platform, "tiktok");
+  const tiktok = await runLocalSocialPostRead(tiktokUrl, {
+    runCommand: async () => ({ status: "completed", data: { data: [
+      { id: "7300000000000000000", desc: "caption", author: { uniqueId: "someone" },
+        stats: { diggCount: 12, commentCount: 3, shareCount: 4, playCount: 5 } }
+    ] } })
+  });
+  assert.equal(tiktok.status, "completed");
+  assert.equal(tiktok.result.post.platform, "tiktok");
+  assert.equal(tiktok.result.post.engagement.views, 5);
+
+  // TikTok needs a browser login; an empty list plus failing whoami means "sign in".
+  const signedOut = await runLocalSocialPostRead(tiktokUrl, {
+    runCommand: async (_cmd, args) => args.includes("whoami")
+      ? { status: "auth_required", error: "session cookies missing" }
+      : { status: "provider_error", error: "EMPTY_RESULT" }
+  });
+  assert.equal(signedOut.status, "auth_required");
+  assert.equal(signedOut.action_required.connector_id, "opencli-tiktok");
+
+  assert.equal(parseCount("1.9亿"), 190000000);
+  assert.equal(parseCount("19M"), 19000000);
+  assert.equal(parseCount("abc"), undefined);
+});
