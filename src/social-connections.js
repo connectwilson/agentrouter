@@ -19,7 +19,14 @@ const PROVIDER_MATRIX = {
   google_places: new Set(["google_places_api"]),
   amadeus: new Set(["amadeus_api"]),
   easy_post: new Set(["easypost_api"]),
-  openalex: new Set(["openalex_api"])
+  openalex: new Set(["openalex_api"]),
+  fred: new Set(["fred_api"]),
+  finnhub: new Set(["finnhub_api"]),
+  perplexity: new Set(["perplexity_api"]),
+  tushare: new Set(["tushare_api"]),
+  zhihu: new Set(["local_browser"]),
+  weibo: new Set(["local_browser"]),
+  tiktok: new Set(["local_browser"])
 };
 
 const REQUIRED_CREDENTIAL = {
@@ -36,7 +43,11 @@ const REQUIRED_CREDENTIAL = {
   google_places_api: "api_key",
   amadeus_api: "access_token",
   easypost_api: "api_key",
-  openalex_api: "api_key"
+  openalex_api: "api_key",
+  fred_api: "api_key",
+  finnhub_api: "api_key",
+  perplexity_api: "api_key",
+  tushare_api: "api_key"
 };
 
 export async function createSocialConnection(store, ownerKey, input = {}, options = {}) {

@@ -17,21 +17,22 @@ const SOURCE_CATALOG = [
   source("amadeus", "旅行", "Amadeus", "available", "amadeus_api", ["flight_search"]),
   source("easy_post", "物流", "EasyPost", "available", "easypost_api", ["track"]),
   source("openalex", "学术", "OpenAlex", "available", "openalex_api", ["search"]),
-  source("perplexity", "搜索", "Perplexity", "planned", null, []),
+  source("perplexity", "搜索", "Perplexity", "available", "perplexity_api", ["search"]),
   source("parallel", "搜索", "Parallel", "planned", null, []),
   source("bright_data", "抓取", "Bright Data", "requires_partner_api", null, []),
   source("x", "社交媒体", "X / Twitter", "available", "x_api", ["search"]),
   source("reddit", "社交媒体", "Reddit", "available", "reddit_api", ["search"]),
-  source("xiaohongshu", "社交媒体", "小红书", "browser_only", "local_browser", ["search"]),
+  source("xiaohongshu", "社交媒体", "小红书", "browser_only", "local_browser", ["search", "post_read"]),
   source("linkedin", "社交媒体", "LinkedIn", "requires_partner_api", null, []),
-  source("tiktok", "社交媒体", "TikTok", "requires_partner_api", null, []),
+  source("tiktok", "社交媒体", "TikTok", "browser_only", "local_browser", ["post_read"]),
   source("douyin", "社交媒体", "抖音", "requires_partner_api", null, []),
-  source("zhihu", "社交媒体", "知乎", "browser_only", null, []),
-  source("bilibili", "社交媒体", "Bilibili", "browser_only", "local_browser", ["search"]),
-  source("tushare", "金融", "Tushare", "planned", null, []),
-  source("yahoo_finance", "金融", "Yahoo Finance", "planned", null, []),
-  source("fred", "金融", "FRED", "planned", null, []),
-  source("finnhub", "金融", "Finnhub", "planned", null, [])
+  source("zhihu", "社交媒体", "知乎", "browser_only", "local_browser", ["post_read"]),
+  source("weibo", "社交媒体", "微博", "browser_only", "local_browser", ["post_read"]),
+  source("bilibili", "社交媒体", "Bilibili", "browser_only", "local_browser", ["search", "post_read"]),
+  source("tushare", "金融", "Tushare", "available", "tushare_api", ["search"]),
+  source("yahoo_finance", "金融", "Yahoo Finance", "available", null, ["search", "quote"]),
+  source("fred", "金融", "FRED", "available", "fred_api", ["search"]),
+  source("finnhub", "金融", "Finnhub", "available", "finnhub_api", ["search", "quote"])
 ];
 
 export function getExternalApiCatalog(store, ownerKey) {
@@ -157,6 +158,12 @@ async function invokeSource(sourceId, context) {
   }
 }
 
+const YAHOO_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+function operationOf(context) {
+  return context.operation || "search";
+}
+
 function buildRequest(sourceId, context) {
   const { query, limit, secret, params } = context;
   if (sourceId === "brave_search") {
@@ -227,6 +234,52 @@ function buildRequest(sourceId, context) {
     url.searchParams.append("tracking_codes[]", query);
     if (params.carrier) url.searchParams.set("carrier", clean(params.carrier, 40));
     return get(url, { authorization: `Basic ${Buffer.from(`${secret}:`).toString("base64")}`, accept: "application/json" });
+  }
+  if (sourceId === "yahoo_finance") {
+    if (operationOf(context) === "quote") {
+      const symbol = clean(query, 20).toUpperCase();
+      const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+      url.searchParams.set("range", clean(params.range, 10) || "1d");
+      url.searchParams.set("interval", clean(params.interval, 10) || "1d");
+      return get(url, { "user-agent": YAHOO_USER_AGENT, accept: "application/json" });
+    }
+    const url = new URL("https://query1.finance.yahoo.com/v1/finance/search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("quotesCount", String(limit));
+    url.searchParams.set("newsCount", "0");
+    return get(url, { "user-agent": YAHOO_USER_AGENT, accept: "application/json" });
+  }
+  if (sourceId === "fred") {
+    const url = new URL("https://api.stlouisfed.org/fred/series/search");
+    url.searchParams.set("search_text", query);
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("file_type", "json");
+    url.searchParams.set("api_key", secret);
+    return get(url, { accept: "application/json" });
+  }
+  if (sourceId === "finnhub") {
+    if (operationOf(context) === "quote") {
+      const url = new URL("https://finnhub.io/api/v1/quote");
+      url.searchParams.set("symbol", clean(query, 20).toUpperCase());
+      return get(url, { accept: "application/json", "x-finnhub-token": secret });
+    }
+    const url = new URL("https://finnhub.io/api/v1/search");
+    url.searchParams.set("q", query);
+    return get(url, { accept: "application/json", "x-finnhub-token": secret });
+  }
+  if (sourceId === "perplexity") {
+    return post("https://api.perplexity.ai/chat/completions", {
+      model: clean(params.model, 60) || "sonar",
+      messages: [{ role: "user", content: query }]
+    }, { authorization: `Bearer ${secret}` });
+  }
+  if (sourceId === "tushare") {
+    return post("https://api.tushare.pro", {
+      api_name: clean(params.api_name, 60) || "stock_basic",
+      token: secret,
+      params: { ts_code: clean(query, 20) },
+      fields: clean(params.fields, 200) || "ts_code,name,area,industry,list_date"
+    }, {});
   }
   if (sourceId === "openalex") {
     const url = new URL("https://api.openalex.org/works");
@@ -333,7 +386,7 @@ async function fetchJson(fetchImpl, url, options) {
   return { ok: true, payload };
 }
 
-function normalizeItems(sourceId, payload) {
+function normalizeItems(sourceId, payload, context = {}) {
   let rows = [];
   if (sourceId === "brave_search") rows = payload.web?.results || [];
   else if (sourceId === "tavily") rows = payload.results || [];
@@ -357,6 +410,96 @@ function normalizeItems(sourceId, payload) {
     return item(`${first.departure?.iataCode || "Flight"} → ${last.arrival?.iataCode || ""} ${row.price?.total || ""} ${row.price?.currency || ""}`.trim(), "https://developers.amadeus.com/", `${first.carrierCode || ""}${first.number || ""} · ${row.itineraries?.[0]?.duration || ""}`.trim(), first.departure?.at, { offer_id: row.id || null, total_price: row.price?.total || null, currency: row.price?.currency || null, duration: row.itineraries?.[0]?.duration || null });
   });
   else if (sourceId === "easy_post") return (payload.trackers || []).map((row) => item(`${row.carrier || "Package"} ${row.tracking_code || ""}: ${row.status || "unknown"}`, row.public_url || "https://www.easypost.com/track", row.status_detail || row.status, row.updated_at, { tracker_id: row.id || null, carrier: row.carrier || null, tracking_code: row.tracking_code || null, status: row.status || null, estimated_delivery_date: row.est_delivery_date || null }));
+  else if (sourceId === "yahoo_finance") {
+    if (operationOf(context) === "quote") {
+      const meta = payload.chart?.result?.[0]?.meta;
+      if (!meta) return [];
+      const change = meta.regularMarketPrice != null && meta.chartPreviousClose != null
+        ? meta.regularMarketPrice - meta.chartPreviousClose
+        : null;
+      return [item(
+        `${meta.symbol} ${meta.regularMarketPrice} ${meta.currency || ""}`.trim(),
+        `https://finance.yahoo.com/quote/${encodeURIComponent(meta.symbol || "")}`,
+        `${meta.fullExchangeName || meta.exchangeName || ""} · 52w ${meta.fiftyTwoWeekLow ?? "?"}-${meta.fiftyTwoWeekHigh ?? "?"}`.trim(),
+        meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null,
+        {
+          symbol: meta.symbol || null,
+          price: meta.regularMarketPrice ?? null,
+          currency: meta.currency || null,
+          previous_close: meta.chartPreviousClose ?? null,
+          change: change === null ? null : Number(change.toFixed(4)),
+          fifty_two_week_high: meta.fiftyTwoWeekHigh ?? null,
+          fifty_two_week_low: meta.fiftyTwoWeekLow ?? null
+        }
+      )];
+    }
+    return (payload.quotes || []).map((row) => item(
+      `${row.symbol} · ${row.longname || row.shortname || ""}`.trim(),
+      `https://finance.yahoo.com/quote/${encodeURIComponent(row.symbol || "")}`,
+      [row.exchDisp, row.sectorDisp, row.industryDisp].filter(Boolean).join(" · "),
+      null,
+      { symbol: row.symbol || null, quote_type: row.quoteType || null, exchange: row.exchDisp || null, sector: row.sectorDisp || null }
+    ));
+  }
+  else if (sourceId === "fred") return (payload.seriess || []).map((row) => item(
+    row.title,
+    `https://fred.stlouisfed.org/series/${encodeURIComponent(row.id || "")}`,
+    [row.units, row.frequency, row.seasonal_adjustment].filter(Boolean).join(" · ") || row.notes,
+    row.last_updated || row.realtime_start,
+    { series_id: row.id || null, units: row.units || null, frequency: row.frequency || null, observation_start: row.observation_start || null, observation_end: row.observation_end || null, popularity: row.popularity ?? null }
+  ));
+  else if (sourceId === "finnhub") {
+    if (operationOf(context) === "quote") {
+      const symbol = String(context.query || "").toUpperCase();
+      if (payload.c === undefined || payload.c === null) return [];
+      return [item(
+        `${symbol} ${payload.c}`.trim(),
+        `https://finnhub.io/`,
+        `Open ${payload.o ?? "?"} · High ${payload.h ?? "?"} · Low ${payload.l ?? "?"} · Prev close ${payload.pc ?? "?"}`,
+        payload.t ? new Date(payload.t * 1000).toISOString() : null,
+        { symbol, price: payload.c ?? null, change: payload.d ?? null, percent_change: payload.dp ?? null, high: payload.h ?? null, low: payload.l ?? null, open: payload.o ?? null, previous_close: payload.pc ?? null }
+      )];
+    }
+    return (payload.result || []).map((row) => item(
+      `${row.symbol} · ${row.description || ""}`.trim(),
+      `https://finnhub.io/`,
+      row.type || null,
+      null,
+      { symbol: row.symbol || null, display_symbol: row.displaySymbol || null, type: row.type || null }
+    ));
+  }
+  else if (sourceId === "perplexity") {
+    const message = payload.choices?.[0]?.message?.content;
+    if (!message) return [];
+    const citations = payload.citations || payload.search_results || [];
+    const answer = item(
+      "Perplexity answer",
+      citations[0]?.url || citations[0] || "https://www.perplexity.ai/",
+      message,
+      null,
+      { model: payload.model || null, citations: citations.map((row) => (typeof row === "string" ? row : row.url)).filter(Boolean) }
+    );
+    const sources = citations.map((row, index) => item(
+      typeof row === "string" ? `Source ${index + 1}` : (row.title || `Source ${index + 1}`),
+      typeof row === "string" ? row : row.url,
+      null, null, {}
+    ));
+    return [answer, ...sources];
+  }
+  else if (sourceId === "tushare") {
+    if (payload.code !== 0) return [];
+    const fields = payload.data?.fields || [];
+    return (payload.data?.items || []).map((row) => {
+      const record = Object.fromEntries(fields.map((name, index) => [name, row[index]]));
+      return item(
+        `${record.ts_code || ""} ${record.name || ""}`.trim(),
+        "https://tushare.pro/",
+        [record.industry, record.area].filter(Boolean).join(" · ") || null,
+        record.list_date || null,
+        record
+      );
+    });
+  }
   else if (sourceId === "openalex") return (payload.results || []).map((row) => item(row.title, row.doi || row.id, row.abstract || null, row.publication_date, { openalex_id: row.id || null, cited_by_count: row.cited_by_count ?? null, authors: (row.authorships || []).map((entry) => entry.author?.display_name).filter(Boolean) }));
   return (Array.isArray(rows) ? rows : []).map((row) => item(
     row.title || row.name,

@@ -520,3 +520,109 @@ test("remote MCP routes social user voice research through the same built-in dis
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("newly implemented finance and answer sources are callable and normalized", async () => {
+  const catalog = getExternalApiCatalog(createMemoryStore(), "github:user-a");
+  const status = (id) => catalog.find((row) => row.source === id)?.implementation_status;
+  for (const id of ["yahoo_finance", "fred", "finnhub", "perplexity", "tushare"]) {
+    assert.equal(status(id), "available", `${id} should no longer be planned`);
+  }
+
+  // Yahoo Finance is public: no connection required for either operation.
+  const quote = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "yahoo_finance", operation: "quote", query: "AAPL"
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      chart: { result: [{ meta: {
+        symbol: "AAPL", currency: "USD", regularMarketPrice: 308.91, chartPreviousClose: 333.43,
+        fiftyTwoWeekHigh: 344.57, fiftyTwoWeekLow: 201.68, fullExchangeName: "NasdaqGS", regularMarketTime: 1785528001
+      } }] }
+    }) })
+  });
+  assert.equal(quote.ok, true);
+  assert.equal(quote.result.items[0].metadata.price, 308.91);
+  assert.equal(quote.result.items[0].metadata.change, -24.52);
+  assert.equal(quote.result.items[0].url, "https://finance.yahoo.com/quote/AAPL");
+
+  const search = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "yahoo_finance", operation: "search", query: "apple", limit: 2
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      quotes: [{ symbol: "AAPL", longname: "Apple Inc.", exchDisp: "NASDAQ", sectorDisp: "Technology", quoteType: "EQUITY" }]
+    }) })
+  });
+  assert.equal(search.result.items[0].metadata.symbol, "AAPL");
+
+  // Key-backed sources must stay owner-scoped and never leak the credential.
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "finnhub", provider_type: "finnhub_api", credentials: { api_key: "finnhub-secret" }
+  }, secretStore);
+  const requests = [];
+  const finnhub = await runExternalApiQuery(store, "github:user-a", {
+    source: "finnhub", operation: "quote", query: "AAPL"
+  }, {
+    ...secretStore,
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      return { ok: true, status: 200, json: async () => ({ c: 308.9, o: 305, h: 310, l: 304, pc: 333.4, d: -24.5, dp: -7.35, t: 1785528001 }) };
+    }
+  });
+  assert.equal(requests[0].options.headers["x-finnhub-token"], "finnhub-secret");
+  assert.equal(finnhub.result.items[0].metadata.percent_change, -7.35);
+  assert.equal(JSON.stringify(finnhub).includes("finnhub-secret"), false);
+
+  const fredStore = createMemoryStore();
+  const fredSecrets = secrets();
+  await createSocialConnection(fredStore, "github:user-a", {
+    platform: "fred", provider_type: "fred_api", credentials: { api_key: "fred-secret" }
+  }, fredSecrets);
+  const fred = await runExternalApiQuery(fredStore, "github:user-a", {
+    source: "fred", operation: "search", query: "unemployment"
+  }, {
+    ...fredSecrets,
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      seriess: [{ id: "UNRATE", title: "Unemployment Rate", units: "Percent", frequency: "Monthly", last_updated: "2026-01-01" }]
+    }) })
+  });
+  assert.equal(fred.result.items[0].metadata.series_id, "UNRATE");
+  assert.equal(fred.result.items[0].url, "https://fred.stlouisfed.org/series/UNRATE");
+
+  // Perplexity returns one answer plus its citations as separate items.
+  const pplxStore = createMemoryStore();
+  const pplxSecrets = secrets();
+  await createSocialConnection(pplxStore, "github:user-a", {
+    platform: "perplexity", provider_type: "perplexity_api", credentials: { api_key: "pplx-secret" }
+  }, pplxSecrets);
+  const perplexity = await runExternalApiQuery(pplxStore, "github:user-a", {
+    source: "perplexity", operation: "search", query: "what is x402"
+  }, {
+    ...pplxSecrets,
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      model: "sonar",
+      choices: [{ message: { content: "x402 is a payment protocol." } }],
+      citations: ["https://example.com/x402"]
+    }) })
+  });
+  assert.equal(perplexity.result.items[0].snippet, "x402 is a payment protocol.");
+  assert.equal(perplexity.result.items[0].url, "https://example.com/x402");
+  assert.equal(JSON.stringify(perplexity).includes("pplx-secret"), false);
+
+  // Tushare returns column-oriented rows that must be zipped back into records.
+  const tsStore = createMemoryStore();
+  const tsSecrets = secrets();
+  await createSocialConnection(tsStore, "github:user-a", {
+    platform: "tushare", provider_type: "tushare_api", credentials: { api_key: "tushare-secret" }
+  }, tsSecrets);
+  const tushare = await runExternalApiQuery(tsStore, "github:user-a", {
+    source: "tushare", operation: "search", query: "000001.SZ"
+  }, {
+    ...tsSecrets,
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      code: 0, data: { fields: ["ts_code", "name", "industry"], items: [["000001.SZ", "平安银行", "银行"]] }
+    }) })
+  });
+  assert.equal(tushare.result.items[0].metadata.name, "平安银行");
+  assert.equal(JSON.stringify(tushare).includes("tushare-secret"), false);
+});

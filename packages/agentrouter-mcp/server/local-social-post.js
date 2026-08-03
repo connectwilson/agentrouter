@@ -9,6 +9,8 @@ export async function runLocalSocialPostRead(value, options = {}) {
   if (parsed.platform === "bilibili") return runBilibiliRead(parsed, options);
   if (parsed.platform === "reddit") return runRedditRead(parsed, options);
   if (parsed.platform === "xiaohongshu") return runXiaohongshuRead(parsed, options);
+  if (parsed.platform === "zhihu") return runZhihuRead(parsed, options);
+  if (parsed.platform === "weibo") return runWeiboRead(parsed, options);
   const runCommand = options.runCommand || spawnCommand;
   const attempts = [{
     command: "opencli",
@@ -126,7 +128,120 @@ function parseSocialUrl(value) {
     || parseYouTubeVideoUrl(value)
     || parseRedditPostUrl(value)
     || parseBilibiliVideoUrl(value)
-    || parseXiaohongshuNoteUrl(value);
+    || parseXiaohongshuNoteUrl(value)
+    || parseZhihuUrl(value)
+    || parseWeiboUrl(value);
+}
+
+// zhihu.com/question/<qid> reads the question's top answer;
+// zhihu.com/question/<qid>/answer/<aid> reads that specific answer.
+function parseZhihuUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "zhihu.com" && host !== "zhuanlan.zhihu.com") return null;
+    const answer = url.pathname.match(/^\/question\/(\d+)\/answer\/(\d+)/);
+    if (answer) {
+      return {
+        platform: "zhihu",
+        post_id: answer[2],
+        question_id: answer[1],
+        canonical_url: `https://www.zhihu.com/question/${answer[1]}/answer/${answer[2]}`
+      };
+    }
+    const standalone = url.pathname.match(/^\/answer\/(\d+)/);
+    if (standalone) {
+      return { platform: "zhihu", post_id: standalone[1], canonical_url: `https://www.zhihu.com/answer/${standalone[1]}` };
+    }
+    const question = url.pathname.match(/^\/question\/(\d+)/);
+    if (question) {
+      return {
+        platform: "zhihu",
+        post_id: question[1],
+        question_id: question[1],
+        question_only: true,
+        canonical_url: `https://www.zhihu.com/question/${question[1]}`
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// weibo.com/<uid>/<mblogid>, weibo.com/detail/<id>, m.weibo.cn/detail/<id>
+function parseWeiboUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const host = url.hostname.toLowerCase().replace(/^(www|m)\./, "");
+    if (host !== "weibo.com" && host !== "weibo.cn") return null;
+    const detail = url.pathname.match(/^\/(?:detail|status)\/([A-Za-z0-9]+)/);
+    const profile = url.pathname.match(/^\/(\d{4,})\/([A-Za-z0-9]{6,})/);
+    const id = detail?.[1] || profile?.[2];
+    if (!id) return null;
+    return { platform: "weibo", post_id: id, canonical_url: `https://weibo.com/detail/${id}` };
+  } catch {
+    return null;
+  }
+}
+
+async function runZhihuRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const args = parsed.question_only
+    ? ["zhihu", "question", parsed.question_id, "--limit", "1", "-f", "json"]
+    : ["zhihu", "answer-detail", parsed.canonical_url, "-f", "json"];
+  const result = await runCommand("opencli", args, { timeout: 120000 });
+  const diagnostics = [{ backend_id: "opencli-zhihu", status: result.status, error: result.error || null }];
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  if (result.status === "completed") {
+    const value = typeof result.data === "string" ? safeJson(result.data) : result.data;
+    const answer = Array.isArray(value) ? value[0] : (value?.answers?.[0] || value);
+    if (answer && (answer.content || answer.text || answer.title)) {
+      return completed(parsed, {
+        id: answer.id || parsed.post_id,
+        text: answer.content || answer.text || answer.title,
+        author: answer.author || answer.author_name || null,
+        published_at: answer.created_at || answer.publish_time || null,
+        engagement: { like_count: parseCount(answer.votes ?? answer.voteup_count), reply_count: parseCount(answer.comments) },
+        extra: { question_url: parsed.question_id ? `https://www.zhihu.com/question/${parsed.question_id}` : null }
+      }, "opencli-zhihu", diagnostics);
+    }
+    return postNotFound(parsed, diagnostics);
+  }
+  return browserConnectorOffline(parsed, diagnostics);
+}
+
+async function runWeiboRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const result = await runCommand("opencli", ["weibo", "post", parsed.post_id, "-f", "json"], { timeout: 90000 });
+  const diagnostics = [{ backend_id: "opencli-weibo", status: result.status, error: result.error || null }];
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  if (result.status === "completed") {
+    const post = toFieldObject(result.data);
+    if (post && typeof post === "object" && (post.text || post.content || post.title)) {
+      return completed(parsed, {
+        id: post.id || post.idstr || post.mblogid || parsed.post_id,
+        text: post.text || post.content || post.title,
+        author: post.author || post.user?.screen_name || post.screen_name || post.nickname || null,
+        published_at: post.created_at || post.publish_time || null,
+        engagement: {
+          like_count: parseCount(post.attitudes_count ?? post.likes ?? post.attitudes),
+          reply_count: parseCount(post.comments_count ?? post.comments),
+          share_count: parseCount(post.reposts_count ?? post.reposts)
+        }
+      }, "opencli-weibo", diagnostics);
+    }
+  }
+  if (result.status === "missing") return browserConnectorOffline(parsed, diagnostics);
+  // Weibo answers "Post not found" both when signed out and when the id is
+  // genuinely gone, so probe whoami before blaming the URL.
+  const who = await runCommand("opencli", ["weibo", "whoami", "-f", "json"], { timeout: 30000 });
+  diagnostics.push({ backend_id: "opencli-weibo-whoami", status: who.status, error: who.error || null });
+  if (who.status === "missing") return browserConnectorOffline(parsed, diagnostics);
+  if (who.status !== "completed") return authRequired(parsed, diagnostics);
+  return postNotFound(parsed, diagnostics);
 }
 
 function findSocialPostUrl(value) {
@@ -546,7 +661,9 @@ function platformLabel(platform) {
     youtube: "YouTube (youtube.com)",
     bilibili: "Bilibili (bilibili.com)",
     reddit: "Reddit (reddit.com)",
-    xiaohongshu: "Xiaohongshu (xiaohongshu.com)"
+    xiaohongshu: "Xiaohongshu (xiaohongshu.com)",
+    zhihu: "Zhihu (zhihu.com)",
+    weibo: "Weibo (weibo.com)"
   }[platform] || platform;
 }
 
@@ -635,7 +752,7 @@ function invalidUrl() {
   return {
     ok: false,
     status: "invalid_request",
-    error: { code: "SOCIAL_POST_URL_INVALID", message: "A supported post URL is required (X, TikTok, YouTube, Bilibili, Reddit, or Xiaohongshu)." }
+    error: { code: "SOCIAL_POST_URL_INVALID", message: "A supported post URL is required (X, TikTok, YouTube, Bilibili, Reddit, Xiaohongshu, Zhihu, or Weibo)." }
   };
 }
 
