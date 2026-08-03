@@ -357,3 +357,60 @@ test("local bridge reads TikTok and YouTube video URLs, not just X", async () =>
   assert.equal(parseCount("19M"), 19000000);
   assert.equal(parseCount("abc"), undefined);
 });
+
+test("local bridge reads Bilibili, Reddit, and Xiaohongshu post URLs", async () => {
+  const { localSocialPostRequest, runLocalSocialPostRead } =
+    await import("../packages/agentrouter-mcp/server/local-social-post.js");
+
+  const detect = (url) => localSocialPostRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: `read ${url}` } }
+  });
+
+  assert.equal(detect("https://www.bilibili.com/video/BV1qh3W6bEqf")?.platform, "bilibili");
+  assert.equal(detect("https://b23.tv/abc123")?.platform, "bilibili");
+  assert.equal(detect("https://www.reddit.com/r/programming/comments/1tlh5aj/x/")?.post_id, "1tlh5aj");
+  assert.equal(detect("https://redd.it/1tlh5aj")?.platform, "reddit");
+  assert.equal(detect("https://www.bilibili.com/video/notabv")?.platform, undefined);
+
+  // Bilibili shares metadata as [{field,value}] with "name (mid: 1)" authors.
+  const bilibili = await runLocalSocialPostRead("https://www.bilibili.com/video/BV1qh3W6bEqf", {
+    runCommand: async () => ({ status: "completed", data: [
+      { field: "bvid", value: "BV1qh3W6bEqf" },
+      { field: "title", value: "标题" },
+      { field: "author", value: "阿路 (mid: 12562611)" },
+      { field: "duration", value: "2m29s (149s)" },
+      { field: "view", value: "5625533" },
+      { field: "like", value: "712776" },
+      { field: "share", value: "23053" },
+      { field: "coin", value: "164550" }
+    ] })
+  });
+  assert.equal(bilibili.status, "completed");
+  assert.equal(bilibili.result.post.author_handle, "阿路");
+  assert.equal(bilibili.result.post.duration_seconds, 149);
+  assert.equal(bilibili.result.post.engagement.shares, 23053);
+  assert.equal(bilibili.result.post.coins, 164550);
+
+  // `reddit read` returns the post plus its comment tree (L0/L1 entries).
+  const reddit = await runLocalSocialPostRead("https://www.reddit.com/r/programming/comments/1tlh5aj/x/", {
+    runCommand: async () => ({ status: "completed", data: [
+      { type: "POST", author: "ChemicalRascal", score: 944, text: "Announcement: rules", created_utc: 1779544477 },
+      { type: "L0", author: "a", text: "c1" },
+      { type: "L1", author: "b", text: "c2" }
+    ] })
+  });
+  assert.equal(reddit.status, "completed");
+  assert.equal(reddit.result.post.author_handle, "ChemicalRascal");
+  assert.equal(reddit.result.post.engagement.likes, 944);
+  assert.equal(reddit.result.post.engagement.comments, 2);
+  assert.equal(reddit.result.post.subreddit, "r/programming");
+
+  // Xiaohongshu note reads are impossible without the signed xsec_token.
+  const unsigned = await runLocalSocialPostRead(
+    "https://www.xiaohongshu.com/explore/6839f1c6000000000d00f4b0",
+    { runCommand: async () => ({ status: "provider_error", error: "requires a full signed URL" }) }
+  );
+  assert.equal(unsigned.status, "invalid_request");
+  assert.equal(unsigned.action_required.code, "SIGNED_URL_REQUIRED");
+});

@@ -2,10 +2,13 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 export async function runLocalSocialPostRead(value, options = {}) {
-  const parsed = parseXStatusUrl(value) || parseTikTokVideoUrl(value) || parseYouTubeVideoUrl(value);
+  const parsed = parseSocialUrl(value);
   if (!parsed) return invalidUrl();
   if (parsed.platform === "tiktok") return runTikTokRead(parsed, options);
   if (parsed.platform === "youtube") return runYouTubeRead(parsed, options);
+  if (parsed.platform === "bilibili") return runBilibiliRead(parsed, options);
+  if (parsed.platform === "reddit") return runRedditRead(parsed, options);
+  if (parsed.platform === "xiaohongshu") return runXiaohongshuRead(parsed, options);
   const runCommand = options.runCommand || spawnCommand;
   const attempts = [{
     command: "opencli",
@@ -72,8 +75,7 @@ export function localSocialPostRequest(message) {
   const name = message.params?.name;
   const args = message.params?.arguments || {};
   if (name === "agentrouter_request" && args.capability === "social_post_read") {
-    const value = args.params?.url || args.params?.target;
-    return parseXStatusUrl(value) || parseTikTokVideoUrl(value) || parseYouTubeVideoUrl(value);
+    return parseSocialUrl(args.params?.url || args.params?.target);
   }
   if (name !== "agentrouter_fetch" && name !== "agentrouter_ask") return null;
   return findSocialPostUrl(args.task || args.query);
@@ -118,11 +120,20 @@ function parseTikTokVideoUrl(value) {
   }
 }
 
+function parseSocialUrl(value) {
+  return parseXStatusUrl(value)
+    || parseTikTokVideoUrl(value)
+    || parseYouTubeVideoUrl(value)
+    || parseRedditPostUrl(value)
+    || parseBilibiliVideoUrl(value)
+    || parseXiaohongshuNoteUrl(value);
+}
+
 function findSocialPostUrl(value) {
   const candidates = String(value || "").match(/https:\/\/[^\s<>"']+/gi) || [];
   for (const candidate of candidates) {
     const cleaned = candidate.replace(/[),.;!?，。；！？]+$/, "");
-    const parsed = parseXStatusUrl(cleaned) || parseTikTokVideoUrl(cleaned) || parseYouTubeVideoUrl(cleaned);
+    const parsed = parseSocialUrl(cleaned);
     if (parsed) return parsed;
   }
   return null;
@@ -167,12 +178,18 @@ async function runYouTubeRead(parsed, options = {}) {
   return browserConnectorOffline(parsed, diagnostics);
 }
 
-function extractYouTubeVideo(payload, parsed) {
+// Several OpenCLI adapters (YouTube, Bilibili) return metadata as
+// [{ field, value }] pairs rather than a plain object.
+function toFieldObject(payload) {
   const value = typeof payload === "string" ? safeJson(payload) : payload;
-  // OpenCLI returns YouTube metadata as [{ field, value }] pairs.
-  const fields = Array.isArray(value) && value.some((item) => item && "field" in item)
-    ? Object.fromEntries(value.map((item) => [item.field, item.value]))
-    : (Array.isArray(value) ? value[0] : value);
+  if (Array.isArray(value) && value.some((item) => item && "field" in item)) {
+    return Object.fromEntries(value.map((item) => [item.field, item.value]));
+  }
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function extractYouTubeVideo(payload, parsed) {
+  const fields = toFieldObject(payload);
   if (!fields || typeof fields !== "object") return null;
   const id = fields.videoId || fields.id || parsed.post_id;
   if (!fields.title && !fields.description) return null;
@@ -192,6 +209,184 @@ function extractYouTubeVideo(payload, parsed) {
       thumbnail: fields.thumbnail || null
     }
   };
+}
+
+function parseRedditPostUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:") return null;
+    const host = url.hostname.toLowerCase().replace(/^(www|old|new|np)\./, "");
+    if (host === "redd.it") {
+      const id = url.pathname.slice(1).replace(/\/$/, "");
+      if (!/^[a-z0-9]{4,12}$/i.test(id)) return null;
+      return { platform: "reddit", post_id: id, canonical_url: `https://www.reddit.com/comments/${id}` };
+    }
+    if (host !== "reddit.com") return null;
+    const match = url.pathname.match(/^\/(?:r\/([A-Za-z0-9_]{1,30})\/)?comments\/([a-z0-9]{4,12})/i);
+    if (!match) return null;
+    return {
+      platform: "reddit",
+      post_id: match[2],
+      subreddit: match[1] || null,
+      canonical_url: match[1]
+        ? `https://www.reddit.com/r/${match[1]}/comments/${match[2]}`
+        : `https://www.reddit.com/comments/${match[2]}`
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseBilibiliVideoUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:") return null;
+    const host = url.hostname.toLowerCase().replace(/^(www|m)\./, "");
+    // b23.tv short links carry no BV id — OpenCLI resolves them itself.
+    if (host === "b23.tv") {
+      const code = url.pathname.slice(1).replace(/\/$/, "");
+      if (!/^[A-Za-z0-9]{4,20}$/.test(code)) return null;
+      return { platform: "bilibili", post_id: code, canonical_url: `https://b23.tv/${code}`, command_target: `https://b23.tv/${code}` };
+    }
+    if (host !== "bilibili.com") return null;
+    const bvid = url.pathname.match(/^\/video\/(BV[A-Za-z0-9]{10})/)?.[1];
+    if (!bvid) return null;
+    const canonical = `https://www.bilibili.com/video/${bvid}`;
+    return { platform: "bilibili", post_id: bvid, canonical_url: canonical, command_target: canonical };
+  } catch {
+    return null;
+  }
+}
+
+// Xiaohongshu note reads need the full signed URL (xsec_token), so the original
+// query string is preserved and passed through verbatim.
+function parseXiaohongshuNoteUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:") return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "xiaohongshu.com" && host !== "xhslink.com") return null;
+    if (host === "xhslink.com") {
+      const code = url.pathname.slice(1).replace(/\/$/, "");
+      if (!code) return null;
+      return { platform: "xiaohongshu", post_id: code, canonical_url: url.href, command_target: url.href };
+    }
+    const id = url.pathname.match(/^\/(?:explore|discovery\/item|user\/profile\/[^/]+)\/([0-9a-f]{16,32})/i)?.[1];
+    if (!id) return null;
+    return {
+      platform: "xiaohongshu",
+      post_id: id,
+      canonical_url: url.href,
+      command_target: url.href,
+      signed: url.searchParams.has("xsec_token")
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function runBilibiliRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const result = await runCommand("opencli", ["bilibili", "video", parsed.command_target, "-f", "json"], { timeout: 90000 });
+  const diagnostics = [{ backend_id: "opencli-bilibili", status: result.status, error: result.error || null }];
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  if (result.status === "completed") {
+    const fields = toFieldObject(result.data);
+    if (fields && (fields.title || fields.bvid)) {
+      const seconds = String(fields.duration || "").match(/\((\d+)s\)/)?.[1]
+        || String(fields.duration || "").match(/^(\d+)s/)?.[1];
+      return completed(parsed, {
+        id: fields.bvid || parsed.post_id,
+        text: fields.title,
+        description: fields.description,
+        // OpenCLI formats the author as "name (mid: 123)".
+        author: String(fields.author || "").replace(/\s*\(mid:.*\)$/, "").trim() || null,
+        published_at: fields.publish_time || null,
+        engagement: {
+          view_count: parseCount(fields.view),
+          like_count: parseCount(fields.like),
+          reply_count: parseCount(fields.reply),
+          share_count: parseCount(fields.share)
+        },
+        extra: {
+          duration_seconds: seconds ? Number(seconds) : null,
+          coins: parseCount(fields.coin) ?? null,
+          favorites: parseCount(fields.favorite) ?? null,
+          danmaku: parseCount(fields.danmaku) ?? null,
+          thumbnail: fields.thumbnail || null
+        }
+      }, "opencli-bilibili", diagnostics);
+    }
+    return postNotFound(parsed, diagnostics);
+  }
+  return browserConnectorOffline(parsed, diagnostics);
+}
+
+async function runRedditRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const result = await runCommand("opencli", ["reddit", "read", parsed.post_id, "-f", "json"], { timeout: 60000 });
+  const diagnostics = [{ backend_id: "opencli-reddit", status: result.status, error: result.error || null }];
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  if (result.status === "completed") {
+    const value = typeof result.data === "string" ? safeJson(result.data) : result.data;
+    const items = Array.isArray(value) ? value : [];
+    const post = items.find((item) => item?.type === "POST") || items[0];
+    if (post && (post.text || post.title)) {
+      // `reddit read` returns the post followed by its comment tree; the title
+      // is folded into the post text rather than exposed as its own field.
+      const commentCount = items.filter((item) => typeof item?.type === "string" && /^L\d+$/.test(item.type)).length;
+      return completed(parsed, {
+        id: parsed.post_id,
+        text: post.title ? `${post.title}\n\n${post.text || ""}`.trim() : post.text,
+        author: post.author,
+        published_at: post.created_utc ? new Date(Number(post.created_utc) * 1000).toISOString() : null,
+        engagement: { like_count: parseCount(post.score ?? post.upvotes), reply_count: commentCount },
+        extra: { subreddit: parsed.subreddit ? `r/${parsed.subreddit}` : (post.subreddit || null) }
+      }, "opencli-reddit", diagnostics);
+    }
+    return postNotFound(parsed, diagnostics);
+  }
+  return browserConnectorOffline(parsed, diagnostics);
+}
+
+async function runXiaohongshuRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const result = await runCommand("opencli", ["xiaohongshu", "note", parsed.command_target, "-f", "json"], { timeout: 90000 });
+  const diagnostics = [{ backend_id: "opencli-xiaohongshu", status: result.status, error: result.error || null }];
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  if (result.status === "completed") {
+    const note = toFieldObject(result.data);
+    if (note && typeof note === "object" && (note.title || note.desc || note.text || note.content)) {
+      const interact = note.interact_info || note.interactInfo || note;
+      return completed(parsed, {
+        id: note.note_id || note.noteId || parsed.post_id,
+        text: [note.title, note.desc || note.text || note.content].filter(Boolean).join("\n\n"),
+        author: note.author || note.nickname || note.user?.nickname || null,
+        published_at: note.publish_time || note.time || null,
+        engagement: {
+          like_count: parseCount(interact.liked_count ?? interact.likes ?? note.likes),
+          reply_count: parseCount(interact.comment_count ?? interact.comments ?? note.comments),
+          share_count: parseCount(interact.share_count ?? note.shares)
+        },
+        extra: { favorites: parseCount(interact.collected_count ?? note.collects) ?? null }
+      }, "opencli-xiaohongshu", diagnostics);
+    }
+    return postNotFound(parsed, diagnostics);
+  }
+  // A note URL without xsec_token cannot be opened at all — say so explicitly.
+  if (parsed.signed === false) {
+    return {
+      ok: false,
+      status: "invalid_request",
+      request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: "xiaohongshu" } },
+      action_required: {
+        code: "SIGNED_URL_REQUIRED",
+        message: "Xiaohongshu note reads need the full shared link including its xsec_token. Copy the share URL from the app or from search results and retry."
+      },
+      attempts: diagnostics
+    };
+  }
+  return browserConnectorOffline(parsed, diagnostics);
 }
 
 // Counts arrive localized ("1930万", "19M", "1.9K"); keep them numeric.
@@ -296,7 +491,14 @@ function connectorId(platform) {
 }
 
 function platformLabel(platform) {
-  return { x: "X (x.com)", tiktok: "TikTok (tiktok.com)", youtube: "YouTube (youtube.com)" }[platform] || platform;
+  return {
+    x: "X (x.com)",
+    tiktok: "TikTok (tiktok.com)",
+    youtube: "YouTube (youtube.com)",
+    bilibili: "Bilibili (bilibili.com)",
+    reddit: "Reddit (reddit.com)",
+    xiaohongshu: "Xiaohongshu (xiaohongshu.com)"
+  }[platform] || platform;
 }
 
 function extractTweet(payload, parsed) {
@@ -369,9 +571,9 @@ function normalizeEngagement(value = {}) {
   const result = {};
   const aliases = {
     likes: ["likes", "like_count", "favorite_count"],
-    comments: ["comments", "reply_count"],
-    shares: ["shares", "retweet_count"],
-    views: ["views", "view_count"]
+    comments: ["comments", "reply_count", "comment_count"],
+    shares: ["shares", "retweet_count", "share_count"],
+    views: ["views", "view_count", "play_count"]
   };
   for (const [target, keys] of Object.entries(aliases)) {
     const found = keys.map((key) => value?.[key]).find((item) => Number.isFinite(Number(item)));
@@ -384,7 +586,7 @@ function invalidUrl() {
   return {
     ok: false,
     status: "invalid_request",
-    error: { code: "SOCIAL_POST_URL_INVALID", message: "A public X status or TikTok video URL is required." }
+    error: { code: "SOCIAL_POST_URL_INVALID", message: "A supported post URL is required (X, TikTok, YouTube, Bilibili, Reddit, or Xiaohongshu)." }
   };
 }
 
