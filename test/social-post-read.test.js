@@ -414,3 +414,59 @@ test("local bridge reads Bilibili, Reddit, and Xiaohongshu post URLs", async () 
   assert.equal(unsigned.status, "invalid_request");
   assert.equal(unsigned.action_required.code, "SIGNED_URL_REQUIRED");
 });
+
+test("Xiaohongshu share links resolve, and the signed-out login wall is not returned as content", async () => {
+  const { localSocialPostRequest, runLocalSocialPostRead } =
+    await import("../packages/agentrouter-mcp/server/local-social-post.js");
+
+  // Share links arrive as http:// xhslink.cn URLs inside ordinary chat text.
+  const shortLink = "http://xhslink.cn/o/5zGMV6AiWHZ";
+  const detected = localSocialPostRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: `帮我看看这条小红书 ${shortLink}` } }
+  });
+  assert.equal(detected?.platform, "xiaohongshu");
+  assert.equal(detected.short_link, true);
+
+  const signedUrl = "https://www.xiaohongshu.com/discovery/item/6a69bb76000000000c014d94?xsec_token=ABC";
+  const noteData = [
+    { field: "title", value: "从王虹联想到burnout人群" },
+    { field: "content", value: "正文内容" },
+    { field: "author", value: "阿醒生存计划" },
+    { field: "likes", value: "1203" },
+    { field: "comments", value: "36" },
+    { field: "collects", value: "531" }
+  ];
+
+  const resolved = await runLocalSocialPostRead(shortLink, {
+    resolveUrl: async () => signedUrl,
+    runCommand: async (_cmd, args) => {
+      assert.equal(args[2], signedUrl, "the resolved signed URL must reach OpenCLI");
+      return { status: "completed", data: noteData };
+    }
+  });
+  assert.equal(resolved.status, "completed");
+  assert.equal(resolved.result.post.author_handle, "阿醒生存计划");
+  assert.equal(resolved.result.post.engagement.likes, 1203);
+  assert.equal(resolved.result.post.favorites, 531);
+
+  // Signed out, Xiaohongshu serves the login wall with HTTP 200 and zeroed
+  // counts; that must not be reported as the note's content.
+  const loginWall = await runLocalSocialPostRead(signedUrl, {
+    runCommand: async () => ({ status: "completed", data: [
+      { field: "title", value: "手机号登录" },
+      { field: "author", value: "" },
+      { field: "content", value: "" },
+      { field: "likes", value: "0" }
+    ] })
+  });
+  assert.equal(loginWall.status, "auth_required");
+  assert.equal(loginWall.action_required.connector_id, "opencli-xiaohongshu");
+
+  // An unresolvable share link must say so rather than guess a note id.
+  const unresolved = await runLocalSocialPostRead(shortLink, {
+    resolveUrl: async () => null,
+    runCommand: async () => assert.fail("must not call OpenCLI with an unresolved short link")
+  });
+  assert.equal(unresolved.action_required.code, "SHORT_LINK_UNRESOLVED");
+});

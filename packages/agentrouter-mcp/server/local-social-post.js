@@ -130,7 +130,7 @@ function parseSocialUrl(value) {
 }
 
 function findSocialPostUrl(value) {
-  const candidates = String(value || "").match(/https:\/\/[^\s<>"']+/gi) || [];
+  const candidates = String(value || "").match(/https?:\/\/[^\s<>"']+/gi) || [];
   for (const candidate of candidates) {
     const cleaned = candidate.replace(/[),.;!?，。；！？]+$/, "");
     const parsed = parseSocialUrl(cleaned);
@@ -263,13 +263,16 @@ function parseBilibiliVideoUrl(value) {
 function parseXiaohongshuNoteUrl(value) {
   try {
     const url = new URL(String(value || "").trim());
-    if (url.protocol !== "https:") return null;
+    // Share links are handed out as http:// xhslink short URLs, so accept both.
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
     const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    if (host !== "xiaohongshu.com" && host !== "xhslink.com") return null;
-    if (host === "xhslink.com") {
-      const code = url.pathname.slice(1).replace(/\/$/, "");
+    const isShortLink = host === "xhslink.com" || host === "xhslink.cn";
+    if (host !== "xiaohongshu.com" && !isShortLink) return null;
+    if (isShortLink) {
+      const code = url.pathname.replace(/^\/(?:o\/)?/, "").replace(/\/$/, "");
       if (!code) return null;
-      return { platform: "xiaohongshu", post_id: code, canonical_url: url.href, command_target: url.href };
+      // The short link hides the note id and xsec_token until it is resolved.
+      return { platform: "xiaohongshu", post_id: code, canonical_url: url.href, command_target: url.href, short_link: true };
     }
     const id = url.pathname.match(/^\/(?:explore|discovery\/item|user\/profile\/[^/]+)\/([0-9a-f]{16,32})/i)?.[1];
     if (!id) return null;
@@ -349,13 +352,59 @@ async function runRedditRead(parsed, options = {}) {
   return browserConnectorOffline(parsed, diagnostics);
 }
 
-async function runXiaohongshuRead(parsed, options = {}) {
+// A share short link carries no note id or xsec_token, so follow it first.
+async function resolveXiaohongshuShortLink(parsed, options = {}) {
+  const resolve = options.resolveUrl || defaultResolveUrl;
+  const finalUrl = await resolve(parsed.command_target);
+  const next = finalUrl && finalUrl !== parsed.command_target ? parseXiaohongshuNoteUrl(finalUrl) : null;
+  return next && !next.short_link ? next : parsed;
+}
+
+async function defaultResolveUrl(url) {
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      headers: { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" },
+      signal: AbortSignal.timeout(20000)
+    });
+    return response.url || null;
+  } catch {
+    return null;
+  }
+}
+
+// Signed-out Xiaohongshu serves the login wall with HTTP 200, so the adapter
+// reports success with a "手机号登录" title and zeroed counts. Treat that as an
+// auth failure instead of returning the login page as note content.
+function isXiaohongshuLoginWall(note) {
+  if (!note || typeof note !== "object") return false;
+  const title = String(note.title || "").trim();
+  const body = String(note.desc || note.text || note.content || "").trim();
+  const author = String(note.author || note.nickname || "").trim();
+  return /登录|login/i.test(title) && !body && !author;
+}
+
+async function runXiaohongshuRead(input, options = {}) {
   const runCommand = options.runCommand || spawnCommand;
+  const parsed = input.short_link ? await resolveXiaohongshuShortLink(input, options) : input;
+  if (parsed.short_link) {
+    return {
+      ok: false,
+      status: "invalid_request",
+      request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: "xiaohongshu" } },
+      action_required: {
+        code: "SHORT_LINK_UNRESOLVED",
+        message: "This Xiaohongshu share link could not be resolved to a note URL. Open it once in a browser and retry with the resulting xiaohongshu.com link."
+      },
+      attempts: []
+    };
+  }
   const result = await runCommand("opencli", ["xiaohongshu", "note", parsed.command_target, "-f", "json"], { timeout: 90000 });
   const diagnostics = [{ backend_id: "opencli-xiaohongshu", status: result.status, error: result.error || null }];
   if (result.status === "auth_required") return authRequired(parsed, diagnostics);
   if (result.status === "completed") {
     const note = toFieldObject(result.data);
+    if (isXiaohongshuLoginWall(note)) return authRequired(parsed, diagnostics);
     if (note && typeof note === "object" && (note.title || note.desc || note.text || note.content)) {
       const interact = note.interact_info || note.interactInfo || note;
       return completed(parsed, {
