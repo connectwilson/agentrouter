@@ -244,3 +244,47 @@ test("MCP bridge frames stdout as newline-delimited JSON, not LSP Content-Length
   assert.equal(lines.length, 1);
   assert.deepEqual(JSON.parse(lines[0]), { jsonrpc: "2.0", id: 1, result: { ok: true } });
 });
+
+test("MCP bridge intercepts TikTok video URLs and reads via local opencli", async () => {
+  const url = "https://www.tiktok.com/@creator1/video/7300000000000000000";
+  const intercepted = localSocialPostRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: `看看这个 ${url}` } }
+  });
+  assert.equal(intercepted.platform, "tiktok");
+  assert.equal(intercepted.username, "creator1");
+  assert.equal(intercepted.post_id, "7300000000000000000");
+
+  const calls = [];
+  const happy = await runLocalSocialPostRead(url, {
+    runCommand: async (command, args) => {
+      calls.push([command, ...args]);
+      return { status: "completed", data: { data: [{
+        id: "7300000000000000000", desc: "caption", author: { uniqueId: "creator1" },
+        createTime: 1719792000, stats: { diggCount: 10, commentCount: 2, shareCount: 1, playCount: 500 }
+      }] } };
+    }
+  });
+  assert.deepEqual(calls[0].slice(0, 4), ["opencli", "tiktok", "user", "creator1"]);
+  assert.equal(happy.status, "completed");
+  assert.equal(happy.result.post.platform, "tiktok");
+  assert.equal(happy.result.post.author_handle, "creator1");
+  assert.deepEqual(happy.result.post.engagement, { likes: 10, comments: 2, shares: 1, views: 500 });
+
+  // EMPTY_RESULT + whoami auth failure => auth_required guidance, not connector_offline
+  const auth = await runLocalSocialPostRead(url, {
+    runCommand: async (command, args) => args.includes("whoami")
+      ? { status: "auth_required", error: "AUTH_REQUIRED: session cookies missing" }
+      : { status: "provider_error", error: "EMPTY_RESULT" }
+  });
+  assert.equal(auth.status, "auth_required");
+  assert.equal(auth.action_required.connector_id, "opencli-tiktok");
+
+  // logged in but video not in recent uploads => post_not_found
+  const miss = await runLocalSocialPostRead(url, {
+    runCommand: async (command, args) => args.includes("whoami")
+      ? { status: "completed", data: { username: "me" } }
+      : { status: "completed", data: { data: [{ id: "1", desc: "other", stats: {} }] } }
+  });
+  assert.equal(miss.status, "post_not_found");
+});

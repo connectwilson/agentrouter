@@ -2,8 +2,9 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 export async function runLocalSocialPostRead(value, options = {}) {
-  const parsed = parseXStatusUrl(value);
+  const parsed = parseXStatusUrl(value) || parseTikTokVideoUrl(value);
   if (!parsed) return invalidUrl();
+  if (parsed.platform === "tiktok") return runTikTokRead(parsed, options);
   const runCommand = options.runCommand || spawnCommand;
   const attempts = [{
     command: "opencli",
@@ -48,11 +49,11 @@ function browserConnectorOffline(parsed, attempts) {
     status: "browser_connector_offline",
     request: {
       capability: "social_post_read",
-      params: { url: parsed.canonical_url, platform: "x" }
+      params: { url: parsed.canonical_url, platform: parsed.platform }
     },
     action_required: {
       code: "BROWSER_CONNECTOR_OFFLINE",
-      connector_id: "opencli-twitter",
+      connector_id: connectorId(parsed.platform),
       message: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying.",
       requires_system_password: false,
       credential_access: "browser_managed",
@@ -70,10 +71,11 @@ export function localSocialPostRequest(message) {
   const name = message.params?.name;
   const args = message.params?.arguments || {};
   if (name === "agentrouter_request" && args.capability === "social_post_read") {
-    return parseXStatusUrl(args.params?.url || args.params?.target);
+    const value = args.params?.url || args.params?.target;
+    return parseXStatusUrl(value) || parseTikTokVideoUrl(value);
   }
   if (name !== "agentrouter_fetch" && name !== "agentrouter_ask") return null;
-  return findXStatusUrl(args.task || args.query);
+  return findSocialPostUrl(args.task || args.query);
 }
 
 function parseXStatusUrl(value) {
@@ -84,6 +86,7 @@ function parseXStatusUrl(value) {
     const match = url.pathname.match(/^\/(?:i\/status|[A-Za-z0-9_]{1,30}\/status)\/(\d+)(?:\/)?$/);
     if (!match) return null;
     return {
+      platform: "x",
       post_id: match[1],
       canonical_url: `https://x.com${url.pathname.replace(/\/$/, "")}`
     };
@@ -92,13 +95,126 @@ function parseXStatusUrl(value) {
   }
 }
 
-function findXStatusUrl(value) {
-  const candidates = String(value || "").match(/https:\/\/(?:www\.)?(?:x|twitter)\.com\/[^\s<>"']+/gi) || [];
+// OpenCLI has no single-video-by-URL reader for TikTok, so we capture the
+// creator handle + video id from a canonical video URL and look the video up in
+// the creator's recent uploads. Short share links (vm/vt.tiktok.com) are not
+// resolved here — they carry no handle/id.
+function parseTikTokVideoUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:") return null;
+    if (!["www.tiktok.com", "tiktok.com", "m.tiktok.com"].includes(url.hostname.toLowerCase())) return null;
+    const match = url.pathname.match(/^\/@([A-Za-z0-9._]{1,30})\/video\/(\d+)(?:\/)?$/);
+    if (!match) return null;
+    return {
+      platform: "tiktok",
+      username: match[1],
+      post_id: match[2],
+      canonical_url: `https://www.tiktok.com/@${match[1]}/video/${match[2]}`
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findSocialPostUrl(value) {
+  const candidates = String(value || "").match(/https:\/\/[^\s<>"']+/gi) || [];
   for (const candidate of candidates) {
-    const parsed = parseXStatusUrl(candidate.replace(/[),.;!?，。；！？]+$/, ""));
+    const cleaned = candidate.replace(/[),.;!?，。；！？]+$/, "");
+    const parsed = parseXStatusUrl(cleaned) || parseTikTokVideoUrl(cleaned);
     if (parsed) return parsed;
   }
   return null;
+}
+
+async function runTikTokRead(parsed, options = {}) {
+  const runCommand = options.runCommand || spawnCommand;
+  const result = await runCommand("opencli", ["tiktok", "user", parsed.username, "--limit", "40", "-f", "json"], { timeout: 90000 });
+  const diagnostics = [{ backend_id: "opencli-tiktok", status: result.status, error: result.error || null }];
+  if (result.status === "missing") return browserConnectorOffline(parsed, diagnostics);
+  if (result.status === "completed") {
+    const row = extractTikTokVideo(result.data, parsed);
+    if (row) return completed(parsed, row, "opencli-tiktok", diagnostics);
+  }
+  if (result.status === "auth_required") return authRequired(parsed, diagnostics);
+  // TikTok's `user` returns EMPTY_RESULT whether the browser session is missing
+  // or the video list is genuinely empty — disambiguate with whoami before
+  // deciding between "log in" and "not in recent uploads".
+  const who = await runCommand("opencli", ["tiktok", "whoami", "-f", "json"], { timeout: 30000 });
+  diagnostics.push({ backend_id: "opencli-tiktok-whoami", status: who.status, error: who.error || null });
+  if (who.status === "missing") return browserConnectorOffline(parsed, diagnostics);
+  if (who.status !== "completed") return authRequired(parsed, diagnostics);
+  return postNotFound(parsed, diagnostics);
+}
+
+function extractTikTokVideo(payload, parsed) {
+  const value = typeof payload === "string" ? safeJson(payload) : payload;
+  const list = Array.isArray(value) ? value
+    : Array.isArray(value?.data) ? value.data
+    : Array.isArray(value?.videos) ? value.videos
+    : Array.isArray(value?.data?.videos) ? value.data.videos
+    : Array.isArray(value?.result) ? value.result
+    : [];
+  const video = list.find((item) =>
+    String(item?.id || item?.video_id || item?.aweme_id || "") === parsed.post_id
+  );
+  if (!video) return null;
+  const stats = video.stats || video.statistics || video.statsV2 || {};
+  const createdSeconds = Number(video.createTime || video.create_time);
+  return {
+    id: video.id || video.video_id || video.aweme_id || parsed.post_id,
+    text: video.desc || video.title || video.caption || video.text,
+    author: video.author?.uniqueId || video.author?.unique_id
+      || (typeof video.author === "string" ? video.author : video.author?.nickname)
+      || parsed.username,
+    published_at: Number.isFinite(createdSeconds) && createdSeconds > 0
+      ? new Date(createdSeconds * 1000).toISOString()
+      : (video.published_at || null),
+    engagement: {
+      like_count: stats.diggCount ?? stats.digg_count ?? video.likes,
+      reply_count: stats.commentCount ?? stats.comment_count ?? video.comments,
+      retweet_count: stats.shareCount ?? stats.share_count ?? video.shares,
+      view_count: stats.playCount ?? stats.play_count ?? video.views
+    }
+  };
+}
+
+function authRequired(parsed, attempts) {
+  return {
+    ok: false,
+    status: "auth_required",
+    request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: parsed.platform } },
+    action_required: {
+      code: "AUTH_REQUIRED",
+      connector_id: connectorId(parsed.platform),
+      message: `Open Chrome and sign in to ${platformLabel(parsed.platform)}, then retry. Reads use your own logged-in browser session.`,
+      requires_system_password: false,
+      credential_access: "browser_managed",
+      permissions: { access: "read_only", write_actions: "denied" }
+    },
+    attempts
+  };
+}
+
+function postNotFound(parsed, attempts) {
+  return {
+    ok: false,
+    status: "post_not_found",
+    request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: parsed.platform } },
+    action_required: {
+      code: "POST_NOT_IN_RECENT",
+      message: `OpenCLI has no single-video reader for ${platformLabel(parsed.platform)}; this post was not in @${parsed.username}'s recent uploads. Try a recent post, or fetch the creator's profile/videos instead.`
+    },
+    attempts
+  };
+}
+
+function connectorId(platform) {
+  return platform === "x" ? "opencli-twitter" : `opencli-${platform}`;
+}
+
+function platformLabel(platform) {
+  return platform === "x" ? "X (x.com)" : platform === "tiktok" ? "TikTok (tiktok.com)" : platform;
 }
 
 function extractTweet(payload, parsed) {
@@ -144,10 +260,10 @@ function completed(parsed, row, backendId, attempts) {
       credential_policy: "never_upload",
       raw_result_policy: "local_only"
     },
-    request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: "x" } },
+    request: { capability: "social_post_read", params: { url: parsed.canonical_url, platform: parsed.platform } },
     result: {
       post: {
-        platform: "x",
+        platform: parsed.platform,
         post_id: String(row.id || parsed.post_id),
         canonical_url: parsed.canonical_url,
         text: String(row.text || "").trim().slice(0, 20000) || null,
@@ -184,7 +300,7 @@ function invalidUrl() {
   return {
     ok: false,
     status: "invalid_request",
-    error: { code: "SOCIAL_POST_URL_INVALID", message: "A public X status URL is required." }
+    error: { code: "SOCIAL_POST_URL_INVALID", message: "A public X status or TikTok video URL is required." }
   };
 }
 
@@ -220,7 +336,8 @@ function spawnCommand(command, args, options = {}) {
       : { status: "provider_error", error: error.message }));
     child.on("close", (code) => {
       if (code === 0) return finish({ status: "completed", data: safeJson(stdout) || stdout });
-      const auth = /auth|login|cookie|session/i.test(stderr);
+      // Some adapters (e.g. TikTok) report AUTH on stdout with a non-zero exit.
+      const auth = /auth_required|auth|login|cookie|session/i.test(`${stderr}\n${stdout}`);
       return finish({ status: auth ? "auth_required" : "provider_error", error: stderr.trim() || `${command} exited ${code}` });
     });
     const timer = setTimeout(() => {
