@@ -158,6 +158,59 @@ export async function listPersistentSocialConnections() {
   return result.rows.map((row) => row.connection);
 }
 
+export async function writePersistentPublicApiCandidates(candidates) {
+  if (!persistenceEnabled()) return false;
+  if (!candidates.length) return true;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query(
+    `insert into adn_public_api_catalog (candidate_id, candidate, updated_at)
+     select item->>'candidate_id', item, now()
+     from jsonb_array_elements($1::jsonb) as item
+     where nullif(item->>'candidate_id', '') is not null
+     on conflict (candidate_id)
+     do update set candidate = excluded.candidate, updated_at = now()`,
+    [JSON.stringify(candidates)]
+  );
+  return true;
+}
+
+export async function listPersistentPublicApiCandidates() {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "select candidate from adn_public_api_catalog order by updated_at asc, candidate_id asc"
+  );
+  return result.rows.map((row) => row.candidate);
+}
+
+export async function writePersistentPublicApiPipelineRun(run) {
+  if (!persistenceEnabled()) return false;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query(
+    `insert into adn_public_api_pipeline_runs (run_id, run, created_at)
+     values ($1, $2::jsonb, coalesce(($2::jsonb->>'created_at')::timestamptz, now()))
+     on conflict (run_id) do nothing`,
+    [run.run_id, JSON.stringify(run)]
+  );
+  return true;
+}
+
+export async function listPersistentPublicApiPipelineRuns({ limit = 100 } = {}) {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select run from adn_public_api_pipeline_runs
+     order by created_at desc
+     limit $1`,
+    [Math.max(1, Math.min(1000, Number(limit) || 100))]
+  );
+  return result.rows.map((row) => row.run);
+}
+
 export async function deletePersistentSocialConnection(connectionId, ownerKey) {
   if (!persistenceEnabled()) return false;
   const pool = await getPool();
@@ -373,6 +426,18 @@ async function ensureSchema(pool) {
       metadata jsonb not null default '{}'::jsonb,
       created_at timestamptz not null default now()
     );
+    create table if not exists adn_public_api_catalog (
+      candidate_id text primary key,
+      candidate jsonb not null,
+      updated_at timestamptz not null default now()
+    );
+    create index if not exists adn_public_api_catalog_status_idx on adn_public_api_catalog((candidate->>'status'));
+    create table if not exists adn_public_api_pipeline_runs (
+      run_id text primary key,
+      run jsonb not null,
+      created_at timestamptz not null default now()
+    );
+    create index if not exists adn_public_api_pipeline_runs_created_idx on adn_public_api_pipeline_runs(created_at desc);
     create index if not exists adn_credit_ledger_account_idx on adn_credit_ledger(account_id, created_at desc);
     create index if not exists adn_credit_api_keys_hash_idx on adn_credit_api_keys(key_hash);
   `);

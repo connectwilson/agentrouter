@@ -14,7 +14,9 @@ export function createMemoryStore() {
     creditLedger: [],
     authSessions: new Map(),
     oauthStates: new Map(),
-    socialConnections: new Map()
+    socialConnections: new Map(),
+    publicApiCatalog: new Map(),
+    publicApiPipelineRuns: []
   };
 }
 

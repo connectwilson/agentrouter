@@ -17,7 +17,7 @@ import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc } from "./arc-anchor.j
 import { createErc8004AgentMetadata, submitErc8004Feedback } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
-import { accountHtml, agentHtml, homeHtml, humanHtml, serviceDetailHtml } from "./home.js";
+import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
 import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditLedger } from "./credits.js";
@@ -32,6 +32,14 @@ import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
 import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
+import {
+  hydratePublicApiCoverage,
+  listPublicApiCatalog,
+  publicApiCoverageReport,
+  runPublicApiConversionBatch,
+  startPublicApiConversionJob,
+  syncPublicApiCoverage
+} from "./public-api-pipeline.js";
 
 const clientLogoPaths = {
   "claude.svg": new URL("../public/assets/client-logos/claude.svg", import.meta.url),
@@ -156,11 +164,17 @@ export function createServer({
   baseUrl = "",
   socialResearchRunner = runSocialResearchCapability,
   socialConnectionOptions = {},
-  socialProviderFactory = socialProvidersForUser
+  socialProviderFactory = socialProvidersForUser,
+  publicApiPipelineOptions = {}
 } = {}) {
   const server = http.createServer(async (req, res) => {
     try {
-      await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), { socialResearchRunner, socialConnectionOptions, socialProviderFactory });
+      await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
+        socialResearchRunner,
+        socialConnectionOptions,
+        socialProviderFactory,
+        publicApiPipelineOptions
+      });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
         error: {
@@ -179,7 +193,8 @@ export function createServer({
 async function routeRequest(req, res, store, baseUrl, {
   socialResearchRunner = runSocialResearchCapability,
   socialConnectionOptions = {},
-  socialProviderFactory = socialProvidersForUser
+  socialProviderFactory = socialProvidersForUser,
+  publicApiPipelineOptions = {}
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const auth = {
@@ -490,6 +505,25 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/public-apis") {
+    sendHtml(res, 200, publicApisHtml({ auth }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/public-apis") {
+    sendJson(res, 200, listPublicApiCatalog(store, {
+      query: url.searchParams.get("q"),
+      category: url.searchParams.get("category"),
+      availability: url.searchParams.get("availability"),
+      status: url.searchParams.get("status"),
+      limit: url.searchParams.get("limit"),
+      offset: url.searchParams.get("offset")
+    }), {
+      "cache-control": "public, max-age=30, stale-while-revalidate=120"
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/research") {
     sendHtml(res, 200, researchHtml(auth));
     return;
@@ -645,6 +679,61 @@ async function routeRequest(req, res, store, baseUrl, {
       }));
       throw error;
     }
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/studio/public-api-pipeline/status") {
+    if (!requireAuth(req, res, auth, url)) return;
+    const status = url.searchParams.get("status");
+    const category = url.searchParams.get("category");
+    const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 100, 1), 500);
+    const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+    const candidates = [...store.publicApiCatalog.values()]
+      .filter((candidate) => !status || candidate.status === status)
+      .filter((candidate) => !category || candidate.category === category)
+      .sort((left, right) => String(left.title || "").localeCompare(String(right.title || "")))
+      .slice(offset, offset + limit);
+    sendJson(res, 200, {
+      ok: true,
+      coverage: publicApiCoverageReport(store),
+      candidates,
+      runs: store.publicApiPipelineRuns.slice(0, 20),
+      job: store.publicApiPipelineJob || null,
+      pagination: { limit, offset, returned: candidates.length }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/studio/public-api-pipeline/sync") {
+    if (!requireAdminToken(req, res, auth)) return;
+    const result = await syncPublicApiCoverage(store, publicApiPipelineOptions);
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/studio/public-api-pipeline/run") {
+    if (!requireAdminToken(req, res, auth)) return;
+    const body = await readJson(req).catch(() => ({}));
+    const result = await runPublicApiConversionBatch(store, {
+      ...publicApiPipelineOptions,
+      limit: body.limit,
+      concurrency: body.concurrency,
+      baseUrl
+    });
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/studio/public-api-pipeline/start") {
+    if (!requireAdminToken(req, res, auth)) return;
+    const body = await readJson(req).catch(() => ({}));
+    const { accepted, job } = startPublicApiConversionJob(store, {
+      ...publicApiPipelineOptions,
+      limit: body.limit,
+      concurrency: body.concurrency,
+      baseUrl
+    });
+    sendJson(res, 202, { ok: true, accepted, job });
     return;
   }
 
@@ -1098,6 +1187,17 @@ function requireAuth(req, res, auth, url) {
   return false;
 }
 
+function requireAdminToken(req, res, auth) {
+  if (auth.user?.provider === "api_token" && auth.user?.role === "admin") return true;
+  sendJson(res, auth.user ? 403 : 401, {
+    error: {
+      code: auth.user ? "ADMIN_TOKEN_REQUIRED" : "AUTH_REQUIRED",
+      message: "An AgentRouter admin API token is required for catalog pipeline mutations."
+    }
+  });
+  return false;
+}
+
 function sendAuthRequired(res, message) {
   sendJson(res, 401, {
     error: {
@@ -1108,14 +1208,21 @@ function sendAuthRequired(res, message) {
 }
 
 function currentApiTokenUser(req) {
-  const expected = process.env.ADN_STUDIO_API_TOKEN || process.env.ADN_ADMIN_API_TOKEN || "";
-  if (!expected) return null;
   const supplied = bearerToken(req.headers.authorization || "") || req.headers["x-agentrouter-publish-token"] || "";
-  if (!supplied || !constantTimeEqual(String(supplied), String(expected))) return null;
+  if (!supplied) return null;
+  const adminToken = process.env.ADN_ADMIN_API_TOKEN || "";
+  const studioToken = process.env.ADN_STUDIO_API_TOKEN || "";
+  const role = adminToken && constantTimeEqual(String(supplied), String(adminToken))
+    ? "admin"
+    : studioToken && constantTimeEqual(String(supplied), String(studioToken))
+      ? "studio"
+      : null;
+  if (!role) return null;
   return {
     provider: "api_token",
-    id: "provider-publish-token",
-    name: "Provider Publish Token",
+    role,
+    id: role === "admin" ? "admin-api-token" : "provider-publish-token",
+    name: role === "admin" ? "AgentRouter Admin Token" : "Provider Publish Token",
     email: "",
     avatar_url: "",
     handle: "provider-publish-token"
@@ -2924,6 +3031,7 @@ export async function bootstrapServer(server, baseUrl) {
   });
   await hydratePersistentServiceEvents(server.store);
   await hydrateSocialConnections(server.store);
+  await hydratePublicApiCoverage(server.store);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

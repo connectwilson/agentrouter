@@ -1,4 +1,4 @@
-const skillInstallCommand = "npx @agentrouternetwork/agentrouter --full";
+const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
   "mcpServers": {
     "AgentRouter": {
@@ -72,6 +72,7 @@ export function homeHtml({ auth = {} } = {}) {
               <span class="path-action">See reputation data</span>
             </a>
           </div>
+          <p class="install-note"><a href="/public-apis">Browse tested Public APIs coverage →</a></p>
         </div>
       </header>
 
@@ -456,6 +457,7 @@ export function agentHtml({ auth = {} } = {}) {
               <span class="eyebrow">API Hub for agents</span>
               <h2>Discover callable services</h2>
               <p>Search by task, provider, or capability. AgentRouter returns a buyer-friendly marketplace card plus the request shape an AI client can invoke.</p>
+              <p><a href="/public-apis">See which public-apis/public-apis entries passed live validation →</a></p>
             </div>
           </section>
 
@@ -575,6 +577,118 @@ export function agentHtml({ auth = {} } = {}) {
           document.getElementById("service-page-status").textContent = "Page " + (currentPage + 1);
         }
         renderPage();
+      </script>
+    `
+  });
+}
+
+export function publicApisHtml({ auth = {} } = {}) {
+  return appPage({
+    title: "Public APIs coverage",
+    subtitle: "Live-tested discovery coverage from public-apis/public-apis.",
+    active: "agent",
+    auth,
+    body: `
+      <main>
+        <div class="shell wide-shell agent-market">
+          <section class="market-hero">
+            <div>
+              <span class="eyebrow">Public APIs coverage</span>
+              <h2>Tested APIs, not directory claims</h2>
+              <p>Usable means AgentRouter discovered a read-only endpoint and received a successful JSON response during live validation. Pending and unavailable entries remain visible with their reason.</p>
+            </div>
+          </section>
+
+          <section class="detail-metrics" aria-label="Public API coverage summary">
+            <div><span>Catalog entries</span><strong id="public-total">--</strong><small>Active upstream rows</small></div>
+            <div><span>Usable</span><strong id="public-usable">--</strong><small>Passed live validation</small></div>
+            <div><span>Unavailable</span><strong id="public-unavailable">--</strong><small>Blocked or failed</small></div>
+            <div><span>Pending</span><strong id="public-pending">--</strong><small>Waiting for validation</small></div>
+          </section>
+
+          <div class="market-toolbar">
+            <input id="public-api-search" placeholder="Search API, category, capability, or documentation URL" />
+            <select id="public-api-availability">
+              <option value="">All availability</option>
+              <option value="usable">Usable</option>
+              <option value="unavailable">Unavailable</option>
+              <option value="pending">Pending</option>
+            </select>
+          </div>
+
+          <section class="detail-panel">
+            <div class="panel-head">
+              <span class="eyebrow">Validation inventory</span>
+              <h2 id="public-api-result-count">Loading APIs...</h2>
+            </div>
+            <div id="public-api-list" class="credit-ledger"></div>
+            <div class="pager">
+              <button type="button" id="public-api-prev">Previous</button>
+              <span id="public-api-page">Page 1</span>
+              <button type="button" id="public-api-next">Next</button>
+            </div>
+          </section>
+        </div>
+      </main>
+      <script>
+        ${serviceClientScript()}
+        const publicApiPageSize = 50;
+        let publicApiOffset = 0;
+        let publicApiTimer = null;
+        let publicApiPayload = { apis: [], summary: {}, total: 0, has_more: false };
+        document.getElementById("public-api-search").addEventListener("input", () => {
+          clearTimeout(publicApiTimer);
+          publicApiTimer = setTimeout(() => { publicApiOffset = 0; loadPublicApis(); }, 180);
+        });
+        document.getElementById("public-api-availability").addEventListener("change", () => {
+          publicApiOffset = 0;
+          loadPublicApis();
+        });
+        document.getElementById("public-api-prev").addEventListener("click", () => {
+          publicApiOffset = Math.max(0, publicApiOffset - publicApiPageSize);
+          loadPublicApis();
+        });
+        document.getElementById("public-api-next").addEventListener("click", () => {
+          if (!publicApiPayload.has_more) return;
+          publicApiOffset += publicApiPageSize;
+          loadPublicApis();
+        });
+        async function loadPublicApis() {
+          const params = new URLSearchParams({
+            q: document.getElementById("public-api-search").value.trim(),
+            availability: document.getElementById("public-api-availability").value,
+            limit: String(publicApiPageSize),
+            offset: String(publicApiOffset)
+          });
+          const response = await fetch("/api/public-apis?" + params.toString());
+          publicApiPayload = await response.json();
+          renderPublicApis();
+        }
+        function renderPublicApis() {
+          const summary = publicApiPayload.summary || {};
+          setText("public-total", summary.total || 0);
+          setText("public-usable", summary.usable || 0);
+          setText("public-unavailable", summary.unavailable || 0);
+          setText("public-pending", summary.pending || 0);
+          setText("public-api-result-count", publicApiPayload.total + " matching APIs");
+          document.getElementById("public-api-prev").disabled = publicApiOffset === 0;
+          document.getElementById("public-api-next").disabled = !publicApiPayload.has_more;
+          document.getElementById("public-api-page").textContent = "Page " + (Math.floor(publicApiOffset / publicApiPageSize) + 1);
+          document.getElementById("public-api-list").innerHTML = (publicApiPayload.apis || []).map((api) => {
+            const endpoints = (api.endpoints || []).map((endpoint) =>
+              '<div><code>' + escapeHtml(endpoint.method || "GET") + " " + escapeHtml(endpoint.upstream_url || "") + '</code></div>'
+            ).join("");
+            return '<article class="ledger-row">' +
+              '<div><strong>' + escapeHtml(api.title || "Untitled API") + '</strong><small>' + escapeHtml(api.category || "Uncategorized") + '</small></div>' +
+              '<div><strong>' + escapeHtml(api.availability || "unknown") + '</strong><small>' + escapeHtml(api.status || "unknown") + '</small></div>' +
+              '<div>' + (endpoints || '<small>' + escapeHtml(api.reason || "No callable endpoint validated") + '</small>') + '</div>' +
+              '<div><a href="' + escapeHtml(api.documentation_url || "#") + '" target="_blank" rel="noreferrer">Documentation</a></div>' +
+            '</article>';
+          }).join("") || '<div class="empty-market">No matching APIs.</div>';
+        }
+        loadPublicApis().catch(() => {
+          document.getElementById("public-api-result-count").textContent = "Could not load Public APIs coverage.";
+        });
       </script>
     `
   });

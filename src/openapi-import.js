@@ -43,16 +43,20 @@ export async function discoverApiServices(body, baseUrl, options = {}) {
   }
   let document;
   try {
-    document = await fetchOpenApiDocument(apiUrl);
+    document = await fetchOpenApiDocument(apiUrl, {
+      fetchImpl: options.fetchImpl || globalThis.fetch,
+      allowDirectJsonEndpoint: options.allowDirectJsonEndpoint === true
+    });
   } catch (error) {
-    if (looksLikeApiDocsSource(apiUrl)) {
+    if (looksLikeApiDocsSource(apiUrl) || options.allowDocsFallback === true) {
       return discoverApiDocsServices({
         docsUrl: apiUrl,
         defaultPrice,
         providerName,
         secretValue,
         authHeader,
-        payoutAddress
+        payoutAddress,
+        fetchImpl: options.fetchImpl || globalThis.fetch
       });
     }
     throw error;
@@ -137,21 +141,13 @@ export async function discoverPublicApiCatalog(body = {}, options = {}) {
     throw error;
   }
   const source = "https://raw.githubusercontent.com/public-apis/public-apis/master/README.md";
-  const response = await fetchWithTimeout(source, { fetchImpl: options.fetchImpl || globalThis.fetch });
-  if (!response.ok) {
-    const error = new Error(`Public APIs catalog fetch failed with HTTP ${response.status}.`);
-    error.statusCode = 502;
-    error.code = "PUBLIC_API_CATALOG_FETCH_FAILED";
-    throw error;
-  }
-  const markdown = await response.text();
   const categories = new Set((Array.isArray(body.catalog_categories) ? body.catalog_categories : [])
     .map((value) => String(value || "").trim().toLowerCase())
     .filter(Boolean));
   const query = String(body.catalog_query || "").trim().toLowerCase();
   const httpsOnly = body.catalog_https_only !== false;
   const limit = Math.min(Math.max(Number(body.catalog_limit) || 25, 1), 100);
-  const parsed = parsePublicApiCatalog(markdown);
+  const parsed = await fetchPublicApiCatalogEntries({ fetchImpl: options.fetchImpl || globalThis.fetch });
   const skipped = [];
   const eligible = [];
   for (const entry of parsed) {
@@ -189,8 +185,107 @@ export async function discoverPublicApiCatalog(body = {}, options = {}) {
   };
 }
 
-async function discoverApiDocsServices({ docsUrl, defaultPrice, providerName, secretValue, authHeader, payoutAddress = "" }) {
-  const overview = await fetchTextDocument(docsUrl);
+export async function fetchPublicApiCatalogEntries(options = {}) {
+  const source = "https://raw.githubusercontent.com/public-apis/public-apis/master/README.md";
+  let response;
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      response = await fetchWithTimeout(source, { fetchImpl: options.fetchImpl || globalThis.fetch });
+      if (response.ok || response.status < 500) break;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+  }
+  if (!response && lastError) throw lastError;
+  if (!response.ok) {
+    const error = new Error(`Public APIs catalog fetch failed with HTTP ${response.status}.`);
+    error.statusCode = 502;
+    error.code = "PUBLIC_API_CATALOG_FETCH_FAILED";
+    throw error;
+  }
+  return parsePublicApiCatalog(await response.text());
+}
+
+// APIs.guru is a spec-first directory: every entry points at an OpenAPI
+// document, so conversion can import the spec directly instead of scraping a
+// human documentation page (which is why the public-apis catalog mostly fails).
+export async function fetchApisGuruCatalogEntries(options = {}) {
+  const source = "https://api.apis.guru/v2/list.json";
+  const response = await fetchWithTimeout(source, { fetchImpl: options.fetchImpl || globalThis.fetch });
+  if (!response.ok) {
+    const error = new Error(`APIs.guru catalog fetch failed with HTTP ${response.status}.`);
+    error.statusCode = 502;
+    error.code = "PUBLIC_API_CATALOG_FETCH_FAILED";
+    throw error;
+  }
+  const listed = await response.json();
+  const entries = [];
+  for (const [apiId, record] of Object.entries(listed || {})) {
+    const version = record?.versions?.[record?.preferred];
+    const specUrl = version?.swaggerUrl;
+    if (!specUrl || !apisGuruIsHttps(specUrl)) continue;
+    const info = version.info || {};
+    const categories = info["x-apisguru-categories"];
+    entries.push({
+      category: apisGuruCategory(Array.isArray(categories) ? categories[0] : null),
+      title: clampText(info.title || apiId, 200),
+      description: clampText(info.description || "", 400),
+      // The spec URL *is* the documentation target for this source.
+      documentation_url: specUrl,
+      auth: null,
+      https: true,
+      cors: null,
+      source_catalog: "apis.guru",
+      spec_url: specUrl,
+      provider_name: info["x-providerName"] || apiId
+    });
+  }
+  return entries;
+}
+
+const APIS_GURU_CATEGORIES = {
+  open_data: "Open Data",
+  cloud: "Development",
+  developer_tools: "Development",
+  financial: "Finance",
+  ecommerce: "Shopping",
+  media: "Video",
+  analytics: "Business",
+  messaging: "Email",
+  telecom: "Phone",
+  entertainment: "Entertainment",
+  text: "Text Analysis",
+  location: "Geocoding",
+  transport: "Transportation",
+  social: "Social",
+  security: "Security",
+  email: "Email",
+  hosting: "Development",
+  machine_learning: "Machine Learning",
+  sms: "Phone"
+};
+
+function apisGuruIsHttps(value) {
+  try {
+    return new URL(String(value)).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function apisGuruCategory(raw) {
+  const key = String(raw || "").trim().toLowerCase();
+  return APIS_GURU_CATEGORIES[key] || "Development";
+}
+
+function clampText(value, max) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+async function discoverApiDocsServices({ docsUrl, defaultPrice, providerName, secretValue, authHeader, payoutAddress = "", fetchImpl = globalThis.fetch }) {
+  const overview = await fetchTextDocument(docsUrl, { fetchImpl });
   const docLinks = parseApiDocsLinks(overview.raw, docsUrl);
   const providerTitle = providerName || providerNameFromDocsUrl(docsUrl);
   const providerId = normalizeId(null, providerTitle, "provider");
@@ -199,7 +294,7 @@ async function discoverApiDocsServices({ docsUrl, defaultPrice, providerName, se
   const pagesToScan = docLinks.length ? docLinks : [docsUrl];
   for (const link of uniqueBy(pagesToScan, (item) => item)) {
     try {
-      const page = await fetchTextDocument(link);
+      const page = await fetchTextDocument(link, { fetchImpl });
       const parsedEndpoints = parseApiEndpointDocs(page.text, link, docsUrl);
       if (!parsedEndpoints.length) {
         skipped.push({ source: link, reason: "no_api_endpoint_found" });
@@ -301,7 +396,7 @@ function looksLikePublicApiCatalogSource(value) {
   }
 }
 
-function parsePublicApiCatalog(markdown) {
+export function parsePublicApiCatalog(markdown) {
   const entries = [];
   let category = "";
   for (const line of String(markdown || "").split(/\r?\n/)) {
@@ -403,6 +498,15 @@ function createPublicApiCatalogCandidate(entry, { source, defaultPrice }) {
 function resolveOpenApiServerUrl(doc, sourceUrl, requestedUrl) {
   const serverUrl = doc.servers?.[0]?.url;
   if (serverUrl) return normalizeEndpoint(serverUrl, sourceUrl).replace(/\/$/, "");
+  // Swagger 2.0 declares its origin as host + basePath + schemes instead of
+  // servers[]. Without this the endpoints resolve against wherever the spec
+  // file was downloaded from, which is wrong whenever the spec is mirrored
+  // (for example every spec served by a directory such as APIs.guru).
+  if (doc.host) {
+    const scheme = (Array.isArray(doc.schemes) && doc.schemes.includes("https") ? "https" : doc.schemes?.[0]) || "https";
+    const basePath = String(doc.basePath || "").replace(/\/$/, "");
+    return `${scheme}://${doc.host}${basePath}`.replace(/\/$/, "");
+  }
   if (requestedUrl.endsWith(".json")) {
     return new URL(".", sourceUrl).toString().replace(/\/$/, "");
   }
@@ -679,18 +783,21 @@ async function publishApiDraftsToRemote({ body, remoteUrl }) {
   };
 }
 
-async function fetchOpenApiDocument(apiUrl) {
+async function fetchOpenApiDocument(apiUrl, { fetchImpl = globalThis.fetch, allowDirectJsonEndpoint = false } = {}) {
   const candidates = buildOpenApiCandidates(apiUrl);
   const attempted = [];
   for (const candidate of candidates) {
     try {
       attempted.push(candidate);
-      const response = await fetchWithTimeout(candidate);
+      const response = await fetchWithTimeout(candidate, { fetchImpl });
       if (!response.ok) continue;
       const doc = await response.json();
       if (doc.openapi || doc.swagger) return { source: candidate, doc };
       const converted = convertEndpointIndex(doc, apiUrl);
       if (converted) return { source: candidate, doc: converted };
+      if (allowDirectJsonEndpoint && candidate === apiUrl && doc != null && typeof doc === "object") {
+        return { source: apiUrl, directEndpoint: true };
+      }
     } catch {
       // Try the next candidate.
     }
@@ -1070,8 +1177,8 @@ function looksLikeApiDocsSource(apiUrl) {
   }
 }
 
-async function fetchTextDocument(url) {
-  const response = await fetchWithTimeout(url);
+async function fetchTextDocument(url, { fetchImpl = globalThis.fetch } = {}) {
+  const response = await fetchWithTimeout(url, { fetchImpl });
   if (!response.ok) {
     const error = new Error(`${url} returned HTTP ${response.status}`);
     error.statusCode = 422;
@@ -1080,7 +1187,7 @@ async function fetchTextDocument(url) {
   const contentType = response.headers.get("content-type") || "";
   const raw = await response.text();
   if (contentType.includes("html")) {
-    const markdown = await fetchMarkdownVariant(url);
+    const markdown = await fetchMarkdownVariant(url, { fetchImpl });
     if (markdown && (containsEmbeddedOpenApi(markdown) || endpointSignalScore(markdown) > endpointSignalScore(raw))) {
       return {
         source: `${url}.md`,
@@ -1096,14 +1203,14 @@ async function fetchTextDocument(url) {
   };
 }
 
-async function fetchMarkdownVariant(url) {
+async function fetchMarkdownVariant(url, { fetchImpl = globalThis.fetch } = {}) {
   if (/\.md(?:$|[?#])/i.test(url)) return "";
   try {
     const parsed = new URL(url);
     parsed.hash = "";
     parsed.search = "";
     parsed.pathname = `${parsed.pathname.replace(/\/$/, "")}.md`;
-    const response = await fetchWithTimeout(parsed.toString());
+    const response = await fetchWithTimeout(parsed.toString(), { fetchImpl });
     if (!response.ok) return "";
     return await response.text();
   } catch {
