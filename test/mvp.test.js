@@ -588,7 +588,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.5.0");
+    assert.equal(packageJson.version, "0.6.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -5246,4 +5246,54 @@ test("public agentrouter installer configures Codex through its TOML config", as
 test("installer detects Codex as the invoking client", async () => {
   const { parseInstallArgs } = await import("../packages/agentrouter-installer/server/index.js");
   assert.equal(parseInstallArgs(["--client", "codex"]).client, "codex");
+});
+
+test("installer configures Windsurf, Gemini, opencode, and any client via --config-path", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const { installAgentRouter } = await import("../packages/agentrouter-installer/server/index.js");
+    const base = { agentRouterUrl: baseUrl, env: { AGENTROUTER_SKIP_BROWSER_SETUP: "1" } };
+    const expectedArgs = ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"];
+
+    // Windsurf and Gemini use the standard mcpServers shape at their own paths.
+    for (const [client, name, rel] of [
+      ["windsurf", "Windsurf", [".codeium", "windsurf", "mcp_config.json"]],
+      ["gemini", "Gemini CLI", [".gemini", "settings.json"]]
+    ]) {
+      const home = await fs.mkdtemp(path.join(runtimeRoot, `agentrouter-${client}-`));
+      const result = await installAgentRouter({ ...base, home, client, skillDirs: path.join(home, "skills") });
+      assert.deepEqual(result.configured_clients.map((entry) => entry.name), [name]);
+      const config = JSON.parse(await fs.readFile(path.join(home, ...rel), "utf8"));
+      assert.deepEqual(config.mcpServers.AgentRouter.args, expectedArgs);
+      assert.equal(config.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, baseUrl);
+    }
+
+    // opencode stores servers under "mcp" with argv as one array and
+    // "environment" instead of "env" — the standard writer would be wrong.
+    const opencodeHome = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-opencode-"));
+    const opencodePath = path.join(opencodeHome, ".config", "opencode", "opencode.json");
+    await fs.mkdir(path.dirname(opencodePath), { recursive: true });
+    await fs.writeFile(opencodePath, JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      theme: "dark",
+      mcp: { other: { type: "local", command: ["other"] } }
+    }));
+    await installAgentRouter({ ...base, home: opencodeHome, client: "opencode", skillDirs: path.join(opencodeHome, "skills") });
+    const opencodeConfig = JSON.parse(await fs.readFile(opencodePath, "utf8"));
+    assert.deepEqual(opencodeConfig.mcp.AgentRouter.command, ["npx", ...expectedArgs]);
+    assert.equal(opencodeConfig.mcp.AgentRouter.type, "local");
+    assert.equal(opencodeConfig.mcp.AgentRouter.enabled, true);
+    assert.equal(opencodeConfig.mcp.AgentRouter.environment.AGENT_ROUTER_URL, baseUrl);
+    // Unrelated settings and servers survive.
+    assert.equal(opencodeConfig.theme, "dark");
+    assert.deepEqual(opencodeConfig.mcp.other.command, ["other"]);
+
+    // Any other client can be pointed at explicitly instead of being guessed.
+    const customHome = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-custom-"));
+    const customPath = path.join(customHome, "myagent.json");
+    const custom = await installAgentRouter({
+      ...base, home: customHome, client: "MyAgent", configPath: customPath, skillDirs: path.join(customHome, "skills")
+    });
+    assert.deepEqual(custom.configured_clients.map((entry) => entry.name), ["MyAgent"]);
+    assert.deepEqual(JSON.parse(await fs.readFile(customPath, "utf8")).mcpServers.AgentRouter.args, expectedArgs);
+  });
 });

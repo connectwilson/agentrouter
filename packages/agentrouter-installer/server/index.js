@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.5.0";
+const INSTALLER_VERSION = "0.6.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -53,7 +53,8 @@ export async function installAgentRouter(options = {}) {
   const client = await resolveCurrentClient({
     home,
     env: options.env || process.env,
-    preferredClient: options.client || ""
+    preferredClient: options.client || "",
+    customConfigPath: options.configPath || ""
   });
   if (!client) {
     throw new Error(
@@ -220,6 +221,10 @@ export function parseInstallArgs(argv) {
       options.full = false;
     } else if (arg === "--no-browser-setup") {
       options.setupBrowserConnector = false;
+    } else if (arg === "--config-path") {
+      options.configPath = requireValue(argv[++index], "--config-path");
+    } else if (arg.startsWith("--config-path=")) {
+      options.configPath = arg.slice("--config-path=".length);
     } else if (arg === "--client") {
       options.client = requireValue(argv[++index], "--client");
     } else if (arg.startsWith("--client=")) {
@@ -238,6 +243,10 @@ export function installUsage() {
   npx @agentrouternetwork/agentrouter
   npx @agentrouternetwork/agentrouter --client claude-code
   npx @agentrouternetwork/agentrouter --client codex
+  npx @agentrouternetwork/agentrouter --client windsurf
+  npx @agentrouternetwork/agentrouter --client gemini
+  npx @agentrouternetwork/agentrouter --client opencode
+  npx @agentrouternetwork/agentrouter --client MyAgent --config-path ~/.myagent/mcp.json
   npx @agentrouternetwork/agentrouter --http-only
   npx @agentrouternetwork/agentrouter --json
   npx @agentrouternetwork/agentrouter --url https://agentrouter.network
@@ -250,7 +259,7 @@ OpenCLI install. Neither mode creates a local wallet.
 `;
 }
 
-async function resolveCurrentClient({ home, env, preferredClient = "" }) {
+async function resolveCurrentClient({ home, env, preferredClient = "", customConfigPath = "" }) {
   const candidates = [
     {
       id: "claude-code",
@@ -272,6 +281,25 @@ async function resolveCurrentClient({ home, env, preferredClient = "" }) {
       configPath: env.CODEX_MCP_CONFIG || path.join(home, ".codex", "config.toml")
     },
     {
+      id: "windsurf",
+      name: "Windsurf",
+      explicit: env.WINDSURF_MCP_CONFIG,
+      configPath: env.WINDSURF_MCP_CONFIG || path.join(home, ".codeium", "windsurf", "mcp_config.json")
+    },
+    {
+      id: "gemini",
+      name: "Gemini CLI",
+      explicit: env.GEMINI_MCP_CONFIG,
+      configPath: env.GEMINI_MCP_CONFIG || path.join(home, ".gemini", "settings.json")
+    },
+    {
+      id: "opencode",
+      name: "opencode",
+      format: "opencode",
+      explicit: env.OPENCODE_MCP_CONFIG,
+      configPath: env.OPENCODE_MCP_CONFIG || path.join(home, ".config", "opencode", "opencode.json")
+    },
+    {
       id: "claude-desktop",
       name: "Claude Desktop",
       explicit: env.CLAUDE_DESKTOP_MCP_CONFIG,
@@ -279,6 +307,14 @@ async function resolveCurrentClient({ home, env, preferredClient = "" }) {
         path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
     }
   ];
+  if (preferredClient && customConfigPath) {
+    return {
+      id: "custom",
+      name: preferredClient,
+      configPath: customConfigPath,
+      format: customConfigPath.endsWith(".toml") ? "toml" : "json"
+    };
+  }
   const requested = normalizeClientId(preferredClient);
   if (requested) {
     const selected = candidates.find((candidate) => candidate.id === requested);
@@ -309,6 +345,9 @@ function detectedHostClient(env) {
   if (env.CLAUDECODE || env.CLAUDE_CODE || env.CLAUDE_CODE_ENTRYPOINT) return "claude-code";
   if (env.CURSOR_AGENT || env.CURSOR_TRACE_ID || env.CURSOR_SESSION_ID) return "cursor";
   if (env.CODEX_SANDBOX || env.CODEX_SANDBOX_NETWORK_DISABLED || env.CODEX_THREAD_ID || env.CODEX_HOME) return "codex";
+  if (env.WINDSURF_SESSION_ID || env.WINDSURF_USER_ID) return "windsurf";
+  if (env.GEMINI_CLI || env.GEMINI_API_KEY_SOURCE) return "gemini";
+  if (env.OPENCODE || env.OPENCODE_SESSION_ID) return "opencode";
   if (env.CLAUDE_DESKTOP) return "claude-desktop";
   return "";
 }
@@ -320,6 +359,10 @@ function normalizeClientId(value) {
     "claude-code": "claude-code",
     cursor: "cursor",
     codex: "codex",
+    windsurf: "windsurf",
+    gemini: "gemini",
+    "gemini-cli": "gemini",
+    opencode: "opencode",
     desktop: "claude-desktop",
     "claude-desktop": "claude-desktop"
   };
@@ -328,6 +371,7 @@ function normalizeClientId(value) {
 
 async function configureMcpClient(client, origin) {
   if (client.format === "toml") return configureTomlMcpClient(client, origin);
+  if (client.format === "opencode") return configureOpencodeMcpClient(client, origin);
   let config = {};
   if (await exists(client.configPath)) {
     const source = await fs.readFile(client.configPath, "utf8");
@@ -367,6 +411,40 @@ async function configureMcpClient(client, origin) {
         ...(existingEnv && typeof existingEnv === "object" ? existingEnv : {}),
         AGENT_ROUTER_URL: existingEnv?.AGENT_ROUTER_URL || origin
       }
+    }
+  };
+  await fs.mkdir(path.dirname(client.configPath), { recursive: true });
+  await fs.writeFile(client.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  return { name: client.name, config_path: client.configPath };
+}
+
+// opencode keeps servers under "mcp" and expects the command as a single
+// argv array with "environment" rather than "env".
+async function configureOpencodeMcpClient(client, origin) {
+  let config = {};
+  if (await exists(client.configPath)) {
+    const source = await fs.readFile(client.configPath, "utf8");
+    try {
+      config = JSON.parse(source);
+    } catch {
+      throw new Error(`${client.name} MCP configuration is not valid JSON: ${client.configPath}`);
+    }
+    await fs.copyFile(client.configPath, `${client.configPath}.bak.${Date.now()}`);
+  }
+  if (!config || Array.isArray(config) || typeof config !== "object") {
+    throw new Error(`${client.name} MCP configuration must contain a JSON object: ${client.configPath}`);
+  }
+  const servers = config.mcp && typeof config.mcp === "object" && !Array.isArray(config.mcp) ? config.mcp : {};
+  const existing = servers.AgentRouter && typeof servers.AgentRouter === "object" ? servers.AgentRouter : {};
+  const existingEnv = existing.environment && typeof existing.environment === "object" ? existing.environment : {};
+  config.mcp = {
+    ...servers,
+    AgentRouter: {
+      ...existing,
+      type: "local",
+      command: ["npx", "-y", "--package", MCP_PACKAGE, "agentrouter-mcp"],
+      enabled: true,
+      environment: { ...existingEnv, AGENT_ROUTER_URL: existingEnv.AGENT_ROUTER_URL || origin }
     }
   };
   await fs.mkdir(path.dirname(client.configPath), { recursive: true });
@@ -439,6 +517,8 @@ async function configHasAgentRouter(filePath) {
   try {
     const source = await fs.readFile(filePath, "utf8");
     if (filePath.endsWith(".toml")) return /^\s*\[mcp_servers\.AgentRouter\]/m.test(source);
+    const parsed = JSON.parse(source);
+    if (parsed?.mcp?.AgentRouter) return true;
     return Boolean(JSON.parse(source)?.mcpServers?.AgentRouter);
   } catch {
     return false;
