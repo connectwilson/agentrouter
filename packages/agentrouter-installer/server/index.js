@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.4.0";
+const INSTALLER_VERSION = "0.5.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -58,7 +58,7 @@ export async function installAgentRouter(options = {}) {
   if (!client) {
     throw new Error(
       "No supported current AI client configuration was found. " +
-      "Rerun the same command with --client claude-code, --client cursor, or --client claude-desktop."
+      "Rerun the same command with --client claude-code, --client codex, --client cursor, or --client claude-desktop."
     );
   }
 
@@ -237,6 +237,7 @@ export function installUsage() {
   return `Usage:
   npx @agentrouternetwork/agentrouter
   npx @agentrouternetwork/agentrouter --client claude-code
+  npx @agentrouternetwork/agentrouter --client codex
   npx @agentrouternetwork/agentrouter --http-only
   npx @agentrouternetwork/agentrouter --json
   npx @agentrouternetwork/agentrouter --url https://agentrouter.network
@@ -262,6 +263,13 @@ async function resolveCurrentClient({ home, env, preferredClient = "" }) {
       name: "Cursor",
       explicit: env.CURSOR_MCP_CONFIG,
       configPath: env.CURSOR_MCP_CONFIG || path.join(home, ".cursor", "mcp.json")
+    },
+    {
+      id: "codex",
+      name: "Codex",
+      format: "toml",
+      explicit: env.CODEX_MCP_CONFIG,
+      configPath: env.CODEX_MCP_CONFIG || path.join(home, ".codex", "config.toml")
     },
     {
       id: "claude-desktop",
@@ -300,6 +308,7 @@ async function resolveCurrentClient({ home, env, preferredClient = "" }) {
 function detectedHostClient(env) {
   if (env.CLAUDECODE || env.CLAUDE_CODE || env.CLAUDE_CODE_ENTRYPOINT) return "claude-code";
   if (env.CURSOR_AGENT || env.CURSOR_TRACE_ID || env.CURSOR_SESSION_ID) return "cursor";
+  if (env.CODEX_SANDBOX || env.CODEX_SANDBOX_NETWORK_DISABLED || env.CODEX_THREAD_ID || env.CODEX_HOME) return "codex";
   if (env.CLAUDE_DESKTOP) return "claude-desktop";
   return "";
 }
@@ -310,6 +319,7 @@ function normalizeClientId(value) {
     claude: "claude-code",
     "claude-code": "claude-code",
     cursor: "cursor",
+    codex: "codex",
     desktop: "claude-desktop",
     "claude-desktop": "claude-desktop"
   };
@@ -317,6 +327,7 @@ function normalizeClientId(value) {
 }
 
 async function configureMcpClient(client, origin) {
+  if (client.format === "toml") return configureTomlMcpClient(client, origin);
   let config = {};
   if (await exists(client.configPath)) {
     const source = await fs.readFile(client.configPath, "utf8");
@@ -363,10 +374,72 @@ async function configureMcpClient(client, origin) {
   return { name: client.name, config_path: client.configPath };
 }
 
+// Codex stores MCP servers in config.toml. Rather than depend on a TOML
+// library, replace just the [mcp_servers.AgentRouter] block and leave every
+// other line of the user's config untouched.
+async function configureTomlMcpClient(client, origin) {
+  let source = "";
+  if (await exists(client.configPath)) {
+    source = await fs.readFile(client.configPath, "utf8");
+    await fs.copyFile(client.configPath, `${client.configPath}.bak.${Date.now()}`);
+  }
+  const existingEnv = readTomlAgentRouterEnv(source);
+  const block = [
+    "[mcp_servers.AgentRouter]",
+    'command = "npx"',
+    `args = ["-y", "--package", "${MCP_PACKAGE}", "agentrouter-mcp"]`,
+    "startup_timeout_sec = 120",
+    "",
+    "[mcp_servers.AgentRouter.env]",
+    `AGENT_ROUTER_URL = "${existingEnv.AGENT_ROUTER_URL || origin}"`,
+    ...Object.entries(existingEnv)
+      .filter(([key]) => key !== "AGENT_ROUTER_URL")
+      .map(([key, value]) => `${key} = "${value}"`)
+  ].join("\n");
+  const stripped = stripTomlAgentRouterBlocks(source);
+  const next = `${stripped ? `${stripped.replace(/\n+$/, "")}\n\n` : ""}${block}\n`;
+  await fs.mkdir(path.dirname(client.configPath), { recursive: true });
+  await fs.writeFile(client.configPath, next, { mode: 0o600 });
+  return { name: client.name, config_path: client.configPath };
+}
+
+function stripTomlAgentRouterBlocks(source) {
+  const lines = String(source || "").split("\n");
+  const kept = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (/^\s*\[mcp_servers\.AgentRouter(\.[A-Za-z0-9_-]+)?\]\s*$/.test(line)) {
+      skipping = true;
+      continue;
+    }
+    // Any other table header ends the block we are dropping.
+    if (skipping && /^\s*\[/.test(line)) skipping = false;
+    if (!skipping) kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+function readTomlAgentRouterEnv(source) {
+  const lines = String(source || "").split("\n");
+  const env = {};
+  let inEnv = false;
+  for (const line of lines) {
+    if (/^\s*\[mcp_servers\.AgentRouter\.env\]\s*$/.test(line)) {
+      inEnv = true;
+      continue;
+    }
+    if (inEnv && /^\s*\[/.test(line)) break;
+    const match = inEnv && line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)"\s*$/);
+    if (match) env[match[1]] = match[2];
+  }
+  return env;
+}
+
 async function configHasAgentRouter(filePath) {
   try {
-    const config = JSON.parse(await fs.readFile(filePath, "utf8"));
-    return Boolean(config?.mcpServers?.AgentRouter);
+    const source = await fs.readFile(filePath, "utf8");
+    if (filePath.endsWith(".toml")) return /^\s*\[mcp_servers\.AgentRouter\]/m.test(source);
+    return Boolean(JSON.parse(source)?.mcpServers?.AgentRouter);
   } catch {
     return false;
   }

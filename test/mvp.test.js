@@ -588,7 +588,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.4.0");
+    assert.equal(packageJson.version, "0.5.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -5184,3 +5184,66 @@ function createMcpClient(env = {}, serverPath = "bin/agent-router-mcp.js") {
     }
   };
 }
+
+test("public agentrouter installer configures Codex through its TOML config", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const { installAgentRouter } = await import("../packages/agentrouter-installer/server/index.js");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-codex-"));
+    const configPath = path.join(home, ".codex", "config.toml");
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, [
+      'model = "gpt-5.6-sol"',
+      "",
+      "[mcp_servers.node_repl]",
+      'command = "/usr/bin/node_repl"',
+      "",
+      "[mcp_servers.AgentRouter]",
+      'command = "npx"',
+      'args = ["-y", "--package", "github:connectwilson/agentrouter-markets#main", "agent-router-mcp"]',
+      "",
+      "[mcp_servers.AgentRouter.env]",
+      'AGENT_ROUTER_URL = "https://agentrouter.network"',
+      'MY_CUSTOM = "keep-me"',
+      "",
+      '[projects."/x"]',
+      'trust_level = "trusted"',
+      ""
+    ].join("\n"));
+
+    const result = await installAgentRouter({
+      home,
+      client: "codex",
+      agentRouterUrl: baseUrl,
+      env: { AGENTROUTER_SKIP_BROWSER_SETUP: "1" },
+      skillDirs: path.join(home, "skills")
+    });
+    assert.deepEqual(result.configured_clients.map((client) => client.name), ["Codex"]);
+
+    const written = await fs.readFile(configPath, "utf8");
+    // The stale github bridge is replaced by the published package...
+    assert.match(written, /\[mcp_servers\.AgentRouter\]/);
+    assert.match(written, /@agentrouternetwork\/mcp@latest.*agentrouter-mcp/);
+    assert.equal(written.includes("github:connectwilson"), false);
+    assert.equal(written.includes("agent-router-mcp\"]"), false);
+    // ...custom env is preserved, and unrelated tables survive untouched.
+    assert.match(written, /MY_CUSTOM = "keep-me"/);
+    assert.match(written, /\[mcp_servers\.node_repl\]/);
+    assert.match(written, /\[projects\."\/x"\]/);
+    // Exactly one AgentRouter table, not a duplicate appended each run.
+    assert.equal((written.match(/^\[mcp_servers\.AgentRouter\]$/gm) || []).length, 1);
+
+    // Re-running must stay idempotent rather than stacking blocks.
+    await installAgentRouter({
+      home, client: "codex", agentRouterUrl: baseUrl,
+      env: { AGENTROUTER_SKIP_BROWSER_SETUP: "1" }, skillDirs: path.join(home, "skills")
+    });
+    const again = await fs.readFile(configPath, "utf8");
+    assert.equal((again.match(/^\[mcp_servers\.AgentRouter\]$/gm) || []).length, 1);
+    assert.equal((again.match(/^\[mcp_servers\.node_repl\]$/gm) || []).length, 1);
+  });
+});
+
+test("installer detects Codex as the invoking client", async () => {
+  const { parseInstallArgs } = await import("../packages/agentrouter-installer/server/index.js");
+  assert.equal(parseInstallArgs(["--client", "codex"]).client, "codex");
+});
