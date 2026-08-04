@@ -58,3 +58,24 @@ services:
         value: 0x65274c73f39bf1654f9aaf261ea16d0b08fdb8d0
       - key: ADN_ARC_ANCHOR_PRIVATE_KEY
         sync: false
+  - type: worker
+    name: binance-futures-delist-monitor
+    runtime: docker
+    region: singapore
+    plan: starter
+    repo: https://github.com/connectwilson/agentrouter-markets
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node scripts/monitor-binance-futures-delists.js --interval 30000
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BARK_URL
+        sync: false
+      - key: BARK_GROUP
+        value: Binance
+      - key: BARK_SOUND
+        value: alarm
+      - key: BARK_LEVEL
+        value: timeSensitive
