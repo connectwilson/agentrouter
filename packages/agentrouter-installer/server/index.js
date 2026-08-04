@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.6.0";
+const INSTALLER_VERSION = "0.7.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -246,6 +246,7 @@ export function installUsage() {
   npx @agentrouternetwork/agentrouter --client windsurf
   npx @agentrouternetwork/agentrouter --client gemini
   npx @agentrouternetwork/agentrouter --client opencode
+  npx @agentrouternetwork/agentrouter --client openclaw
   npx @agentrouternetwork/agentrouter --client MyAgent --config-path ~/.myagent/mcp.json
   npx @agentrouternetwork/agentrouter --http-only
   npx @agentrouternetwork/agentrouter --json
@@ -300,6 +301,13 @@ async function resolveCurrentClient({ home, env, preferredClient = "", customCon
       configPath: env.OPENCODE_MCP_CONFIG || path.join(home, ".config", "opencode", "opencode.json")
     },
     {
+      id: "openclaw",
+      name: "OpenClaw",
+      format: "openclaw",
+      explicit: env.OPENCLAW_MCP_CONFIG,
+      configPath: env.OPENCLAW_MCP_CONFIG || path.join(home, ".openclaw", "openclaw.json")
+    },
+    {
       id: "claude-desktop",
       name: "Claude Desktop",
       explicit: env.CLAUDE_DESKTOP_MCP_CONFIG,
@@ -348,6 +356,7 @@ function detectedHostClient(env) {
   if (env.WINDSURF_SESSION_ID || env.WINDSURF_USER_ID) return "windsurf";
   if (env.GEMINI_CLI || env.GEMINI_API_KEY_SOURCE) return "gemini";
   if (env.OPENCODE || env.OPENCODE_SESSION_ID) return "opencode";
+  if (env.OPENCLAW_HOME || env.OPENCLAW_SESSION_ID) return "openclaw";
   if (env.CLAUDE_DESKTOP) return "claude-desktop";
   return "";
 }
@@ -363,6 +372,7 @@ function normalizeClientId(value) {
     gemini: "gemini",
     "gemini-cli": "gemini",
     opencode: "opencode",
+    openclaw: "openclaw",
     desktop: "claude-desktop",
     "claude-desktop": "claude-desktop"
   };
@@ -372,6 +382,7 @@ function normalizeClientId(value) {
 async function configureMcpClient(client, origin) {
   if (client.format === "toml") return configureTomlMcpClient(client, origin);
   if (client.format === "opencode") return configureOpencodeMcpClient(client, origin);
+  if (client.format === "openclaw") return configureOpenclawMcpClient(client, origin);
   let config = {};
   if (await exists(client.configPath)) {
     const source = await fs.readFile(client.configPath, "utf8");
@@ -416,6 +427,52 @@ async function configureMcpClient(client, origin) {
   await fs.mkdir(path.dirname(client.configPath), { recursive: true });
   await fs.writeFile(client.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   return { name: client.name, config_path: client.configPath };
+}
+
+// OpenClaw nests servers under mcp.servers rather than a top-level mcpServers,
+// and the same file holds unrelated plugin/tool configuration.
+async function configureOpenclawMcpClient(client, origin) {
+  const config = await readJsonConfig(client);
+  const mcp = config.mcp && typeof config.mcp === "object" && !Array.isArray(config.mcp) ? config.mcp : {};
+  const servers = mcp.servers && typeof mcp.servers === "object" && !Array.isArray(mcp.servers) ? mcp.servers : {};
+  const existing = servers.AgentRouter && typeof servers.AgentRouter === "object" ? servers.AgentRouter : {};
+  const existingEnv = existing.env && typeof existing.env === "object" ? existing.env : {};
+  config.mcp = {
+    ...mcp,
+    servers: {
+      ...servers,
+      AgentRouter: {
+        ...existing,
+        command: "npx",
+        args: ["-y", "--package", MCP_PACKAGE, "agentrouter-mcp"],
+        env: { ...existingEnv, AGENT_ROUTER_URL: existingEnv.AGENT_ROUTER_URL || origin }
+      }
+    }
+  };
+  await writeJsonConfig(client, config);
+  return { name: client.name, config_path: client.configPath };
+}
+
+async function readJsonConfig(client) {
+  let config = {};
+  if (await exists(client.configPath)) {
+    const source = await fs.readFile(client.configPath, "utf8");
+    try {
+      config = JSON.parse(source);
+    } catch {
+      throw new Error(`${client.name} MCP configuration is not valid JSON: ${client.configPath}`);
+    }
+    await fs.copyFile(client.configPath, `${client.configPath}.bak.${Date.now()}`);
+  }
+  if (!config || Array.isArray(config) || typeof config !== "object") {
+    throw new Error(`${client.name} MCP configuration must contain a JSON object: ${client.configPath}`);
+  }
+  return config;
+}
+
+async function writeJsonConfig(client, config) {
+  await fs.mkdir(path.dirname(client.configPath), { recursive: true });
+  await fs.writeFile(client.configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 }
 
 // opencode keeps servers under "mcp" and expects the command as a single
@@ -518,7 +575,7 @@ async function configHasAgentRouter(filePath) {
     const source = await fs.readFile(filePath, "utf8");
     if (filePath.endsWith(".toml")) return /^\s*\[mcp_servers\.AgentRouter\]/m.test(source);
     const parsed = JSON.parse(source);
-    if (parsed?.mcp?.AgentRouter) return true;
+    if (parsed?.mcp?.AgentRouter || parsed?.mcp?.servers?.AgentRouter) return true;
     return Boolean(JSON.parse(source)?.mcpServers?.AgentRouter);
   } catch {
     return false;

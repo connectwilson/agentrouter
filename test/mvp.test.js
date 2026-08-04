@@ -588,7 +588,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.6.0");
+    assert.equal(packageJson.version, "0.7.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -5295,5 +5295,36 @@ test("installer configures Windsurf, Gemini, opencode, and any client via --conf
     });
     assert.deepEqual(custom.configured_clients.map((entry) => entry.name), ["MyAgent"]);
     assert.deepEqual(JSON.parse(await fs.readFile(customPath, "utf8")).mcpServers.AgentRouter.args, expectedArgs);
+  });
+});
+
+test("installer configures OpenClaw under its nested mcp.servers key", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const { installAgentRouter } = await import("../packages/agentrouter-installer/server/index.js");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-openclaw-"));
+    const configPath = path.join(home, ".openclaw", "openclaw.json");
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    // OpenClaw keeps plugin and tool settings in the same file.
+    await fs.writeFile(configPath, JSON.stringify({
+      plugins: { enabled: true, allow: ["agent-wallet"] },
+      tools: { alsoAllow: ["get_btc_fee_rates"] },
+      mcp: { servers: { other: { command: "other" } } }
+    }));
+
+    const result = await installAgentRouter({
+      home, client: "openclaw", agentRouterUrl: baseUrl,
+      env: { AGENTROUTER_SKIP_BROWSER_SETUP: "1" }, skillDirs: path.join(home, "skills")
+    });
+    assert.deepEqual(result.configured_clients.map((entry) => entry.name), ["OpenClaw"]);
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+    // Servers nest under mcp.servers, not a top-level mcpServers block.
+    assert.equal(config.mcpServers, undefined);
+    assert.deepEqual(config.mcp.servers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
+    assert.equal(config.mcp.servers.AgentRouter.env.AGENT_ROUTER_URL, baseUrl);
+    // Unrelated plugin/tool settings and other servers survive.
+    assert.deepEqual(config.plugins, { enabled: true, allow: ["agent-wallet"] });
+    assert.deepEqual(config.tools, { alsoAllow: ["get_btc_fee_rates"] });
+    assert.deepEqual(config.mcp.servers.other, { command: "other" });
   });
 });
