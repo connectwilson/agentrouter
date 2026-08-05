@@ -188,6 +188,10 @@ export async function executeProviderConfig(config, input = {}) {
     }) };
   }
 
+  if (config.source?.type === "apify_actor") {
+    return executeApifyActor(config, input);
+  }
+
   if (config.source?.type !== "static_json") {
     return { status: 200, body: {
       schema_version: "agent_data_envelope_v1",
@@ -480,7 +484,10 @@ export async function handleMockUpstreamSentiment(req, res) {
 }
 
 function shouldPreflightProviderConfig(config) {
-  return config.source?.type === "hosted_http";
+  // Apify actors must preflight too: a failing or empty actor has to be caught
+  // before the payment challenge, and the cached preflight result is reused for
+  // the paid response so the actor runs exactly once.
+  return config.source?.type === "hosted_http" || config.source?.type === "apify_actor";
 }
 
 function isSuccessfulProviderResult(result) {
@@ -765,4 +772,178 @@ async function parseUpstreamPayload(response) {
 function looksLikeJson(text) {
   const trimmed = String(text || "").trim();
   return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+
+const APIFY_DEFAULT_BASE = "https://api.apify.com/v2";
+
+function apifyErrorEnvelope(serviceId, input, { code, message, retryable, upstreamStatus = null, upstreamPayload = null, actorId = "" }) {
+  return {
+    schema_version: "agent_data_envelope_v1",
+    service_id: serviceId,
+    request_id: `req_${Date.now()}`,
+    status: "error",
+    query: input || {},
+    error: {
+      code,
+      message,
+      retryable,
+      ...(upstreamStatus === null ? {} : { upstream_status: upstreamStatus }),
+      ...(upstreamPayload === null ? {} : { upstream_payload: upstreamPayload })
+    },
+    metadata: {
+      data_sources: ["apify_actor"],
+      generated_at: new Date().toISOString(),
+      freshness_seconds: 0,
+      is_estimated: false,
+      confidence: 0,
+      limitations: [`Apify actor ${actorId} did not return a usable dataset.`]
+    },
+    agent_hints: {
+      good_for: [],
+      warnings: ["Check the Apify token, actor id, and actor input shape."],
+      suggested_followups: ["Ask the provider to run the actor directly on Apify with the same input."]
+    },
+    summary: "Apify actor run failed."
+  };
+}
+
+function filterApifyInput(input = {}, allowlist) {
+  if (!Array.isArray(allowlist) || !allowlist.length) return { ...input };
+  const filtered = {};
+  for (const key of allowlist) {
+    if (input && Object.hasOwn(input, key)) filtered[key] = input[key];
+  }
+  return filtered;
+}
+
+function projectApifyItems(items, fields) {
+  if (!Array.isArray(fields) || !fields.length) return items;
+  return items.map((item) => Object.fromEntries(fields.map((key) => [key, item?.[key]])));
+}
+
+export async function executeApifyActor(config, input = {}) {
+  const source = config.source || {};
+  const serviceId = config.manifest?.service_id || "apify_actor";
+  const actorId = String(source.actor_id || "").trim();
+  const token = source.auth?.secret_value || await readProviderSecret(source.auth?.secret_ref);
+  if (!token) {
+    return { status: 502, body: apifyErrorEnvelope(serviceId, input, {
+      code: "UPSTREAM_APPLICATION_ERROR",
+      message: "The Apify token for this service is missing or unreadable.",
+      retryable: false,
+      actorId
+    }) };
+  }
+
+  const body = { ...(source.input_template || {}), ...filterApifyInput(input, source.input_allowlist) };
+  const base = String(process.env.ADN_APIFY_API_BASE || APIFY_DEFAULT_BASE).replace(/\/$/, "");
+  // Apify addresses actors as username~actor-name, so the tilde must survive.
+  const url = new URL(`${base}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items`);
+  url.searchParams.set("clean", String(source.dataset?.clean ?? true));
+  url.searchParams.set("format", "json");
+  const maxItems = Number(source.dataset?.max_items ?? input.limit);
+  if (Number.isFinite(maxItems) && maxItems > 0) url.searchParams.set("limit", String(Math.min(Math.trunc(maxItems), 1000)));
+  const offset = Number(input.offset);
+  if (Number.isFinite(offset) && offset > 0) url.searchParams.set("offset", String(Math.trunc(offset)));
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(Number(process.env.ADN_APIFY_MAX_WAIT_MS || 120000))
+    });
+  } catch (error) {
+    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+    return { status: timedOut ? 504 : 502, body: apifyErrorEnvelope(serviceId, input, {
+      code: timedOut ? "APIFY_RUN_TIMEOUT" : "UPSTREAM_ERROR",
+      message: timedOut
+        ? "The actor exceeded the synchronous run window; async support is planned for v2."
+        : `Could not reach Apify: ${error?.message || "unknown error"}.`,
+      retryable: true,
+      actorId
+    }) };
+  }
+
+  const payload = await parseUpstreamPayload(response);
+  if (response.status === 408 || response.status === 504) {
+    return { status: 504, body: apifyErrorEnvelope(serviceId, input, {
+      code: "APIFY_RUN_TIMEOUT",
+      message: "The actor exceeded the synchronous run window; async support is planned for v2.",
+      retryable: true,
+      upstreamStatus: response.status,
+      actorId
+    }) };
+  }
+  if (!response.ok) {
+    const isAuth = response.status === 401 || response.status === 403;
+    return { status: 502, body: apifyErrorEnvelope(serviceId, input, {
+      code: isAuth ? "UPSTREAM_APPLICATION_ERROR" : "UPSTREAM_ERROR",
+      message: isAuth
+        ? "Apify rejected the provider token for this actor."
+        : `Apify returned HTTP ${response.status} for actor ${actorId}.`,
+      retryable: response.status >= 500,
+      upstreamStatus: response.status,
+      upstreamPayload: payload,
+      actorId
+    }) };
+  }
+  if (payload?.non_json) {
+    return { status: 502, body: apifyErrorEnvelope(serviceId, input, {
+      code: "UPSTREAM_NON_JSON_RESPONSE",
+      message: "Apify returned a non-JSON dataset response.",
+      retryable: false,
+      upstreamStatus: response.status,
+      upstreamPayload: payload,
+      actorId
+    }) };
+  }
+
+  const raw = Array.isArray(payload) ? payload : (Array.isArray(payload?.items) ? payload.items : []);
+  const items = projectApifyItems(raw, source.dataset?.fields);
+  return { status: 200, body: createEnvelope({
+    serviceId,
+    input,
+    // Empty datasets stay a success envelope so the existing empty-result
+    // verification fires instead of being masked as an upstream failure.
+    data: { items, item_count: items.length, actor_id: actorId },
+    sourceType: "apify_actor",
+    sampleType: null,
+    isEstimated: false,
+    confidence: 0.8,
+    summary: source.summary
+  }) };
+}
+
+
+// Mock Apify dataset endpoint so tests never reach api.apify.com. The path
+// mirrors the real one: /acts/{actorId}/run-sync-get-dataset-items
+export async function handleMockUpstreamApify(req, res, url) {
+  const body = await readJson(req);
+  if (req.headers.authorization !== "Bearer mock-apify-token") {
+    sendJson(res, 401, { error: { type: "authentication-error", message: "Invalid token" } });
+    return;
+  }
+  const actorId = decodeURIComponent(String(url.pathname).split("/acts/")[1]?.split("/")[0] || "");
+  if (actorId === "apify~missing-actor") {
+    sendJson(res, 404, { error: { type: "record-not-found", message: "Actor not found" } });
+    return;
+  }
+  if (actorId === "apify~slow-actor") {
+    sendJson(res, 408, { error: { type: "request-timeout", message: "Run exceeded the sync window" } });
+    return;
+  }
+  if (actorId === "apify~empty-actor") {
+    sendJson(res, 200, []);
+    return;
+  }
+  const limit = Number(url.searchParams.get("limit"));
+  const items = [
+    { title: "First result", url: "https://example.com/1", description: "One", secret_field: "hidden" },
+    { title: "Second result", url: "https://example.com/2", description: "Two", secret_field: "hidden" },
+    { title: "Third result", url: "https://example.com/3", description: "Three", secret_field: "hidden" }
+  ].map((item) => ({ ...item, echoed_input: body }));
+  sendJson(res, 200, Number.isFinite(limit) && limit > 0 ? items.slice(0, limit) : items);
 }

@@ -8,7 +8,10 @@
 - Connector API: agent-facing primitives for search, manifest, preview, paid invocation, and feedback.
 - AgentRouter: higher-level execution endpoint that accepts a structured request or fallback natural-language task and performs search -> selection -> payment -> invocation -> verification -> evidence.
 - Route Observations: lightweight offchain records of structured routing decisions, candidate scores, selected service, verification outcome, and feedback hashes for future ranking improvements.
-- Provider Runtime: local provider endpoints that return preview or paid agent data envelopes.
+- Provider Runtime: local provider endpoints that return preview or paid agent data envelopes. A provider config declares one `source` type:
+  - `static_json` — fixture data held in the config.
+  - `hosted_http` — one synchronous call to the provider's own upstream API.
+  - `apify_actor` — an Apify Actor run through `run-sync-get-dataset-items`, returning its dataset items as the envelope's `data.items`. Execution is synchronous only; a config asking for `execution_mode: "async"` is rejected at registration with `APIFY_ASYNC_NOT_SUPPORTED`. The Apify token is stored as a provider secret and never reaches the manifest or an agent. Buyer input is filtered to `input_allowlist` and merged over `input_template`, and `dataset.fields` optionally projects items down to the listed keys. Tuned by `ADN_APIFY_API_BASE` and `ADN_APIFY_MAX_WAIT_MS`.
 - Wallet/Payment: adapter boundary supporting prepaid platform credits, x402-style payment, and Arc settlement. The credits backend uses Stripe Hosted Checkout plus a PostgreSQL append-only ledger.
 
 ## Trust Boundaries

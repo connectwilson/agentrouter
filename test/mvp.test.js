@@ -5359,3 +5359,88 @@ test("installer configures WorkBuddy without disturbing its connector proxy", as
     assert.equal(config.mcpServers["connector-proxy"].url, "http://127.0.0.1:50684/mcp");
   });
 });
+
+test("Apify actor provider source runs through the normal paid flow", async () => {
+  const { executeApifyActor } = await import("../src/provider-runtime.js");
+  const { finalizeProviderConfig, writeProviderConfig, readProviderConfig } = await import("../src/provider-config.js");
+
+  await withServer(async ({ baseUrl }) => {
+    process.env.ADN_APIFY_API_BASE = `${baseUrl}/mock/upstream/apify`;
+    const source = (over = {}) => ({
+      type: "apify_actor",
+      actor_id: "apify~google-search-scraper",
+      auth: { mode: "apify_token", secret_value: "mock-apify-token" },
+      input_template: { resultsPerPage: 10 },
+      input_allowlist: ["queries", "maxPagesPerQuery"],
+      dataset: { clean: true, max_items: 2, fields: ["title", "url"] },
+      summary: "Google SERP via Apify",
+      ...over
+    });
+    const config = (over = {}) => ({ manifest: { service_id: "apify_google_search" }, source: source(over) });
+
+    // Buyer input is filtered to the allowlist and merged over input_template.
+    const ok = await executeApifyActor(config(), {
+      queries: "agentrouter", maxPagesPerQuery: 1, NOT_ALLOWED: "leak"
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.status, "success");
+    assert.equal(ok.body.data.item_count, 2, "dataset.max_items caps the returned items");
+    assert.equal(ok.body.data.actor_id, "apify~google-search-scraper");
+    assert.deepEqual(ok.body.metadata.data_sources, ["provider_config_apify_actor"]);
+    // dataset.fields projects each item down to just those keys.
+    assert.deepEqual(Object.keys(ok.body.data.items[0]), ["title", "url"]);
+
+    const unprojected = await executeApifyActor(config({ dataset: { clean: true } }), { queries: "x", NOT_ALLOWED: "leak" });
+    const echoed = unprojected.body.data.items[0].echoed_input;
+    assert.equal(Object.hasOwn(echoed, "NOT_ALLOWED"), false, "disallowed buyer keys never reach the actor");
+    assert.equal(echoed.resultsPerPage, 10, "input_template defaults are merged under buyer input");
+    assert.equal(echoed.queries, "x");
+
+    // Error matrix.
+    const missing = await executeApifyActor(config({ actor_id: "apify~missing-actor" }), { queries: "x" });
+    assert.equal(missing.status, 502);
+    assert.equal(missing.body.error.code, "UPSTREAM_ERROR");
+
+    const slow = await executeApifyActor(config({ actor_id: "apify~slow-actor" }), { queries: "x" });
+    assert.equal(slow.status, 504);
+    assert.equal(slow.body.error.code, "APIFY_RUN_TIMEOUT");
+    assert.equal(slow.body.error.retryable, true);
+
+    const badToken = await executeApifyActor(config({ auth: { mode: "apify_token", secret_value: "wrong" } }), { queries: "x" });
+    assert.equal(badToken.status, 502);
+    assert.equal(badToken.body.error.code, "UPSTREAM_APPLICATION_ERROR");
+
+    // A succeeded-but-empty run stays a success envelope so the existing
+    // empty-result verification fires rather than being masked as an error.
+    const empty = await executeApifyActor(config({ actor_id: "apify~empty-actor" }), { queries: "x" });
+    assert.equal(empty.status, 200);
+    assert.equal(empty.body.status, "success");
+    assert.deepEqual(empty.body.data.items, []);
+
+    // Async execution is rejected at registration, not at invoke time.
+    assert.throws(
+      () => finalizeProviderConfig(config({ execution_mode: "async" })),
+      (error) => error.code === "APIFY_ASYNC_NOT_SUPPORTED"
+    );
+    assert.throws(
+      () => finalizeProviderConfig(config({ actor_id: "" })),
+      (error) => error.code === "APIFY_ACTOR_ID_REQUIRED"
+    );
+
+    // Registration stores the token as a secret ref, never in the config.
+    const registered = config();
+    registered.manifest.service_id = "apify_secret_check";
+    await writeProviderConfig(registered);
+    const stored = await readProviderConfig("apify_secret_check");
+    assert.equal(stored.source.auth.secret_value, undefined, "the raw token must not persist");
+    assert.match(stored.source.auth.secret_ref, /apify_secret_check/);
+    assert.equal(JSON.stringify(stored).includes("mock-apify-token"), false);
+    assert.equal(stored.source.execution_mode, "sync", "execution_mode defaults to sync");
+
+    // The stored config still runs, resolving the token from the secret store.
+    const viaSecret = await executeApifyActor(stored, { queries: "agentrouter" });
+    assert.equal(viaSecret.status, 200);
+    assert.equal(viaSecret.body.data.item_count, 2);
+  });
+  delete process.env.ADN_APIFY_API_BASE;
+});

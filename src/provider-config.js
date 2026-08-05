@@ -328,12 +328,33 @@ export function createHostedHttpProviderConfig({
 
 export function finalizeProviderConfig(config) {
   if (!config || typeof config !== "object") return config;
+  validateApifyActorSource(config.source);
   config.provider_config_version ||= "adn_provider_config_v1";
   config.version ||= "1.0.0";
   const manifest = config.manifest || {};
   finalizeManifest(manifest, config);
   config.manifest = manifest;
   return config;
+}
+
+// Apify actors are onboarded as a provider source; v1 runs them synchronously
+// through run-sync-get-dataset-items, so an async config must be rejected at
+// registration rather than failing later at invoke time.
+function validateApifyActorSource(source) {
+  if (source?.type !== "apify_actor") return;
+  if (!String(source.actor_id || "").trim()) {
+    const error = new Error("apify_actor source requires actor_id.");
+    error.code = "APIFY_ACTOR_ID_REQUIRED";
+    error.statusCode = 422;
+    throw error;
+  }
+  source.execution_mode ||= "sync";
+  if (source.execution_mode !== "sync") {
+    const error = new Error("apify_actor supports execution_mode \"sync\" only; async execution is not implemented.");
+    error.code = "APIFY_ASYNC_NOT_SUPPORTED";
+    error.statusCode = 422;
+    throw error;
+  }
 }
 
 export function finalizeManifest(manifest, config = null) {

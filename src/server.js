@@ -5,7 +5,8 @@ import { URL } from "node:url";
 import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
 import { createMemoryStore, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
-import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment } from "./provider-runtime.js";
+import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
+  handleMockUpstreamApify } from "./provider-runtime.js";
 import { hydratePersistentServiceEvents, invokePaidService, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
@@ -1118,6 +1119,10 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "POST" && url.pathname.startsWith("/mock/upstream/apify/")) {
+    await handleMockUpstreamApify(req, res, url);
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/mock/upstream/sentiment") {
     await handleMockUpstreamSentiment(req, res);
     return;
@@ -2150,13 +2155,16 @@ function discoverPageHtml(result) {
 function loginHtml({ auth, error = "", returnTo = "/" }) {
   const providers = auth.providers || [];
   const providerCards = providers.map((provider) => {
+    const icon = provider.id === "github"
+      ? `<svg aria-hidden="true" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.4c.58.1.79-.25.79-.56v-2.23c-3.23.7-3.91-1.37-3.91-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.38.97.1-.75.4-1.27.74-1.56-2.58-.3-5.29-1.29-5.29-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.77.11 3.07.74.8 1.19 1.83 1.19 3.09 0 4.42-2.72 5.39-5.3 5.68.42.36.79 1.07.79 2.16v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg>`
+      : "";
     const body = provider.configured
-      ? `<a class="login-provider" href="/auth/${provider.id}/start?return_to=${escapeHtml(encodeURIComponent(safeReturnTo(returnTo)))}">Continue with ${escapeHtml(provider.label)}</a>`
+      ? `<a class="login-provider" href="/auth/${provider.id}/start?return_to=${escapeHtml(encodeURIComponent(safeReturnTo(returnTo)))}">${icon}<span>Continue with ${escapeHtml(provider.label)}</span></a>`
       : `<div class="login-provider disabled">
-          <strong>${escapeHtml(provider.label)}</strong>
+          <strong>${icon}${escapeHtml(provider.label)}</strong>
           <span>Set ${escapeHtml(provider.client_id_env)} and ${escapeHtml(provider.client_secret_env)}.</span>
         </div>`;
-    return `<section class="login-card">${body}</section>`;
+    return body;
   }).join("");
   const devLogin = auth.devLogin
     ? `<form method="POST" action="/auth/dev/start?return_to=${escapeHtml(encodeURIComponent(safeReturnTo(returnTo)))}">
@@ -2178,53 +2186,94 @@ function loginHtml({ auth, error = "", returnTo = "/" }) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Login · AgentRouter</title>
   <style>
-    :root { --ink:#202124; --muted:#696f72; --line:#dedede; --panel:#f6f7f5; --accent:#dffcff; }
+    :root { --ink:#17191b; --muted:#6c7177; --line:#d9dcdf; --panel:#f3f4f4; --card:#fff; --accent:#111827; --cyan:#bff8ff; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:#fff; }
+    body { margin:0; font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:var(--panel); }
     a { color:inherit; text-decoration:none; }
-    .topbar { border-top:3px solid var(--accent); border-bottom:1px solid var(--line); }
-    .nav { max-width:920px; min-height:60px; margin:0 auto; padding:0 24px; display:flex; align-items:center; justify-content:space-between; }
-    .brand { font-size:20px; font-weight:840; }
-    .nav a:last-child { color:var(--muted); font-size:12px; font-weight:760; text-transform:uppercase; }
-    main { min-height:calc(100vh - 61px); display:grid; place-items:center; padding:56px 24px; }
-    .login-panel { width:min(520px, 100%); display:grid; gap:18px; }
-    .eyebrow { color:var(--muted); font-size:12px; font-weight:760; text-transform:uppercase; }
-    h1 { margin:0; font-size:42px; line-height:1.05; }
-    p { margin:0; color:var(--muted); font-size:16px; line-height:1.55; }
-    .login-options { display:grid; gap:10px; margin-top:14px; }
-    .login-provider { width:100%; min-height:54px; border:1px solid var(--line); background:#fff; display:flex; align-items:center; justify-content:center; padding:0 18px; font-size:14px; font-weight:800; cursor:pointer; }
-    .login-provider:hover { border-color:#b9c2c5; background:#fbfbfb; }
-    .login-provider.disabled { justify-content:space-between; gap:18px; color:var(--muted); background:var(--panel); font-weight:700; }
-    .login-provider.disabled span { font-size:12px; text-align:right; }
+    main { min-height:100svh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; }
+    .login-shell { width:100%; max-width:896px; }
+    .login-card { width:100%; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); overflow:hidden; min-height:540px; border:1px solid var(--line); border-radius:14px; background:var(--card); box-shadow:0 18px 55px rgba(22,27,29,.08); }
+    .login-panel { min-width:0; display:flex; flex-direction:column; justify-content:center; padding:48px; }
+    .home-link { align-self:flex-start; display:inline-flex; align-items:center; gap:8px; margin-bottom:52px; color:var(--muted); font-size:13px; font-weight:700; }
+    .home-link::before { content:"←"; transition:transform .18s ease; }
+    .home-link:hover::before { transform:translateX(-3px); }
+    .login-heading { display:grid; gap:9px; text-align:center; }
+    h1 { margin:0; font-size:28px; line-height:1.15; letter-spacing:-.035em; }
+    p { margin:0; color:var(--muted); font-size:14px; line-height:1.55; }
+    .login-options { display:grid; gap:10px; margin-top:28px; }
+    .login-provider { width:100%; min-height:46px; border:1px solid var(--line); border-radius:8px; background:#fff; display:flex; align-items:center; justify-content:center; gap:10px; padding:0 16px; color:var(--ink); font:inherit; font-size:14px; font-weight:720; cursor:pointer; transition:border-color .18s ease, background .18s ease, transform .18s ease; }
+    .login-provider svg { width:18px; height:18px; flex:none; }
+    .login-provider:hover { border-color:#aeb4b8; background:#fafafa; transform:translateY(-1px); }
+    .login-provider.disabled { min-height:64px; justify-content:space-between; gap:16px; color:var(--muted); background:var(--panel); cursor:not-allowed; transform:none; }
+    .login-provider.disabled strong { display:flex; align-items:center; gap:9px; color:var(--ink); }
+    .login-provider.disabled span { max-width:190px; overflow-wrap:anywhere; font-size:11px; line-height:1.35; text-align:right; }
     .login-options form { display:grid; gap:8px; }
     .login-options form small { color:var(--muted); font-size:12px; line-height:1.4; }
-    .local-login { border-color:#b9c2c5; }
-    .login-error { border:1px solid #f2b8b5; background:#fff7f7; color:#8c1d18; padding:12px 14px; font-size:13px; line-height:1.4; }
-    .login-user { border:1px solid var(--line); background:var(--panel); padding:14px; display:grid; grid-template-columns:40px minmax(0,1fr) auto; gap:12px; align-items:center; }
-    .login-user img { width:40px; height:40px; border-radius:50%; }
+    .local-login { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .local-login:hover { background:#272d38; border-color:#272d38; }
+    .login-error { margin-top:20px; border:1px solid #efb8b5; border-radius:8px; background:#fff6f6; color:#8c1d18; padding:12px 14px; font-size:13px; line-height:1.4; }
+    .login-user { margin-top:20px; border:1px solid var(--line); border-radius:9px; background:var(--panel); padding:12px; display:grid; grid-template-columns:36px minmax(0,1fr) auto; gap:10px; align-items:center; }
+    .login-user img { width:36px; height:36px; border-radius:50%; }
     .login-user strong, .login-user span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .login-user span { color:var(--muted); font-size:13px; margin-top:2px; }
-    .login-user a { font-size:12px; font-weight:800; text-transform:uppercase; }
-    @media (max-width:520px) {
-      h1 { font-size:34px; }
-      .login-provider.disabled { display:grid; justify-content:stretch; }
-      .login-provider.disabled span { text-align:left; }
+    .login-user span { color:var(--muted); font-size:12px; margin-top:2px; }
+    .login-user a { font-size:11px; font-weight:800; text-transform:uppercase; }
+    .privacy-note { margin-top:24px; padding:0 16px; color:var(--muted); font-size:11px; line-height:1.5; text-align:center; }
+    .login-visual { position:relative; isolation:isolate; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; min-height:540px; padding:42px; color:#f8fafc; background:#12161b; }
+    .login-visual::before { content:""; position:absolute; z-index:-2; inset:0; background:radial-gradient(circle at 78% 18%, rgba(191,248,255,.25), transparent 30%), radial-gradient(circle at 16% 76%, rgba(125,211,252,.16), transparent 32%); }
+    .login-visual::after { content:""; position:absolute; z-index:-1; inset:-40%; background-image:linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px); background-size:42px 42px; transform:rotate(-8deg); }
+    .visual-brand { display:flex; align-items:center; gap:10px; font-size:16px; font-weight:820; letter-spacing:-.02em; }
+    .brand-mark { width:30px; height:30px; display:grid; place-items:center; border-radius:8px; color:#11161a; background:var(--cyan); font-size:14px; }
+    .network { position:relative; align-self:center; width:260px; height:190px; }
+    .network i { position:absolute; width:12px; height:12px; border:2px solid rgba(220,252,255,.9); border-radius:50%; background:#12161b; box-shadow:0 0 0 8px rgba(191,248,255,.06); }
+    .network i:nth-child(1) { left:18px; top:84px; }
+    .network i:nth-child(2) { left:122px; top:24px; width:18px; height:18px; background:var(--cyan); border-color:var(--cyan); }
+    .network i:nth-child(3) { right:16px; top:82px; }
+    .network i:nth-child(4) { left:122px; bottom:12px; }
+    .network span { position:absolute; height:1px; width:115px; left:34px; top:92px; background:linear-gradient(90deg, rgba(191,248,255,.25), rgba(191,248,255,.9)); transform-origin:left center; }
+    .network span:nth-of-type(1) { transform:rotate(-30deg); }
+    .network span:nth-of-type(2) { transform:rotate(30deg); }
+    .network span:nth-of-type(3) { left:137px; top:36px; transform:rotate(30deg); }
+    .network span:nth-of-type(4) { left:137px; top:145px; transform:rotate(-30deg); }
+    .visual-copy { display:grid; gap:10px; max-width:300px; }
+    .visual-copy strong { font-size:30px; line-height:1.08; letter-spacing:-.045em; }
+    .visual-copy span { color:#aeb9c2; font-size:13px; line-height:1.55; }
+    @media (max-width:760px) {
+      main { padding:24px; }
+      .login-card { display:block; min-height:0; }
+      .login-panel { padding:32px 28px; }
+      .home-link { margin-bottom:42px; }
+      .login-visual { display:none; }
+    }
+    @media (max-width:420px) {
+      main { padding:16px; }
+      .login-panel { padding:28px 20px; }
+      .login-provider.disabled { display:grid; justify-content:stretch; padding:12px 14px; }
+      .login-provider.disabled span { max-width:none; text-align:left; }
     }
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="nav"><a class="brand" href="/">AgentRouter</a><a href="/">Back home</a></div>
-  </header>
   <main>
-    <section class="login-panel">
-      <span class="eyebrow">Account</span>
-      <h1>Login</h1>
-      <p>Sign in to AgentRouter with GitHub. Provider onboarding credentials stay in Provider Studio; OAuth is only for user identity.</p>
-      ${error ? `<div class="login-error">${escapeHtml(error)}</div>` : ""}
-      ${signedIn}
-      <div class="login-options">${providerCards}${devLogin}</div>
-    </section>
+    <div class="login-shell">
+      <section class="login-card">
+        <div class="login-panel">
+          <a class="home-link" href="/">Back to AgentRouter</a>
+          <div class="login-heading">
+            <h1>Welcome back</h1>
+            <p>Sign in to continue to your AgentRouter account.</p>
+          </div>
+          ${error ? `<div class="login-error">${escapeHtml(error)}</div>` : ""}
+          ${signedIn}
+          <div class="login-options">${providerCards}${devLogin}</div>
+          <p class="privacy-note">Authentication is handled by GitHub. AgentRouter never receives your GitHub password.</p>
+        </div>
+        <aside class="login-visual" aria-label="AgentRouter data routing network">
+          <a class="visual-brand" href="/"><span class="brand-mark">AR</span>AgentRouter</a>
+          <div class="network" aria-hidden="true"><i></i><i></i><i></i><i></i><span></span><span></span><span></span><span></span></div>
+          <div class="visual-copy"><strong>One question.<br />The right data route.</strong><span>Discover and access trusted APIs across markets, social platforms, public datasets, and specialized providers.</span></div>
+        </aside>
+      </section>
+    </div>
   </main>
 </body>
 </html>`;
