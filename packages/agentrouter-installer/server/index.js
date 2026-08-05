@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.7.0";
+const INSTALLER_VERSION = "0.8.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -59,7 +59,7 @@ export async function installAgentRouter(options = {}) {
   if (!client) {
     throw new Error(
       "No supported current AI client configuration was found. " +
-      "Rerun the same command with --client claude-code, --client codex, --client cursor, or --client claude-desktop."
+      "Rerun with --client <name> (claude-code, codex, cursor, claude-desktop, windsurf, gemini, opencode, openclaw, workbuddy) or --client <name> --config-path <file> for any other client."
     );
   }
 
@@ -247,6 +247,7 @@ export function installUsage() {
   npx @agentrouternetwork/agentrouter --client gemini
   npx @agentrouternetwork/agentrouter --client opencode
   npx @agentrouternetwork/agentrouter --client openclaw
+  npx @agentrouternetwork/agentrouter --client workbuddy
   npx @agentrouternetwork/agentrouter --client MyAgent --config-path ~/.myagent/mcp.json
   npx @agentrouternetwork/agentrouter --http-only
   npx @agentrouternetwork/agentrouter --json
@@ -308,6 +309,12 @@ async function resolveCurrentClient({ home, env, preferredClient = "", customCon
       configPath: env.OPENCLAW_MCP_CONFIG || path.join(home, ".openclaw", "openclaw.json")
     },
     {
+      id: "workbuddy",
+      name: "WorkBuddy",
+      explicit: env.WORKBUDDY_MCP_CONFIG,
+      configPath: env.WORKBUDDY_MCP_CONFIG || path.join(home, ".workbuddy", ".mcp.json")
+    },
+    {
       id: "claude-desktop",
       name: "Claude Desktop",
       explicit: env.CLAUDE_DESKTOP_MCP_CONFIG,
@@ -357,6 +364,7 @@ function detectedHostClient(env) {
   if (env.GEMINI_CLI || env.GEMINI_API_KEY_SOURCE) return "gemini";
   if (env.OPENCODE || env.OPENCODE_SESSION_ID) return "opencode";
   if (env.OPENCLAW_HOME || env.OPENCLAW_SESSION_ID) return "openclaw";
+  if (env.WORKBUDDY_HOME || env.WORKBUDDY_SESSION_ID) return "workbuddy";
   if (env.CLAUDE_DESKTOP) return "claude-desktop";
   return "";
 }
@@ -373,6 +381,8 @@ function normalizeClientId(value) {
     "gemini-cli": "gemini",
     opencode: "opencode",
     openclaw: "openclaw",
+    workbuddy: "workbuddy",
+    "work-buddy": "workbuddy",
     desktop: "claude-desktop",
     "claude-desktop": "claude-desktop"
   };

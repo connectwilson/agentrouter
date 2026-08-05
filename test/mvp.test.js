@@ -588,7 +588,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.7.0");
+    assert.equal(packageJson.version, "0.8.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -988,6 +988,10 @@ test("GitHub login entrypoint renders and OAuth callback creates a session", asy
     const loginHtml = await login.text();
     assert.match(loginHtml, /Continue with GitHub|Set GITHUB_CLIENT_ID/);
     assert.doesNotMatch(loginHtml, /Google|GOOGLE_CLIENT_ID/);
+    assert.match(loginHtml, /class="login-shell"/);
+    assert.match(loginHtml, /class="login-card"/);
+    assert.match(loginHtml, /class="login-visual"/);
+    assert.match(loginHtml, /Welcome back/);
 
     const previousEnv = {
       GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
@@ -5326,5 +5330,32 @@ test("installer configures OpenClaw under its nested mcp.servers key", async () 
     assert.deepEqual(config.plugins, { enabled: true, allow: ["agent-wallet"] });
     assert.deepEqual(config.tools, { alsoAllow: ["get_btc_fee_rates"] });
     assert.deepEqual(config.mcp.servers.other, { command: "other" });
+  });
+});
+
+test("installer configures WorkBuddy without disturbing its connector proxy", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const { installAgentRouter } = await import("../packages/agentrouter-installer/server/index.js");
+    const home = await fs.mkdtemp(path.join(runtimeRoot, "agentrouter-workbuddy-"));
+    // WorkBuddy uses a standard mcpServers block, but in a dotfile.
+    const configPath = path.join(home, ".workbuddy", ".mcp.json");
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify({
+      mcpServers: {
+        "connector-proxy": { type: "http", url: "http://127.0.0.1:50684/mcp", description: "Aggregated proxy" }
+      }
+    }));
+
+    const result = await installAgentRouter({
+      home, client: "workbuddy", agentRouterUrl: baseUrl,
+      env: { AGENTROUTER_SKIP_BROWSER_SETUP: "1" }, skillDirs: path.join(home, "skills")
+    });
+    assert.deepEqual(result.configured_clients.map((entry) => entry.name), ["WorkBuddy"]);
+    assert.equal(result.configured_clients[0].config_path, configPath);
+
+    const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+    assert.deepEqual(config.mcpServers.AgentRouter.args, ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]);
+    assert.equal(config.mcpServers.AgentRouter.env.AGENT_ROUTER_URL, baseUrl);
+    assert.equal(config.mcpServers["connector-proxy"].url, "http://127.0.0.1:50684/mcp");
   });
 });
