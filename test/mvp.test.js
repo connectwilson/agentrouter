@@ -983,14 +983,16 @@ test("agentrouter doctor reports readiness when skill wallet and MCP config are 
 
 test("GitHub login entrypoint renders and OAuth callback creates a session", async () => {
   await withServer(async ({ server, baseUrl }) => {
-    const login = await fetch(`${baseUrl}/auth/login`);
-    assert.equal(login.status, 200);
-    const loginHtml = await login.text();
-    assert.match(loginHtml, /Continue with GitHub|Set GITHUB_CLIENT_ID/);
+    const login = await fetch(`${baseUrl}/auth/login`, { redirect: "manual" });
+    assert.equal(login.status, 302);
+    assert.equal(login.headers.get("location"), "/?login=1");
+
+    const loginPage = await fetch(`${baseUrl}/?login=1`);
+    const loginHtml = await loginPage.text();
+    assert.match(loginHtml, /id="auth-modal"/);
+    assert.match(loginHtml, /data-login-modal-open="true"/);
+    assert.match(loginHtml, /Continue with GitHub|GitHub/);
     assert.doesNotMatch(loginHtml, /Google|GOOGLE_CLIENT_ID/);
-    assert.match(loginHtml, /class="login-shell"/);
-    assert.match(loginHtml, /class="login-card"/);
-    assert.match(loginHtml, /class="login-visual"/);
     assert.match(loginHtml, /Welcome back/);
 
     const previousEnv = {
@@ -5501,6 +5503,52 @@ test("Apify actors onboard through Provider Studio and can pre-fill from actor m
     assert.equal(run.status, 200);
     assert.equal(run.body.data.item_count, 3, "max_items caps at 5 but the mock returns 3");
     assert.deepEqual(Object.keys(run.body.data.items[0]), ["title", "url"]);
+  });
+  delete process.env.ADN_APIFY_API_BASE;
+});
+
+test("seed Apify actors register end to end with the token kept out of the config", async () => {
+  const { SEED_ACTORS, buildSeedConfig } = await import("../scripts/seed-apify-actors.js");
+  const { writeProviderConfig, readProviderConfig, deleteProviderConfig } = await import("../src/provider-config.js");
+  const { executeApifyActor } = await import("../src/provider-runtime.js");
+
+  await withServer(async ({ baseUrl }) => {
+    process.env.ADN_APIFY_API_BASE = `${baseUrl}/mock/upstream/apify`;
+    try {
+
+    // The seed list is the PRD's initial catalog, not an empty placeholder.
+    assert.deepEqual(SEED_ACTORS.map((seed) => seed.actorId), [
+      "apify~google-search-scraper",
+      "apify~rag-web-browser"
+    ]);
+
+    for (const seed of SEED_ACTORS) {
+      const config = buildSeedConfig(seed, { baseUrl, secretValue: "mock-apify-token" });
+      assert.equal(config.source.type, "apify_actor");
+      assert.equal(config.source.execution_mode, "sync");
+      assert.equal(config.manifest.pricing.amount, seed.price);
+
+      await writeProviderConfig(config);
+      const stored = await readProviderConfig(seed.serviceId);
+      // The token becomes a named secret ref and never persists in the config.
+      assert.equal(stored.source.auth.secret_value, undefined);
+      assert.equal(stored.source.auth.secret_ref, `${seed.serviceId}:APIFY_TOKEN`);
+      assert.equal(JSON.stringify(stored).includes("mock-apify-token"), false);
+
+      // The stored config runs, resolving the token from the secret store.
+      const run = await executeApifyActor(stored, seed.sampleRequest);
+      assert.equal(run.status, 200);
+      assert.equal(run.body.status, "success");
+      assert.equal(run.body.data.actor_id, seed.actorId);
+      if (seed.datasetFields.length) {
+        assert.deepEqual(Object.keys(run.body.data.items[0]), seed.datasetFields);
+      }
+    }
+    } finally {
+      // These use fixed service ids in a shared provider dir; leaving them
+      // behind changes what later tests see.
+      for (const seed of SEED_ACTORS) await deleteProviderConfig(seed.serviceId);
+    }
   });
   delete process.env.ADN_APIFY_API_BASE;
 });

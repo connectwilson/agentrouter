@@ -253,6 +253,9 @@ export function createApifyActorProviderConfig({
     },
     auth: {
       mode: "apify_token",
+      // Keep the name meaningful in the secret store; overwriting config.source
+      // below would otherwise drop what the hosted_http factory set.
+      secret_name: "APIFY_TOKEN",
       ...(secretValue ? { secret_value: secretValue } : {})
     },
     summary
