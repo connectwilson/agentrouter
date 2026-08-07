@@ -1,6 +1,7 @@
 import { normalizeEndpoint, parseCapabilities, parseMaybeJson } from "./http-utils.js";
 import { normalizeId, suggestCapabilities } from "./id-utils.js";
-import { createHostedHttpProviderConfig, createStaticProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
+import { createApifyActorProviderConfig,
+  createHostedHttpProviderConfig, createStaticProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
 import { findDuplicateService, registerService, unregisterService, validateService } from "./registry.js";
 import { publicServiceRecord } from "./store.js";
 
@@ -27,7 +28,17 @@ export async function createProviderFromStudio(body, store, baseUrl, { user = nu
     summary: normalizedBody.summary,
     payoutAddress: normalizedBody.payout_address || ""
   };
-  const config = mode === "hosted-http"
+  const config = mode === "apify-actor"
+    ? createApifyActorProviderConfig({
+      ...common,
+      actorId: String(normalizedBody.actor_id || "").trim(),
+      inputTemplate: parseMaybeJson(normalizedBody.input_template, "input_template") || {},
+      inputAllowlist: parseCsvList(normalizedBody.input_allowlist),
+      datasetFields: parseCsvList(normalizedBody.dataset_fields),
+      maxItems: normalizedBody.max_items || 100,
+      secretValue: normalizedBody.secret_value || ""
+    })
+    : mode === "hosted-http"
     ? createHostedHttpProviderConfig({
       ...common,
       upstreamUrl: normalizeEndpoint(normalizedBody.upstream_url, baseUrl),
@@ -116,6 +127,10 @@ function validateStudioInput(body, store) {
   }
   if ((body.mode || "static-json") === "hosted-http" && !String(body.upstream_url || "").trim()) {
     errors.push("upstream_url is required for hosted-http");
+  }
+  if (body.mode === "apify-actor") {
+    if (!String(body.actor_id || "").trim()) errors.push("actor_id is required for apify-actor");
+    if (!String(body.secret_value || "").trim()) errors.push("An Apify API token is required for apify-actor");
   }
   if (errors.length) {
     const error = new Error(errors.join("; "));
@@ -389,6 +404,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
               <select name="mode" id="mode">
                 <option value="static-json">Pasted JSON result</option>
                 <option value="hosted-http" ${formDefaults.mode === "hosted-http" ? "selected" : ""}>HTTP API endpoint</option>
+                <option value="apify-actor" ${formDefaults.mode === "apify-actor" ? "selected" : ""}>Apify Actor</option>
               </select>
             </label>
             <label>Price per call (USDC)
@@ -451,6 +467,23 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
             <p class="hint">This is the normalized response wrapper buyer Agents receive. It is generated automatically.</p>
             <code class="code-preview" id="envelope-preview"></code>
           </details>
+        </fieldset>
+        <fieldset id="apify-actor-fields" class="${formDefaults.mode === "apify-actor" ? "" : "hidden"}">
+          <label>Apify actor id
+            <input name="actor_id" value="${html(formDefaults.actorId || "")}" placeholder="apify~google-search-scraper" />
+          </label>
+          <label>Buyer-settable input keys (comma separated)
+            <input name="input_allowlist" value="${html(formDefaults.inputAllowlist || "")}" placeholder="queries, maxPagesPerQuery" />
+          </label>
+          <label>Fixed actor input JSON (optional defaults)
+            <textarea name="input_template" rows="3">${html(formDefaults.inputTemplate || "")}</textarea>
+          </label>
+          <label>Return only these fields (optional, comma separated)
+            <input name="dataset_fields" value="${html(formDefaults.datasetFields || "")}" placeholder="title, url, description" />
+          </label>
+          <label>Max items per call
+            <input name="max_items" value="${html(formDefaults.maxItems || "100")}" />
+          </label>
         </fieldset>
         <fieldset id="hosted-http-fields" class="${formDefaults.mode === "hosted-http" ? "" : "hidden"}">
           <legend>Endpoint</legend>
@@ -657,6 +690,8 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       }
       const sampleDataError = validateJsonField(sampleDataInput, "Free preview data", { required: true });
       if (sampleDataError) errors.push(sampleDataError);
+      const apifyFields = document.getElementById("apify-actor-fields");
+      if (apifyFields) apifyFields.classList.toggle("hidden", mode.value !== "apify-actor");
       if (mode.value === "hosted-http") {
         if (!String(upstreamUrlInput.value || "").trim()) {
           errors.push("Endpoint URL is required for HTTP API services.");

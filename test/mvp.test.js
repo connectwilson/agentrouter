@@ -5444,3 +5444,63 @@ test("Apify actor provider source runs through the normal paid flow", async () =
   });
   delete process.env.ADN_APIFY_API_BASE;
 });
+
+test("Apify actors onboard through Provider Studio and can pre-fill from actor metadata", async () => {
+  const { fetchApifyActorMetadata } = await import("../src/provider-runtime.js");
+  const { createApifyActorProviderConfig } = await import("../src/provider-config.js");
+
+  await withServer(async ({ baseUrl }) => {
+    process.env.ADN_APIFY_API_BASE = `${baseUrl}/mock/upstream/apify`;
+
+    // PRD 9-B: actor metadata pre-fills a draft instead of retyping it.
+    const draft = await fetchApifyActorMetadata("apify~google-search-scraper", "mock-apify-token");
+    assert.equal(draft.title, "Google Search Scraper");
+    assert.deepEqual(draft.input_allowlist, ["queries", "maxPagesPerQuery", "resultsPerPage"]);
+    assert.equal(draft.sample_request.queries, "agentrouter");
+    assert.equal(draft.default_timeout_secs, 120);
+
+    await assert.rejects(
+      fetchApifyActorMetadata("apify~missing-actor", "mock-apify-token"),
+      (error) => error.code === "APIFY_ACTOR_NOT_FOUND"
+    );
+    await assert.rejects(
+      fetchApifyActorMetadata("apify~google-search-scraper", "wrong-token"),
+      (error) => error.code === "APIFY_ACTOR_METADATA_FAILED"
+    );
+
+    // The Studio factory produces a runnable apify_actor config.
+    const config = createApifyActorProviderConfig({
+      baseUrl,
+      serviceId: "studio_apify_serp",
+      providerId: "studio_provider",
+      title: draft.title,
+      description: draft.description,
+      capabilities: ["data_service", "web_search"],
+      price: "0.02",
+      sampleRequest: draft.sample_request,
+      sampleData: { items: [] },
+      actorId: draft.actor_id,
+      inputAllowlist: draft.input_allowlist,
+      inputTemplate: { resultsPerPage: 10 },
+      datasetFields: ["title", "url"],
+      maxItems: 5,
+      secretValue: "mock-apify-token",
+      summary: "Google SERP via Apify"
+    });
+    assert.equal(config.source.type, "apify_actor");
+    assert.equal(config.source.execution_mode, "sync");
+    assert.equal(config.source.dataset.max_items, 5);
+    assert.deepEqual(config.source.dataset.fields, ["title", "url"]);
+    assert.deepEqual(config.source.input_allowlist, draft.input_allowlist);
+    // Actors run on Apify, so there is no provider-owned origin to bind to.
+    assert.equal(config.manifest.origin_binding, undefined);
+    assert.equal(config.manifest.pricing.amount, "0.02");
+
+    const { executeApifyActor } = await import("../src/provider-runtime.js");
+    const run = await executeApifyActor(config, { queries: "agentrouter" });
+    assert.equal(run.status, 200);
+    assert.equal(run.body.data.item_count, 3, "max_items caps at 5 but the mock returns 3");
+    assert.deepEqual(Object.keys(run.body.data.items[0]), ["title", "url"]);
+  });
+  delete process.env.ADN_APIFY_API_BASE;
+});

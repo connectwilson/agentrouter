@@ -921,7 +921,8 @@ export async function executeApifyActor(config, input = {}) {
 // Mock Apify dataset endpoint so tests never reach api.apify.com. The path
 // mirrors the real one: /acts/{actorId}/run-sync-get-dataset-items
 export async function handleMockUpstreamApify(req, res, url) {
-  const body = await readJson(req);
+  const isMetadata = req.method === "GET";
+  const body = isMetadata ? {} : await readJson(req);
   if (req.headers.authorization !== "Bearer mock-apify-token") {
     sendJson(res, 401, { error: { type: "authentication-error", message: "Invalid token" } });
     return;
@@ -939,6 +940,23 @@ export async function handleMockUpstreamApify(req, res, url) {
     sendJson(res, 200, []);
     return;
   }
+  if (isMetadata) {
+    sendJson(res, 200, { data: {
+      id: actorId,
+      title: "Google Search Scraper",
+      description: "Scrapes Google SERPs.",
+      defaultRunOptions: {
+        memoryMbytes: 1024,
+        timeoutSecs: 120,
+        input: { properties: {
+          queries: { type: "string", prefill: "agentrouter" },
+          maxPagesPerQuery: { type: "integer", default: 1 },
+          resultsPerPage: { type: "integer", default: 10 }
+        } }
+      }
+    } });
+    return;
+  }
   const limit = Number(url.searchParams.get("limit"));
   const items = [
     { title: "First result", url: "https://example.com/1", description: "One", secret_field: "hidden" },
@@ -946,4 +964,56 @@ export async function handleMockUpstreamApify(req, res, url) {
     { title: "Third result", url: "https://example.com/3", description: "Three", secret_field: "hidden" }
   ].map((item) => ({ ...item, echoed_input: body }));
   sendJson(res, 200, Number.isFinite(limit) && limit > 0 ? items.slice(0, limit) : items);
+}
+
+
+// PRD §9-B: read actor metadata so Provider Studio can pre-fill a draft instead
+// of making the provider retype the title, description, and input shape.
+export async function fetchApifyActorMetadata(actorId, token, { fetchImpl = globalThis.fetch } = {}) {
+  const id = String(actorId || "").trim();
+  if (!id) {
+    const error = new Error("actor_id is required.");
+    error.code = "APIFY_ACTOR_ID_REQUIRED";
+    error.statusCode = 422;
+    throw error;
+  }
+  const base = String(process.env.ADN_APIFY_API_BASE || APIFY_DEFAULT_BASE).replace(/\/$/, "");
+  const response = await fetchImpl(`${base}/acts/${encodeURIComponent(id)}`, {
+    headers: { accept: "application/json", authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(Number(process.env.ADN_UPSTREAM_TIMEOUT_MS || 15000))
+  });
+  const payload = await parseUpstreamPayload(response);
+  if (!response.ok) {
+    const error = new Error(response.status === 401 || response.status === 403
+      ? "Apify rejected the token while reading actor metadata."
+      : `Apify returned HTTP ${response.status} for actor ${id}.`);
+    error.code = response.status === 404 ? "APIFY_ACTOR_NOT_FOUND" : "APIFY_ACTOR_METADATA_FAILED";
+    error.statusCode = 422;
+    throw error;
+  }
+  const data = payload?.data || payload || {};
+  const properties = data.defaultRunOptions?.input?.properties
+    || data.inputSchema?.properties
+    || data.exampleRunInput?.properties
+    || {};
+  const inputKeys = Object.keys(properties);
+  const sampleRequest = {};
+  for (const key of inputKeys.slice(0, 6)) {
+    const spec = properties[key] || {};
+    if (spec.prefill !== undefined) sampleRequest[key] = spec.prefill;
+    else if (spec.default !== undefined) sampleRequest[key] = spec.default;
+    else if (spec.type === "array") sampleRequest[key] = [];
+    else if (spec.type === "integer" || spec.type === "number") sampleRequest[key] = 1;
+    else if (spec.type === "boolean") sampleRequest[key] = false;
+    else sampleRequest[key] = "";
+  }
+  return {
+    actor_id: id,
+    title: String(data.title || data.name || id).slice(0, 200),
+    description: String(data.description || "").slice(0, 1000),
+    input_allowlist: inputKeys,
+    sample_request: sampleRequest,
+    default_memory_mbytes: data.defaultRunOptions?.memoryMbytes ?? null,
+    default_timeout_secs: data.defaultRunOptions?.timeoutSecs ?? null
+  };
 }

@@ -202,6 +202,71 @@ export function createStaticProviderConfig({
   };
 }
 
+// An Apify Actor is onboarded like a hosted_http service, except the upstream
+// identity is the actor id and the buyer-settable input is an allowlist.
+export function createApifyActorProviderConfig({
+  baseUrl,
+  serviceId,
+  providerId,
+  title,
+  description,
+  capabilities,
+  price,
+  sampleRequest,
+  sampleData,
+  actorId,
+  inputTemplate = {},
+  inputAllowlist = [],
+  datasetFields = [],
+  maxItems = 100,
+  secretValue = "",
+  summary,
+  payoutAddress = ""
+}) {
+  const config = createHostedHttpProviderConfig({
+    baseUrl,
+    serviceId,
+    providerId,
+    title,
+    description,
+    capabilities,
+    price,
+    sampleRequest,
+    sampleData,
+    upstreamUrl: `https://apify.com/actors/${String(actorId || "").replace(/~/g, "/")}`,
+    upstreamMethod: "POST",
+    secretName: "APIFY_TOKEN",
+    secretValue,
+    summary,
+    payoutAddress
+  });
+  config.source = {
+    type: "apify_actor",
+    actor_id: actorId,
+    execution_mode: "sync",
+    input_template: inputTemplate && typeof inputTemplate === "object" ? inputTemplate : {},
+    input_allowlist: Array.isArray(inputAllowlist) ? inputAllowlist.filter(Boolean) : [],
+    dataset: {
+      clean: true,
+      max_items: Number(maxItems) > 0 ? Math.trunc(Number(maxItems)) : 100,
+      ...(Array.isArray(datasetFields) && datasetFields.length ? { fields: datasetFields.filter(Boolean) } : {})
+    },
+    auth: {
+      mode: "apify_token",
+      ...(secretValue ? { secret_value: secretValue } : {})
+    },
+    summary
+  };
+  config.manifest.registration.source_fingerprint = createSourceFingerprint({
+    type: "apify_actor",
+    provider_id: providerId,
+    actor_id: actorId
+  });
+  // The actor runs on Apify, so nothing here binds to a provider-owned origin.
+  delete config.manifest.origin_binding;
+  return config;
+}
+
 export function createHostedHttpProviderConfig({
   baseUrl,
   serviceId,

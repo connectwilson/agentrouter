@@ -6,6 +6,7 @@ import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBase
 import { createMemoryStore, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
+  fetchApifyActorMetadata,
   handleMockUpstreamApify } from "./provider-runtime.js";
 import { hydratePersistentServiceEvents, invokePaidService, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
@@ -663,6 +664,19 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/studio/import/apify-actor") {
+    const body = await readJson(req);
+    try {
+      const draft = await fetchApifyActorMetadata(body.actor_id, body.token);
+      sendJson(res, 200, { ok: true, draft });
+    } catch (error) {
+      sendJson(res, error.statusCode || 502, {
+        ok: false,
+        error: { code: error.code || "APIFY_ACTOR_METADATA_FAILED", message: error.message }
+      });
+    }
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/studio/import/discover") {
     if (!requireAuth(req, res, auth, url)) return;
     const body = await readJson(req);
@@ -1119,7 +1133,7 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
-  if (req.method === "POST" && url.pathname.startsWith("/mock/upstream/apify/")) {
+  if ((req.method === "POST" || req.method === "GET") && url.pathname.startsWith("/mock/upstream/apify/")) {
     await handleMockUpstreamApify(req, res, url);
     return;
   }
