@@ -1029,7 +1029,8 @@ function page({ title, auth = {}, body }) {
 </html>`;
 }
 
-function styles() {
+// Kept only as source archaeology while the new page shell is rolled out. It is not emitted.
+function legacyStyles() {
   return `
     /* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 */
     :root {
@@ -1376,6 +1377,10 @@ function styles() {
       .ops-row span:nth-child(3), .ops-row span:nth-child(4), .ops-row span:nth-child(5) { display:none; }
     }
   `;
+}
+
+function styles() {
+  return naiveDesignSystemStyles();
 }
 
 function serviceClientScript() {

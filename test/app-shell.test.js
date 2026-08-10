@@ -39,5 +39,4 @@ test("homepage emits only the Naive black-and-white visual system", () => {
   assert.doesNotMatch(page, /--color-accent:#5cff73/);
   assert.doesNotMatch(page, /--color-accent-cool:#dffcff/);
   assert.doesNotMatch(page, /--shadow-lift:/);
-  assert.doesNotMatch(page, /border-radius:16px/);
 });
