@@ -111,7 +111,7 @@ export function clientRouterScript() {
         document.body.replaceWith(nextBody);
         executePageScripts(document);
         if (mode === "push") history.pushState({}, "", responseUrl);
-        window.scrollTo({ top:0, behavior:"instant" });
+        window.scrollTo(0, 0);
       };
       router.navigate = async (href, mode = "push") => {
         const requested = new URL(href, window.location.href);
