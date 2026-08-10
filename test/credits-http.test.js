@@ -56,6 +56,36 @@ test("credit account API requires login and returns balance", async () => {
   });
 });
 
+test("account dashboard exposes only the signed-in user's credit summary and safe API-key metadata", async () => {
+  await withCreditServer(async ({ baseUrl, cookie }) => {
+    const initial = await fetch(`${baseUrl}/account/dashboard`, { headers: { cookie } });
+    assert.equal(initial.status, 200);
+    const initialPayload = await initial.json();
+    assert.equal(initialPayload.summary.available_credits, "0");
+    assert.equal(initialPayload.summary.successful_paid_calls, 0);
+    assert.deepEqual(initialPayload.api_keys, []);
+
+    await fetch(`${baseUrl}/account/credits/topup`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ amount: "1.00" })
+    });
+    const created = await fetch(`${baseUrl}/account/api-keys`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ label: "Dashboard test" })
+    });
+    assert.equal(created.status, 201);
+
+    const dashboard = await fetch(`${baseUrl}/account/dashboard`, { headers: { cookie } });
+    const payload = await dashboard.json();
+    assert.equal(payload.summary.available_credits, "1");
+    assert.equal(payload.summary.active_api_keys, 1);
+    assert.equal(payload.api_keys[0].label, "Dashboard test");
+    assert.equal("api_key" in payload.api_keys[0], false);
+  });
+});
+
 test("localhost development login creates a session only when explicitly enabled", async () => {
   const previous = process.env.ADN_AUTH_ALLOW_DEV_LOGIN;
   process.env.ADN_AUTH_ALLOW_DEV_LOGIN = "true";
