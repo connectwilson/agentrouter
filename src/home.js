@@ -1,4 +1,5 @@
 import { authModalHtml, authModalStyles } from "./auth-modal.js";
+import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
 
 const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
@@ -1000,9 +1001,9 @@ function page({ title, auth = {}, body }) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${html(title)}</title>
   ${faviconLinks()}
-  <style>${styles()}${authModalStyles()}</style>
+  <style data-agentrouter-page-style>${styles()}${authModalStyles()}${naiveDesignSystemStyles()}</style>
 </head>
-<body>
+<body data-agentrouter-app>
   <div class="topbar">
     <div class="shell nav">
       <a class="brand" href="/" aria-label="AgentRouter home">${brandLogo()}</a>
@@ -1023,6 +1024,7 @@ function page({ title, auth = {}, body }) {
     <div class="shell">AgentRouter Markets · <a href="/research">Creator Research</a> · <a href="/human">For human</a> · <a href="/agent">For agent</a> · <a href="/studio">Provider Studio</a></div>
   </footer>
   ${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/" })}
+  <script data-agentrouter-spa>${clientRouterScript()}</script>
 </body>
 </html>`;
 }
@@ -1492,8 +1494,7 @@ function formatScore(value) {
 
 function brandLogo() {
   return `
-    <span class="brand-icon" aria-hidden="true"><img src="/assets/brand/logo.png" alt=""></span>
-    <span class="brand-word">AgentRouter</span>
+    <span class="brand-word">AgentRouter <span class="brand-prompt" aria-hidden="true">&gt;<span class="brand-caret">_</span></span></span>
   `;
 }
 

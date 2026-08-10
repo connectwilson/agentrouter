@@ -5,6 +5,7 @@ import { createApifyActorProviderConfig,
 import { findDuplicateService, registerService, unregisterService, validateService } from "./registry.js";
 import { publicServiceRecord } from "./store.js";
 import { authModalHtml, authModalStyles } from "./auth-modal.js";
+import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
 
 export async function createProviderFromStudio(body, store, baseUrl, { user = null, ownerKey = "" } = {}) {
   const serviceId = normalizeId(body.service_id, body.title, "service");
@@ -152,7 +153,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ADN Provider Studio</title>
   ${faviconLinks()}
-  <style>
+  <style data-agentrouter-page-style>
     /* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 */
     :root {
       color-scheme: light;
@@ -309,9 +310,10 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       h1 { font-size: 36px; }
     }
     ${authModalStyles()}
+    ${naiveDesignSystemStyles()}
   </style>
 </head>
-<body>
+<body data-agentrouter-app>
   <header>
     <div class="topbar">
       <a class="brand" href="/" aria-label="AgentRouter home">${brandLogo()}</a>
@@ -1688,6 +1690,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
   })();
   </script>
   ${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/studio" })}
+  <script data-agentrouter-spa>${clientRouterScript()}</script>
 </body>
 </html>`;
 }
