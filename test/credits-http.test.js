@@ -42,7 +42,10 @@ test("credit account API requires login and returns balance", async () => {
 
     const accountPage = await fetch(`${baseUrl}/account`, { headers: { cookie } });
     assert.equal(accountPage.status, 200);
-    assert.match(await accountPage.text(), /AgentRouter dashboard/);
+    const accountHtml = await accountPage.text();
+    assert.match(accountHtml, /AgentRouter dashboard/);
+    assert.match(accountHtml, /--dash-bg:var\(--color-bg\)/);
+    assert.doesNotMatch(accountHtml, /body \{ background:#07100f/);
 
     const denied = await fetch(`${baseUrl}/account/credits`);
     assert.equal(denied.status, 401);
