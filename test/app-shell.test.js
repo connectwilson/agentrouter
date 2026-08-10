@@ -14,6 +14,9 @@ test("first-party application pages share the Naive design shell and client-side
   for (const page of pages) {
     assert.match(page, /data-agentrouter-app/);
     assert.match(page, /--ar-bg:#000000/);
+    assert.match(page, /GeistPixel_Circle\.woff2/);
+    assert.match(page, /--ar-button-small:32px/);
+    assert.match(page, /--ar-button-large:48px/);
     assert.match(page, /data-agentrouter-spa/);
     assert.match(page, /history\.pushState/);
   }
