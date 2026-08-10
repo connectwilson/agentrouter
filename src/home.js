@@ -1001,7 +1001,7 @@ function page({ title, auth = {}, body }) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${html(title)}</title>
   ${faviconLinks()}
-  <style data-agentrouter-page-style>${styles()}${authModalStyles()}${naiveDesignSystemStyles()}</style>
+  <style data-agentrouter-page-style>${styles()}${authModalStyles()}</style>
 </head>
 <body data-agentrouter-app>
   <div class="topbar">
