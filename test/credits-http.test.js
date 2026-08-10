@@ -42,7 +42,7 @@ test("credit account API requires login and returns balance", async () => {
 
     const accountPage = await fetch(`${baseUrl}/account`, { headers: { cookie } });
     assert.equal(accountPage.status, 200);
-    assert.match(await accountPage.text(), /Account &amp; credits|Account & credits/);
+    assert.match(await accountPage.text(), /AgentRouter dashboard/);
 
     const denied = await fetch(`${baseUrl}/account/credits`);
     assert.equal(denied.status, 401);
@@ -109,7 +109,7 @@ test("localhost development login creates a session only when explicitly enabled
       const account = await fetch(`${baseUrl}/account`, { headers: { cookie } });
       assert.equal(account.status, 200);
       const accountHtml = await account.text();
-      assert.match(accountHtml, /Account &amp; credits|Account & credits/);
+      assert.match(accountHtml, /AgentRouter dashboard/);
       assert.match(accountHtml, /href="\/auth\/logout"[^>]*>Sign out<\/a>/);
 
       const studio = await fetch(`${baseUrl}/studio`, { headers: { cookie } });

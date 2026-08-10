@@ -22,7 +22,7 @@ import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
-import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditLedger } from "./credits.js";
+import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditApiKeys, listCreditLedger } from "./credits.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
@@ -340,6 +340,18 @@ async function routeRequest(req, res, store, baseUrl, {
       currency: "credits",
       ledger: await listCreditLedger(store, account.account_id, { limit: url.searchParams.get("limit") || 100 })
     });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/account/dashboard") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to view your AgentRouter dashboard.");
+    const account = await ensureCreditAccount(store, auth.user);
+    const [balance, ledger, apiKeys] = await Promise.all([
+      getCreditBalance(store, account.account_id),
+      listCreditLedger(store, account.account_id, { limit: 100 }),
+      listCreditApiKeys(store, account.account_id, { limit: 100 })
+    ]);
+    sendJson(res, 200, buildAccountDashboard({ account, balance, ledger, apiKeys }));
     return;
   }
 
@@ -1962,6 +1974,38 @@ function localServerPaidInvocationsAllowed(baseUrl) {
   } catch {
     return false;
   }
+}
+
+function buildAccountDashboard({ account, balance, ledger = [], apiKeys = [] }) {
+  const since = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  const recent = ledger.filter((entry) => new Date(entry.created_at).getTime() >= since);
+  const paidCalls = recent.filter((entry) => entry.kind === "service_call");
+  const spend = paidCalls.reduce((sum, entry) => sum + Math.abs(Number(entry.delta) || 0), 0);
+  const topServiceCounts = new Map();
+  for (const entry of paidCalls) {
+    const serviceId = entry.service_id || "unknown_service";
+    topServiceCounts.set(serviceId, (topServiceCounts.get(serviceId) || 0) + Math.abs(Number(entry.delta) || 0));
+  }
+  const topServices = [...topServiceCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 5)
+    .map(([service_id, spend_credits]) => ({ service_id, spend_credits: Number(spend_credits.toFixed(6)) }));
+  return {
+    account: {
+      account_id: account.account_id,
+      user_profile: account.user_profile || {}
+    },
+    summary: {
+      available_credits: balance,
+      spend_30d: Number(spend.toFixed(6)),
+      successful_paid_calls: paidCalls.length,
+      active_api_keys: apiKeys.filter((key) => key.status === "active").length,
+      window_days: 30
+    },
+    api_keys: apiKeys,
+    top_services: topServices,
+    recent_activity: ledger.slice(0, 12)
+  };
 }
 
 async function paidInvocationContext(req, baseUrl, store) {

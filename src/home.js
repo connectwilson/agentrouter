@@ -859,120 +859,110 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
 }
 
 export function accountHtml({ auth = {} } = {}) {
-  return appPage({
-    title: "Account & credits",
-    subtitle: "Fund one balance, create a client key, and let your agents pay per successful API call.",
-    active: "account",
+  return page({
+    title: "Dashboard · AgentRouter",
     auth,
     body: `
-      <main class="shell wide-shell account-console">
-        <section class="account-summary">
-          <div>
-            <span class="eyebrow">Available balance</span>
-            <strong id="credit-balance">--</strong>
-            <span>AgentRouter credits</span>
-          </div>
-          <div class="account-actions">
-            <form id="topup-form">
-              <label for="topup-amount">Add credits</label>
-              <div class="inline-form">
-                <input id="topup-amount" name="amount" type="number" min="0.5" max="10000" step="0.01" value="10.00" required>
-                <button class="button primary" type="submit">Continue to payment</button>
-              </div>
-              <small>Production top-ups use hosted Stripe Checkout. Credits are added only after a signed payment webhook.</small>
-            </form>
-          </div>
-        </section>
+      <style>
+        body { background:#07100f; color:#e9f0ec; }
+        .topbar { border-top-color:#83f7c0; border-bottom-color:#20302c; background:rgba(7,16,15,.97); }
+        .brand, .nav-links a, .auth-link.signed-in { color:#eff8f1; }
+        .nav-links { color:#9eada7; }.nav-links a:hover, .nav-links a:focus-visible { color:#83f7c0; border-bottom-color:#83f7c0; }
+        .logout-link { color:#aebcb5; }.footer { border-top-color:#20302c; background:#07100f; color:#8c9a94; }
+        .ar-dashboard { --dash-bg:#07100f; --dash-panel:#0c1816; --dash-panel-2:#101f1c; --dash-line:#20342e; --dash-text:#edf6ef; --dash-muted:#97a7a0; --dash-accent:#83f7c0; --dash-blue:#70c8ff; display:grid; grid-template-columns:232px minmax(0,1fr); min-height:calc(100vh - 69px); }
+        .dash-sidebar { border-right:1px solid var(--dash-line); padding:28px 16px; background:#091411; }
+        .dash-workspace { display:flex; align-items:center; justify-content:space-between; padding:12px 13px; border:1px solid var(--dash-line); border-radius:8px; color:var(--dash-text); font-size:13px; font-weight:740; }
+        .dash-workspace small { color:var(--dash-accent); font-weight:800; }
+        .dash-nav { display:grid; gap:4px; margin-top:24px; }.dash-nav-label { margin:19px 10px 7px; color:#6f827a; font-size:10px; font-weight:850; letter-spacing:.11em; text-transform:uppercase; }
+        .dash-nav button { width:100%; border:0; border-radius:7px; padding:10px 11px; background:transparent; color:#aebbb5; text-align:left; cursor:pointer; font:inherit; font-size:14px; transition:background .15s,color .15s; }
+        .dash-nav button:hover, .dash-nav button[aria-selected="true"] { background:#173126; color:var(--dash-accent); }.dash-nav button span { display:inline-block; width:26px; color:#789086; }
+        .dash-main { min-width:0; padding:34px clamp(20px,4vw,58px) 62px; }.dash-page-head { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; margin-bottom:30px; }
+        .dash-kicker { color:var(--dash-accent); font-size:11px; font-weight:850; letter-spacing:.12em; text-transform:uppercase; }.dash-page-head h1 { margin:7px 0 7px; color:var(--dash-text); font-size:30px; letter-spacing:-.04em; }.dash-page-head p { margin:0; color:var(--dash-muted); max-width:680px; line-height:1.55; }
+        .dash-user { display:flex; align-items:center; gap:10px; color:var(--dash-muted); font-size:13px; white-space:nowrap; }.dash-avatar { width:30px; height:30px; display:grid; place-items:center; border-radius:50%; background:#183228; color:var(--dash-accent); font-weight:850; }
+        .dash-panel { border:1px solid var(--dash-line); border-radius:10px; background:var(--dash-panel); }.dash-notice { display:flex; justify-content:space-between; gap:16px; margin-bottom:26px; padding:16px 18px; border:1px solid #1c4c47; border-radius:9px; background:#0b2021; color:#c9ded7; font-size:14px; line-height:1.45; }.dash-notice b { color:#edfdf4; }.dash-notice a { color:var(--dash-accent); text-decoration:underline; }
+        .dash-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }.dash-metric { min-height:156px; padding:20px; position:relative; overflow:hidden; }.dash-metric::after { content:""; position:absolute; width:78px; height:78px; right:-24px; bottom:-30px; border:1px solid #2d5a4c; border-radius:50%; }.dash-metric span { color:var(--dash-muted); font-size:12px; }.dash-metric strong { display:block; margin-top:18px; color:var(--dash-text); font-size:31px; letter-spacing:-.05em; }.dash-metric small { display:block; margin-top:7px; color:#709386; font-size:12px; }.dash-metric.accent strong { color:var(--dash-accent); }
+        .dash-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(280px,.8fr); gap:14px; margin-top:14px; }.dash-card { padding:22px; }.dash-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }.dash-card h2 { margin:0; color:var(--dash-text); font-size:16px; }.dash-card p { color:var(--dash-muted); line-height:1.5; }.dash-link { border:0; background:transparent; color:var(--dash-accent); padding:0; cursor:pointer; font:inherit; font-size:13px; }
+        .dash-activity { display:grid; }.dash-row { display:grid; grid-template-columns:minmax(130px,1fr) minmax(110px,.75fr) 92px 145px; gap:14px; align-items:center; padding:13px 0; border-top:1px solid var(--dash-line); font-size:13px; }.dash-row:first-child { border-top:0; }.dash-row strong { color:var(--dash-text); font-weight:650; }.dash-row small { display:block; margin-top:3px; color:#74877f; }.dash-credit { color:var(--dash-accent); }.dash-debit { color:#ffbb7a; }.dash-empty { padding:24px 0; color:var(--dash-muted); font-size:14px; }
+        .dash-services { display:grid; gap:14px; }.dash-service { display:grid; gap:7px; }.dash-service-top { display:flex; justify-content:space-between; gap:12px; color:#dcebe2; font-size:13px; }.dash-service-bar { height:7px; overflow:hidden; border-radius:99px; background:#1b302a; }.dash-service-bar i { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#5cb2f5,#83f7c0); }
+        .dash-actions { display:grid; gap:10px; }.dash-action { display:flex; align-items:center; gap:13px; padding:14px; border:1px solid var(--dash-line); border-radius:8px; color:#d5e4dc; }.dash-action b { display:block; color:var(--dash-text); font-size:13px; }.dash-action small { display:block; margin-top:3px; color:var(--dash-muted); font-size:12px; line-height:1.35; }.dash-action i { color:var(--dash-accent); font-style:normal; font-size:20px; }
+        .dash-view[hidden] { display:none; }.dash-section { margin-top:14px; }.dash-form { display:grid; gap:13px; }.dash-form label { color:#c1d0c8; font-size:12px; font-weight:750; }.dash-form-row { display:flex; gap:10px; }.dash-form input { min-width:0; flex:1; border:1px solid #365146; border-radius:7px; background:#081210; color:var(--dash-text); padding:12px 13px; outline:0; }.dash-form input:focus { border-color:var(--dash-accent); box-shadow:0 0 0 3px rgba(131,247,192,.11); }.dash-button { border:1px solid var(--dash-accent); border-radius:7px; background:var(--dash-accent); color:#07120d; padding:0 15px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }.dash-button:disabled { cursor:wait; opacity:.65; }.dash-button.secondary { background:transparent; color:var(--dash-accent); }.dash-status { margin:14px 0 0; min-height:20px; color:var(--dash-muted); font-size:13px; }.dash-status.error { color:#ffaaa2; }.dash-key-result { display:grid; gap:10px; margin-top:16px; padding:15px; border:1px solid #33715c; border-radius:8px; background:#10251e; color:#d8eee2; }.dash-key-result code { overflow-wrap:anywhere; color:#b4ffd7; font:12px var(--font-mono); }
+        .dash-key-table { width:100%; border-collapse:collapse; }.dash-key-table th, .dash-key-table td { padding:13px 10px; border-bottom:1px solid var(--dash-line); color:#aebeb6; text-align:left; font-size:13px; }.dash-key-table th { color:#708279; font-size:11px; letter-spacing:.07em; text-transform:uppercase; }.dash-key-table td:first-child { color:var(--dash-text); font-weight:650; }.dash-badge { display:inline-flex; padding:4px 7px; border-radius:99px; background:#173126; color:var(--dash-accent); font-size:11px; font-weight:800; }
+        @media (max-width:960px) { .ar-dashboard { grid-template-columns:1fr; }.dash-sidebar { display:none; }.dash-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.dash-grid { grid-template-columns:1fr; } }
+        @media (max-width:620px) { .dash-main { padding:26px 16px 42px; }.dash-page-head { display:block; }.dash-user { margin-top:15px; }.dash-metrics { grid-template-columns:1fr; }.dash-row { grid-template-columns:1fr 1fr; }.dash-row > :last-child { display:none; }.dash-form-row { display:grid; }.dash-button { min-height:42px; }.topbar .shell { padding:0 16px; } }
+      </style>
+      <main class="ar-dashboard">
+        <aside class="dash-sidebar">
+          <div class="dash-workspace"><span>Personal workspace</span><small>● LIVE</small></div>
+          <nav class="dash-nav" aria-label="Dashboard navigation">
+            <span class="dash-nav-label">Workspace</span>
+            <button type="button" data-view="overview" aria-selected="true"><span>▦</span>Overview</button>
+            <button type="button" data-view="keys"><span>⌘</span>API keys</button>
+            <button type="button" data-view="activity"><span>≡</span>Activity</button>
+            <button type="button" data-view="credits"><span>◒</span>Credits</button>
+            <span class="dash-nav-label">Network</span>
+            <a class="dash-action" href="/research"><i>↗</i><span><b>Research sources</b><small>Connect API and local browser sources</small></span></a>
+            <a class="dash-action" href="/agent"><i>↗</i><span><b>Service catalog</b><small>Explore routed capabilities</small></span></a>
+          </nav>
+        </aside>
+        <section class="dash-main">
+          <header class="dash-page-head">
+            <div><span class="dash-kicker">AgentRouter dashboard</span><h1 id="dash-title">Overview</h1><p id="dash-subtitle">Your prepaid balance, agent credentials, and verified service activity in one place.</p></div>
+            <div class="dash-user"><span class="dash-avatar">AR</span><span>${html(auth.user?.name || auth.user?.email || "Personal account")}</span></div>
+          </header>
+          <div class="dash-notice"><span><b>One balance, every verified service.</b> Calls are charged only after request validation; provider failures are refunded automatically.</span><a href="/agent">Browse services →</a></div>
 
-        <section class="account-grid">
-          <article class="detail-panel">
-            <span class="eyebrow">Agent access</span>
-            <h2>Create an API key</h2>
-            <p>Use this key in Claude, Codex, Cursor, or any MCP client. It authorizes calls against your prepaid balance.</p>
-            <form id="api-key-form">
-              <label for="api-key-label">Client label</label>
-              <div class="inline-form">
-                <input id="api-key-label" name="label" value="Claude Desktop" maxlength="120">
-                <button class="button" type="submit">Create key</button>
-              </div>
-            </form>
-            <div id="api-key-result" class="key-result" hidden>
-              <b>Copy this key now. It will not be shown again.</b>
-              <code id="api-key-value"></code>
-              <button class="button ghost" id="copy-api-key" type="button">Copy key</button>
-              <small>Set it as <code>AGENT_ROUTER_API_KEY</code> in your AgentRouter MCP configuration. The client will then use this prepaid balance instead of an Arc wallet.</small>
+          <section class="dash-view" data-panel="overview">
+            <div class="dash-metrics">
+              <article class="dash-panel dash-metric accent"><span>Available credits</span><strong id="metric-balance">--</strong><small>Ready for agent calls</small></article>
+              <article class="dash-panel dash-metric"><span>30 day spend</span><strong id="metric-spend">--</strong><small>Only completed paid calls</small></article>
+              <article class="dash-panel dash-metric"><span>Paid calls</span><strong id="metric-calls">--</strong><small>Last 30 days</small></article>
+              <article class="dash-panel dash-metric"><span>Active API keys</span><strong id="metric-keys">--</strong><small>Keys never reveal their secret again</small></article>
             </div>
-          </article>
-
-          <article class="detail-panel">
-            <span class="eyebrow">Billing model</span>
-            <h2>One balance, every service</h2>
-            <div class="detail-kv">
-              <div>Charge timing</div><div>After request validation, before data release</div>
-              <div>Failed provider call</div><div>Not charged or automatically refunded</div>
-              <div>API credentials</div><div>Provider keys remain server-side</div>
-              <div>Ledger precision</div><div>6 decimal places</div>
+            <div class="dash-grid">
+              <article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Recent account activity</h2><p>Credits added and successful service calls.</p></div><button class="dash-link" type="button" data-view-link="activity">View all →</button></div><div class="dash-activity" id="overview-activity"></div></article>
+              <aside class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Quick actions</h2><p>Get an agent ready in minutes.</p></div></div><div class="dash-actions"><button class="dash-action" type="button" data-view-link="keys"><i>⌘</i><span><b>Create an API key</b><small>Use it only in your MCP client configuration.</small></span></button><button class="dash-action" type="button" data-view-link="credits"><i>＋</i><span><b>Add credits</b><small>Secure checkout, applied after confirmation.</small></span></button><a class="dash-action" href="/agent"><i>↗</i><span><b>Install AgentRouter</b><small>Connect your agent to the hosted router.</small></span></a></div></aside>
             </div>
-          </article>
-        </section>
+            <div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Top services by spend</h2><p>Derived from your own service-call ledger.</p></div></div><div class="dash-services" id="top-services"></div></article><aside class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Routing safeguards</h2><p>Every call is bounded by your policy.</p></div></div><div class="dash-actions"><div class="dash-action"><i>✓</i><span><b>Server-side credentials</b><small>Provider API keys remain private to AgentRouter.</small></span></div><div class="dash-action"><i>✓</i><span><b>Payment precision</b><small>Credit ledger uses six decimal places.</small></span></div></div></aside></div>
+          </section>
 
-        <section class="detail-panel ledger-panel">
-          <div class="panel-head">
-            <span class="eyebrow">Account activity</span>
-            <h2>Credit ledger</h2>
-          </div>
-          <div id="credit-ledger" class="credit-ledger"></div>
+          <section class="dash-view" data-panel="keys" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Create an API key</h2><p>Use a separate key for each agent or client. The secret is displayed once.</p></div></div><form class="dash-form" id="api-key-form"><label for="api-key-label">Client label</label><div class="dash-form-row"><input id="api-key-label" name="label" value="Claude Desktop" maxlength="120"><button class="dash-button" type="submit">Create key</button></div></form><div class="dash-key-result" id="api-key-result" hidden><b>Copy this key now. It will not be shown again.</b><code id="api-key-value"></code><button class="dash-button secondary" id="copy-api-key" type="button">Copy key</button><small>Set it as <code>AGENT_ROUTER_API_KEY</code> in your MCP client environment. Never paste it into a chat.</small></div></article><aside class="dash-panel dash-card"><h2>Key hygiene</h2><p>Create one key per client. A key pays only from this account's prepaid balance; it never grants access to provider credentials.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Active API keys</h2><p>Secrets are intentionally never listed or recoverable.</p></div></div><div id="api-key-list"></div></article></section>
+
+          <section class="dash-view" data-panel="activity" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Account activity</h2><p>Top-ups and billable service calls from your account ledger.</p></div></div><div class="dash-activity" id="activity-list"></div></article></section>
+
+          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Production payments use Stripe Checkout. Credits appear after its signed confirmation.</p></div></div><form class="dash-form" id="topup-form"><label for="topup-amount">Amount in USD / credits</label><div class="dash-form-row"><input id="topup-amount" name="amount" type="number" min="0.5" max="10000" step="0.01" value="10.00" required><button class="dash-button" id="topup-button" type="submit">Continue to payment</button></div></form><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Billing model</h2><p>AgentRouter debits after validation and before data delivery. Failed provider calls are automatically refunded.</p><p>Need help with a payment? The error shown here includes the exact next step.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
         </section>
-        <p class="form-status" id="account-status" role="status"></p>
       </main>
       <script>
-        const statusNode = document.getElementById("account-status");
-        async function loadCredits() {
-          const response = await fetch("/account/credits");
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error?.message || "Could not load credits.");
-          document.getElementById("credit-balance").textContent = payload.balance;
-          const ledger = payload.ledger || [];
-          document.getElementById("credit-ledger").innerHTML = ledger.length
-            ? ['<div class="ledger-row ledger-labels"><span>Event</span><span>Service</span><span>Change</span><span>Balance</span><span>Time</span></div>', ...ledger.map((entry) =>
-                '<div class="ledger-row"><span>' + escapeAccount(entry.kind) + '</span><span>' + escapeAccount(entry.service_id || "Account") + '</span><span class="' + (String(entry.delta).startsWith("-") ? "debit" : "credit") + '">' + escapeAccount(entry.delta) + '</span><span>' + escapeAccount(entry.balance) + '</span><span>' + escapeAccount(new Date(entry.created_at).toLocaleString()) + '</span></div>'
-              )].join("")
-            : '<div class="empty-row">No credit activity yet.</div>';
+        const dashboardState = { data: null };
+        const viewMeta = { overview:["Overview","Your prepaid balance, agent credentials, and verified service activity in one place."], keys:["API keys","Create and manage client-specific keys without exposing provider credentials."], activity:["Activity","A transparent account ledger for credits and completed paid service calls."], credits:["Credits","Fund your balance through secure checkout and see every balance change."] };
+        const money = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+        const escapeDash = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" })[char]);
+        function renderActivity(target, entries, limit = 12) {
+          target.innerHTML = entries.slice(0, limit).map((entry) => '<div class="dash-row"><span><strong>' + escapeDash(entry.kind === "service_call" ? "Service call" : entry.kind) + '</strong><small>' + escapeDash(entry.service_id || "Account credit") + '</small></span><span class="' + (String(entry.delta).startsWith("-") ? "dash-debit" : "dash-credit") + '">' + escapeDash(entry.delta) + ' credits</span><span>Balance ' + escapeDash(entry.balance) + '</span><span><small>' + escapeDash(new Date(entry.created_at).toLocaleString()) + '</small></span></div>').join("") || '<div class="dash-empty">No account activity yet. Add credits when payments are enabled, then create an API key for your agent.</div>';
         }
-        document.getElementById("topup-form").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          statusNode.textContent = "Creating secure checkout...";
-          const response = await fetch("/account/credits/topup", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ amount: document.getElementById("topup-amount").value })
-          });
-          const payload = await response.json();
-          if (!response.ok) { statusNode.textContent = payload.error?.message || "Top-up failed."; return; }
-          if (payload.checkout_url) { location.href = payload.checkout_url; return; }
-          statusNode.textContent = "Credits added.";
-          await loadCredits();
-        });
-        document.getElementById("api-key-form").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const response = await fetch("/account/api-keys", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ label: document.getElementById("api-key-label").value })
-          });
-          const payload = await response.json();
-          if (!response.ok) { statusNode.textContent = payload.error?.message || "Key creation failed."; return; }
-          document.getElementById("api-key-value").textContent = payload.api_key;
-          document.getElementById("api-key-result").hidden = false;
-        });
-        document.getElementById("copy-api-key").addEventListener("click", async () => {
-          await navigator.clipboard.writeText(document.getElementById("api-key-value").textContent);
-          document.getElementById("copy-api-key").textContent = "Copied";
-        });
-        function escapeAccount(value) {
-          return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" })[char]);
+        function renderDashboard(payload) {
+          dashboardState.data = payload;
+          const summary = payload.summary;
+          document.getElementById("metric-balance").textContent = money(summary.available_credits);
+          document.getElementById("metric-spend").textContent = money(summary.spend_30d);
+          document.getElementById("metric-calls").textContent = summary.successful_paid_calls;
+          document.getElementById("metric-keys").textContent = summary.active_api_keys;
+          renderActivity(document.getElementById("overview-activity"), payload.recent_activity, 5);
+          renderActivity(document.getElementById("activity-list"), payload.recent_activity);
+          renderActivity(document.getElementById("credit-ledger"), payload.recent_activity);
+          document.getElementById("api-key-list").innerHTML = payload.api_keys.length ? '<table class="dash-key-table"><thead><tr><th>Label</th><th>Status</th><th>Created</th><th>Key ID</th></tr></thead><tbody>' + payload.api_keys.map((key) => '<tr><td>' + escapeDash(key.label) + '</td><td><span class="dash-badge">' + escapeDash(key.status) + '</span></td><td>' + escapeDash(new Date(key.created_at).toLocaleDateString()) + '</td><td>' + escapeDash(key.key_id) + '</td></tr>').join("") + '</tbody></table>' : '<div class="dash-empty">No API keys yet. Create a client-specific key above.</div>';
+          const services = payload.top_services || [];
+          const max = Math.max(...services.map((item) => item.spend_credits), 1);
+          document.getElementById("top-services").innerHTML = services.length ? services.map((item) => '<div class="dash-service"><div class="dash-service-top"><span>' + escapeDash(item.service_id) + '</span><span>' + money(item.spend_credits) + ' credits</span></div><div class="dash-service-bar"><i style="width:' + Math.max(8, Math.round((item.spend_credits / max) * 100)) + '%"></i></div></div>').join("") : '<div class="dash-empty">Service usage will appear after your first successful paid call.</div>';
         }
-        loadCredits().catch((error) => statusNode.textContent = error.message);
+        async function loadDashboard() { const response = await fetch("/account/dashboard"); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message || "Could not load your dashboard."); renderDashboard(payload); }
+        function showView(name) { document.querySelectorAll(".dash-view").forEach((node) => { node.hidden = node.dataset.panel !== name; }); document.querySelectorAll("[data-view]").forEach((node) => node.setAttribute("aria-selected", String(node.dataset.view === name))); document.getElementById("dash-title").textContent = viewMeta[name][0]; document.getElementById("dash-subtitle").textContent = viewMeta[name][1]; }
+        document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
+        document.querySelectorAll("[data-view-link]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewLink)));
+        document.getElementById("topup-form").addEventListener("submit", async (event) => { event.preventDefault(); const status = document.getElementById("account-status"); const button = document.getElementById("topup-button"); button.disabled = true; status.className = "dash-status"; status.textContent = "Creating secure checkout…"; try { const response = await fetch("/account/credits/topup", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ amount:document.getElementById("topup-amount").value }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message || "Top-up failed."); if (payload.checkout_url) { location.href = payload.checkout_url; return; } status.textContent = "Credits added."; await loadDashboard(); } catch (error) { status.className = "dash-status error"; status.textContent = error.message; } finally { button.disabled = false; } });
+        document.getElementById("api-key-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/account/api-keys", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ label:document.getElementById("api-key-label").value }) }); const payload = await response.json(); if (!response.ok) { alert(payload.error?.message || "Key creation failed."); return; } document.getElementById("api-key-value").textContent = payload.api_key; document.getElementById("api-key-result").hidden = false; await loadDashboard(); });
+        document.getElementById("copy-api-key").addEventListener("click", async () => { await navigator.clipboard.writeText(document.getElementById("api-key-value").textContent); document.getElementById("copy-api-key").textContent = "Copied"; });
+        loadDashboard().catch((error) => { const status = document.getElementById("account-status"); status.className = "dash-status error"; status.textContent = error.message; });
       </script>
     `
   });

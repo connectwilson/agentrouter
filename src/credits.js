@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { authUserKey } from "./auth.js";
 import {
   listPersistentCreditLedger,
+  listPersistentCreditApiKeys,
   persistenceEnabled,
   persistentCreditBalance,
   readPersistentCreditAccountByOwner,
@@ -85,6 +86,22 @@ export async function createCreditApiKey(store, { account, label = "AgentRouter 
     api_key: rawKey,
     created_at: saved.created_at
   };
+}
+
+export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) {
+  const rows = persistenceEnabled()
+    ? await listPersistentCreditApiKeys(accountId, { limit })
+    : [...store.creditApiKeys.values()]
+      .filter((key) => key.account_id === accountId)
+      .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
+      .slice(0, Math.max(1, Math.min(1000, Number(limit) || 100)));
+  return rows.map((key) => ({
+    key_id: key.key_id,
+    label: key.label || "AgentRouter client",
+    created_at: key.created_at,
+    revoked_at: key.revoked_at || null,
+    status: key.revoked_at ? "revoked" : "active"
+  }));
 }
 
 export function creditApiKeyFromRequest(req) {

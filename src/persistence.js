@@ -275,6 +275,21 @@ export async function readPersistentCreditApiKeyByHash(keyHash) {
   return result.rows[0] || null;
 }
 
+export async function listPersistentCreditApiKeys(accountId, { limit = 100 } = {}) {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select key_id, account_id, label, created_at, revoked_at
+     from adn_credit_api_keys
+     where account_id = $1
+     order by created_at desc
+     limit $2`,
+    [accountId, Math.max(1, Math.min(1000, Number(limit) || 100))]
+  );
+  return result.rows;
+}
+
 export async function listPersistentCreditLedger(accountId, { limit = 100 } = {}) {
   if (!persistenceEnabled()) return [];
   const pool = await getPool();
