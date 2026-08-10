@@ -30,3 +30,14 @@ test("client-side router preserves normal navigation boundaries", () => {
   assert.match(page, /\/auth\//);
   assert.match(page, /popstate/);
 });
+
+test("homepage emits only the Naive black-and-white visual system", () => {
+  const page = homeHtml({});
+
+  assert.match(page, /--ar-card:#161616/);
+  assert.match(page, /GeistPixelCircle/);
+  assert.doesNotMatch(page, /--color-accent:#5cff73/);
+  assert.doesNotMatch(page, /--color-accent-cool:#dffcff/);
+  assert.doesNotMatch(page, /--shadow-lift:/);
+  assert.doesNotMatch(page, /border-radius:16px/);
+});
