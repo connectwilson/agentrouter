@@ -61,7 +61,10 @@ test("localhost development login creates a session only when explicitly enabled
   process.env.ADN_AUTH_ALLOW_DEV_LOGIN = "true";
   try {
     await withCreditServer(async ({ store, baseUrl }) => {
-      const loginPage = await fetch(`${baseUrl}/auth/login?return_to=%2Faccount`);
+      const loginRedirect = await fetch(`${baseUrl}/auth/login?return_to=%2Faccount`, { redirect: "manual" });
+      assert.equal(loginRedirect.status, 302);
+      assert.equal(loginRedirect.headers.get("location"), "/?login=1&return_to=%2Faccount");
+      const loginPage = await fetch(`${baseUrl}/?login=1&return_to=%2Faccount`);
       assert.match(await loginPage.text(), /Continue locally/);
 
       const login = await fetch(`${baseUrl}/auth/dev/start?return_to=%2Faccount`, {

@@ -76,7 +76,7 @@ export async function askAgentRouter(store, {
       preview_sample_type: preview?.sample_type || null,
       quote,
       next_step: quote.would_pay
-        ? "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof."
+        ? paymentNextStep(quote)
         : "Increase the max_price budget or choose a lower-cost service."
     };
   }
@@ -148,8 +148,15 @@ function paymentRequiredFromQuote({ task, quoted, protocol }) {
     task,
     next_step: quoted.status === "quote_blocked"
       ? "Increase the max_price budget or choose a lower-cost service."
-      : "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof."
+      : paymentNextStep(quoted)
   };
+}
+
+function paymentNextStep(quote) {
+  if (quote?.quote?.settlement?.backend === "credits" || quote?.settlement?.backend === "credits") {
+    return "Sign in to AgentRouter, add credits, then configure an AgentRouter API key in your MCP client environment. Never paste the key into chat.";
+  }
+  return "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof.";
 }
 
 export async function askAgentRouterRemote({
@@ -222,7 +229,8 @@ export async function askAgentRouterRemote({
 
 export function inferIntent(task) {
   const tagMatch = task.match(/matrixport|binance|jump|wintermute|amber|okx|bybit/i);
-  const token = detectTokenSymbol(task);
+  const tradingPair = detectTradingPair(task);
+  const token = tradingPair?.base_asset || detectTokenSymbol(task);
   const address = detectAddress(task);
   const chain = detectChain(task);
   const window = detectWindow(task);
@@ -287,6 +295,10 @@ export function inferIntent(task) {
   }
   if (wantsLiquidation) {
     input.asset = token || "BTC";
+    if (tradingPair) {
+      input.trading_pair = tradingPair.symbol;
+      input.quote_asset = tradingPair.quote_asset;
+    }
     input.market_type = "perpetual_futures";
     input.window = "current";
     delete input.limit;
@@ -737,6 +749,16 @@ function detectTokenSymbol(task) {
   return null;
 }
 
+function detectTradingPair(task) {
+  const compactPair = String(task || "").toUpperCase().match(/\b([A-Z0-9]{2,15})(USDT|USDC|FDUSD|BUSD)\b/);
+  if (!compactPair) return null;
+  return {
+    base_asset: compactPair[1],
+    quote_asset: compactPair[2],
+    symbol: compactPair[0]
+  };
+}
+
 function isExampleValue(value) {
   if (value === "example") return true;
   if (typeof value === "string" && /^1970-/.test(value)) return true;
@@ -866,6 +888,8 @@ function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
       capability: "perp_liquidation_max_pain",
       params: {
         asset: intent.input.asset || intent.token || "BTC",
+        trading_pair: intent.input.trading_pair,
+        quote_asset: intent.input.quote_asset,
         market_type: "perpetual_futures",
         window: intent.input.window || "current"
       },

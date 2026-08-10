@@ -4,6 +4,7 @@ import { createApifyActorProviderConfig,
   createHostedHttpProviderConfig, createStaticProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
 import { findDuplicateService, registerService, unregisterService, validateService } from "./registry.js";
 import { publicServiceRecord } from "./store.js";
+import { authModalHtml, authModalStyles } from "./auth-modal.js";
 
 export async function createProviderFromStudio(body, store, baseUrl, { user = null, ownerKey = "" } = {}) {
   const serviceId = normalizeId(body.service_id, body.title, "service");
@@ -307,6 +308,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       .nav-links { display: none; }
       h1 { font-size: 36px; }
     }
+    ${authModalStyles()}
   </style>
 </head>
 <body>
@@ -321,7 +323,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       ${user ? `<div class="auth-actions">
         <a class="auth-link signed-in" href="/account">${html(user.name || user.email || "Account")}</a>
         <a class="logout-link" href="/auth/logout">Sign out</a>
-      </div>` : '<a class="auth-link" href="/auth/login?return_to=%2Fstudio">Login</a>'}
+      </div>` : '<a class="auth-link" href="?login=1" data-auth-modal-trigger>Login</a>'}
     </div>
     <div class="hero-copy">
       <div>
@@ -1685,6 +1687,7 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
   }
   })();
   </script>
+  ${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/studio" })}
 </body>
 </html>`;
 }

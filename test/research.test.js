@@ -69,9 +69,11 @@ test("research page and project API are available without social account authori
     assert.match(page, /Creator Research Terminal/);
     assert.match(page, /Local-first privacy/);
     assert.match(page, /登录凭证与原始数据默认留在你的设备上/);
-    const script = page.match(/<script>([\s\S]*)<\/script>/)?.[1];
-    assert.ok(script);
-    assert.doesNotThrow(() => new Function(script));
+    const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    assert.ok(scripts.length >= 1);
+    for (const script of scripts) {
+      assert.doesNotThrow(() => new Function(script));
+    }
 
     const projectResponse = await fetch(`${baseUrl}/research/api/projects`, {
       method: "POST",

@@ -199,10 +199,14 @@ async function routeRequest(req, res, store, baseUrl, {
   publicApiPipelineOptions = {}
 } = {}) {
   const url = new URL(req.url, baseUrl);
+  const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
   const auth = {
     user: currentUser(req, store) || currentApiTokenUser(req),
     providers: authProviders(),
-    devLogin: devLoginAvailable(req, baseUrl)
+    devLogin: devLoginAvailable(req, baseUrl),
+    loginModal: url.searchParams.get("login") === "1",
+    loginError: url.searchParams.get("error") || "",
+    loginReturnTo
   };
   const paymentContext = await paidInvocationContext(req, baseUrl, store);
 
@@ -365,11 +369,12 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "GET" && url.pathname === "/auth/login") {
-    sendHtml(res, 200, loginHtml({
-      auth,
-      error: url.searchParams.get("error") || "",
-      returnTo: safeReturnTo(url.searchParams.get("return_to") || "/")
-    }));
+    const returnTo = safeReturnTo(url.searchParams.get("return_to") || "/");
+    const error = url.searchParams.get("error");
+    const params = new URLSearchParams({ login: "1" });
+    if (returnTo !== "/") params.set("return_to", returnTo);
+    if (error) params.set("error", error);
+    redirect(res, `/?${params.toString()}`);
     return;
   }
 
@@ -1962,9 +1967,12 @@ function localServerPaidInvocationsAllowed(baseUrl) {
 async function paidInvocationContext(req, baseUrl, store) {
   const consumerApiKey = creditApiKeyFromRequest(req);
   const creditIdentity = consumerApiKey ? await authenticateCreditRequest(store, req) : null;
+  const paymentBackend = currentPaymentBackend();
   return {
-    invoke: localServerPaidInvocationsAllowed(baseUrl)
-      || (currentPaymentBackend() === "credits" && Boolean(consumerApiKey)),
+    // Localhost may execute legacy local-payment backends, but credits are
+    // authenticated server-side and must never be attempted without a key.
+    invoke: (paymentBackend !== "credits" && localServerPaidInvocationsAllowed(baseUrl))
+      || (paymentBackend === "credits" && Boolean(consumerApiKey)),
     consumerApiKey,
     ownerKey: creditIdentity?.account?.owner_key || ""
   };
@@ -2020,8 +2028,15 @@ function requestPaymentRequired(result) {
     },
     next_step: result.status === "quote_blocked"
       ? "Increase the max_price budget or choose a lower-cost service."
-      : "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof."
+      : paymentRequiredNextStep(result)
   };
+}
+
+function paymentRequiredNextStep(result) {
+  if (result?.quote?.settlement?.backend === "credits" || result?.settlement?.backend === "credits") {
+    return "Sign in to AgentRouter, add credits, then configure an AgentRouter API key in your MCP client environment. Never paste the key into chat.";
+  }
+  return "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof.";
 }
 
 function paymentBoundaryStatusCode(payload) {

@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.8.0";
+const INSTALLER_VERSION = "0.9.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -45,6 +45,11 @@ export async function installAgentRouter(options = {}) {
     skill_url: skillUrl,
     skill_paths: skillDirs,
     remote_mcp_url: health.remote_mcp || `${origin}/mcp`,
+    payment: {
+      mode: "prepaid_credits",
+      account_url: `${origin}/account`,
+      local_wallet_created: false
+    },
     updates: "Hosted capabilities, providers, routing, and tools update automatically."
   };
 
@@ -178,6 +183,8 @@ export function formatInstallResult(result) {
       "Local MCP bridge configured. Reload the AI client once to activate local browser routing.",
       ...formatBrowserConnectorLines(result.browser_connector),
       "No local wallet was created. Hosted paid calls use AgentRouter account credits.",
+      `For paid calls, sign in and manage credits at: ${result.payment.account_url}`,
+      "Never paste an AgentRouter API key into an AI chat; store it only in the local client configuration or a future secure-connect flow.",
       "Reload the AI client once if the new tools are not visible yet."
     ].join("\n") + "\n";
   }
@@ -186,6 +193,7 @@ export function formatInstallResult(result) {
     `Skill installed: ${result.skill_paths.join(", ")}`,
     `Runtime verified: ${result.health_url}`,
     "No MCP configuration or local wallet was changed.",
+    `For paid calls, sign in and manage credits at: ${result.payment.account_url}`,
     "Ask a normal data/API question to use AgentRouter."
   ].join("\n") + "\n";
 }

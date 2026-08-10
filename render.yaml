@@ -19,6 +19,8 @@ services:
         value: 0x2c4d600a04c0d3bbb1e3cc8a13e54e21c2b6c0bb
       - key: ADN_PROVIDER_SECRET_PASSPHRASE
         sync: false
+      - key: ADN_ADMIN_API_TOKEN
+        sync: false
       - key: ADN_ARC_RPC_URL
         value: https://rpc.testnet.arc.network
       - key: ADN_ARC_ANCHOR_CONTRACT
@@ -51,6 +53,8 @@ services:
       - key: GITHUB_CLIENT_SECRET
         sync: false
       - key: ADN_PROVIDER_SECRET_PASSPHRASE
+        sync: false
+      - key: ADN_ADMIN_API_TOKEN
         sync: false
       - key: ADN_ARC_RPC_URL
         value: https://rpc.testnet.arc.network

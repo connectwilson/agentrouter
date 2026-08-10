@@ -1,3 +1,5 @@
+import { authModalHtml, authModalStyles } from "./auth-modal.js";
+
 const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
   "mcpServers": {
@@ -397,8 +399,6 @@ export function humanHtml({ auth = {} } = {}) {
 }
 
 function humanGuestHtml({ auth = {} } = {}) {
-  const configuredProvider = (auth.providers || []).find((provider) => provider.configured);
-  const loginHref = configuredProvider ? `/auth/${configuredProvider.id}/start?return_to=%2Fstudio` : "/auth/login?return_to=%2Fstudio";
   return appPage({
     title: "For human",
     subtitle: "Publish data/API services after signing in.",
@@ -414,7 +414,7 @@ function humanGuestHtml({ auth = {} } = {}) {
               <p>Sign in to see the APIs you have uploaded, edit provider metadata, track calls, and view USDC received. Public visitors only see this introduction, not provider dashboards or private inventory.</p>
             </div>
             <div class="provider-actions">
-              <a class="button primary" href="${html(loginHref)}">Add data/API</a>
+              <a class="button primary" href="?login=1&amp;return_to=%2Fstudio" data-auth-modal-trigger data-auth-return-to="/studio">Add data/API</a>
               <a class="button ghost" href="/agent">Browse public services</a>
             </div>
           </section>
@@ -1013,7 +1013,7 @@ function page({ title, auth = {}, body }) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${html(title)}</title>
   ${faviconLinks()}
-  <style>${styles()}</style>
+  <style>${styles()}${authModalStyles()}</style>
 </head>
 <body>
   <div class="topbar">
@@ -1028,13 +1028,14 @@ function page({ title, auth = {}, body }) {
       ${user ? `<div class="auth-actions">
         <a class="auth-link signed-in" href="/account">${html(user.name || user.email || "Account")}</a>
         <a class="logout-link" href="/auth/logout">Sign out</a>
-      </div>` : '<a class="auth-link" href="/auth/login?return_to=%2Faccount">LOGIN</a>'}
+      </div>` : '<a class="auth-link" href="?login=1" data-auth-modal-trigger>LOGIN</a>'}
     </div>
   </div>
   ${body}
   <footer class="footer">
     <div class="shell">AgentRouter Markets · <a href="/research">Creator Research</a> · <a href="/human">For human</a> · <a href="/agent">For agent</a> · <a href="/studio">Provider Studio</a></div>
   </footer>
+  ${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/" })}
 </body>
 </html>`;
 }

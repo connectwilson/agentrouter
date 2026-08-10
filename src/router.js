@@ -1,6 +1,6 @@
 import { invokePaidService, searchServices } from "./registry.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
-import { createPaymentQuote } from "./payment-adapter.js";
+import { createPaymentQuote, effectivePricing } from "./payment-adapter.js";
 import { createEvidenceEnvelope } from "./evidence.js";
 import { anchorEvidenceOnArc } from "./arc-anchor.js";
 import { summarizeHealth, summarizeProvenance, summarizeTrust } from "./store.js";
@@ -136,7 +136,9 @@ const CAPABILITY_ALIASES = [
       type: "object",
       required: ["asset", "market_type", "window"],
       properties: {
-        asset: { type: "string", enum: ["BTC", "ETH", "SOL"] },
+        // Actual asset coverage comes from the selected provider's schema.
+        // A global BTC/ETH/SOL enum rejected valid pairs before routing.
+        asset: { type: "string", pattern: "^[A-Z0-9]{2,15}$" },
         market_type: { type: "string", enum: ["perpetual_futures"] },
         window: { type: "string", enum: ["current", "1h", "4h"] }
       }
@@ -797,7 +799,8 @@ export function quoteCapabilityRequest(store, {
 function createQuoteFeedbackRequest({ quote, selectedService, request }) {
   return {
     request_version: "agentrouter_quote_feedback_request_v1",
-    must_submit_if_not_invoked: true,
+    recommended_if_not_invoked: true,
+    must_submit_if_not_invoked: false,
     endpoint: "/agent-router/quote-feedback",
     quote_id: quote.quote_id,
     service_id: selectedService?.service_id || quote.service_id,
@@ -890,6 +893,7 @@ export function rankCandidates(store, intent, constraints = {}) {
 
 function detectIntent(text) {
   const asset = detectAsset(text);
+  const tradingPair = detectTradingPair(text);
   const chain = detectChain(text);
   const days = detectDays(text);
   const tokenSmartMoneyActivity = Boolean(asset) && /smart[\s_-]?money|聪明钱/i.test(text) && /动向|动态|activity|movement|flow|flows|买|卖|bought|sold|近|过去|24\s*h|24\s*小时/i.test(text);
@@ -905,6 +909,8 @@ function detectIntent(text) {
     intent: {
       capability,
       asset,
+      quote_asset: tradingPair?.quote_asset,
+      trading_pair: tradingPair?.symbol,
       token_symbol: capability === "token_smart_money_activity" ? asset : undefined,
       window: capability === "token_smart_money_activity" ? "24h" : undefined,
       chain,
@@ -1078,7 +1084,9 @@ function scoreCandidate(record, intent, requiredCapabilities, constraints, match
     service_id: manifest.service_id,
     title: manifest.title,
     provider_id: manifest.provider.provider_id,
-    pricing: manifest.pricing,
+    candidate_group: candidateGroupForManifest(manifest),
+    // Expose the active settlement network, not a provider's stale default.
+    pricing: effectivePricing(manifest),
     trust_score: Number(trustScore.toFixed(4)),
     consumer_feedback_count: trust.consumer_feedback_count,
     recent_failure_rate: trust.recent_failure_rate,
@@ -1156,22 +1164,50 @@ function serviceCoversRequestedAsset(manifest, intent) {
   return true;
 }
 
-function summarizeCandidates(candidates) {
-  return candidates.map(({ service_id, title, provider_id, pricing, trust_score, routing_score, selection_reason, health_status, circuit_breaker, source_provenance_level, recent_failure_rate, consumer_feedback_count, selection_badges }) => ({
-    service_id,
-    title,
-    provider_id,
-    pricing,
-    trust_score,
-    health_status,
-    circuit_breaker,
-    source_provenance_level,
-    recent_failure_rate,
-    consumer_feedback_count,
-    selection_badges,
-    routing_score,
-    selection_reason
-  }));
+export function summarizeCandidates(candidates = []) {
+  const groups = new Map();
+  for (const candidate of candidates) {
+    const key = [
+      candidate.provider_id || "",
+      candidate.candidate_group || candidate.service_id,
+      candidate.pricing?.amount || "",
+      candidate.pricing?.currency || "",
+      candidate.pricing?.network || ""
+    ].join("|");
+    const group = groups.get(key) || [];
+    group.push(candidate);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].map((group) => {
+    const best = group[0];
+    const equivalentServiceIds = group.slice(1).map((item) => item.service_id);
+    return {
+      service_id: best.service_id,
+      title: best.title,
+      provider_id: best.provider_id,
+      pricing: best.pricing,
+      trust_score: best.trust_score,
+      health_status: best.health_status,
+      circuit_breaker: best.circuit_breaker,
+      source_provenance_level: best.source_provenance_level,
+      recent_failure_rate: best.recent_failure_rate,
+      consumer_feedback_count: best.consumer_feedback_count,
+      selection_badges: best.selection_badges,
+      routing_score: best.routing_score,
+      selection_reason: best.selection_reason,
+      equivalent_service_count: group.length,
+      equivalent_service_ids: equivalentServiceIds
+    };
+  });
+}
+
+function candidateGroupForManifest(manifest = {}) {
+  const capabilities = manifest.capabilities || [];
+  if (capabilities.some((capability) => /liquidation|heatmap|crypto_derivatives/.test(capability))) {
+    return "crypto_liquidation";
+  }
+  return capabilities.filter((capability) => capability !== "data_service").sort().join(",") || manifest.service_id;
 }
 
 function createRouteDecision({
@@ -1231,7 +1267,10 @@ function routeNextAction({ status, exactMatch, quote, alternatives, preflight, v
       ? "ask_user_to_confirm_alternative"
       : "report_no_exact_match";
   }
-  if (quote?.would_pay) return "pay_and_invoke_with_local_wallet";
+  if (quote?.would_pay && !quote?.agent_decision?.execution_available) {
+    return "connect_credits_or_configure_local_payment";
+  }
+  if (quote?.would_pay) return "invoke_agentrouter_request";
   if (status === "quote_blocked") return "increase_budget_or_choose_lower_cost_service";
   return "invoke_or_return_result";
 }
@@ -1389,7 +1428,7 @@ function recordRouteObservation(store, {
   return observation;
 }
 
-function buildInput(manifest, intent) {
+export function buildInput(manifest, intent) {
   const entry = CAPABILITY_ALIASES.find((item) => item.capability === intent.capability);
   if (!entry) {
     return {
@@ -1403,6 +1442,20 @@ function buildInput(manifest, intent) {
   };
   if (intent.capability === "token_smart_money_activity") {
     return filterInputToManifestShape(input, manifest, providerInputAllowlist(manifest, intent));
+  }
+  if (intent.capability === "perp_liquidation_max_pain") {
+    const properties = manifest.input_schema?.properties || {};
+    const allowed = new Set([
+      ...Object.keys(manifest.sample_request || {}),
+      ...Object.keys(properties)
+    ]);
+    const asset = String(intent.asset || "").toUpperCase();
+    const tradingPair = String(intent.trading_pair || asset).toUpperCase();
+    if (allowed.has("symbol")) input.symbol = tradingPair;
+    if (allowed.has("asset")) input.asset = asset;
+    if (allowed.has("trading_pair")) input.trading_pair = tradingPair;
+    if (allowed.has("pair")) input.pair = tradingPair;
+    return filterInputToManifestShape(input, manifest);
   }
   return input;
 }
@@ -1947,10 +2000,22 @@ function ambiguityNotesFor(capability) {
 }
 
 function detectAsset(text) {
+  const pair = detectTradingPair(text);
+  if (pair) return pair.base_asset;
   if (/\bbitcoin\b/i.test(text)) return "BTC";
   if (/\bethereum\b/i.test(text)) return "ETH";
   const match = text.match(/\b(btc|eth|sol|bnb|xrp|doge|hype)\b/i);
   return match ? match[1].toUpperCase() : undefined;
+}
+
+function detectTradingPair(text) {
+  const match = String(text || "").toUpperCase().match(/\b([A-Z0-9]{2,15})(USDT|USDC|FDUSD|BUSD)\b/);
+  if (!match) return null;
+  return {
+    symbol: `${match[1]}${match[2]}`,
+    base_asset: match[1],
+    quote_asset: match[2]
+  };
 }
 
 function coinGeckoIdForAsset(asset) {

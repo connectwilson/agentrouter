@@ -1,3 +1,5 @@
+import { authModalHtml, authModalStyles } from "./auth-modal.js";
+
 const PLATFORMS = new Set(["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"]);
 const STANCES = new Set(["support", "oppose", "neutral"]);
 
@@ -84,7 +86,7 @@ export function normalizeSocialEvidenceItem(input = {}) {
 export function researchHtml(auth = {}) {
   const authNavigation = auth.user
     ? `<span title="${escapeHtml(auth.user.email || auth.user.provider || "")}">${escapeHtml(auth.user.name || auth.user.handle || "已登录")}</span><a href="/auth/logout">退出登录</a>`
-    : `<a href="/auth/login?return_to=%2Fresearch">登录</a>`;
+    : `<a href="?login=1" data-auth-modal-trigger>登录</a>`;
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -103,6 +105,7 @@ export function researchHtml(auth = {}) {
     .columns{display:grid;grid-template-columns:1fr 1fr;gap:10px}.brief-box{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:13px;min-height:120px}.brief-box h4{margin:0 0 8px;font-size:11px}.brief-box p,.brief-box li{font-size:11px;color:var(--muted);line-height:1.6}.brief-box ul{margin:0;padding-left:17px}.empty-small{color:var(--muted);font-size:11px;padding:24px;text-align:center;border:1px dashed var(--line);border-radius:8px}.connection-list{display:grid;gap:8px;margin-top:12px}.connection-row{border:1px solid var(--line);border-radius:7px;padding:10px;display:flex;justify-content:space-between;gap:12px}.connection-row small{display:block;color:var(--muted);margin-top:4px}
     dialog{width:min(620px,calc(100vw - 30px));border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:10px;padding:0;box-shadow:0 28px 80px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.72)}.dialog-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.dialog-head h3{margin:0;font-size:14px}.dialog-body{padding:18px}.dialog-foot{padding:13px 18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:7px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     @media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{position:static}.metric-grid{grid-template-columns:1fr 1fr}.hero{align-items:flex-start;flex-direction:column}.columns{grid-template-columns:1fr}}@media(max-width:560px){.shell{padding:0 14px}.hero h1{font-size:27px}.metric-grid,.grid2{grid-template-columns:1fr}.actions{flex-wrap:wrap}.project-head{flex-direction:column}}
+    ${authModalStyles()}
   </style>
 </head>
 <body>
@@ -168,6 +171,7 @@ export function researchHtml(auth = {}) {
     function exportJson(){if(!project)return;const blob=new Blob([JSON.stringify(project,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="creator-research-"+project.project_id+".json";a.click();URL.revokeObjectURL(url)}
     function save(){localStorage.setItem(storageKey,JSON.stringify(project))}try{const stored=JSON.parse(localStorage.getItem(storageKey));if(stored?.project_version){project=stored;el("question").value=project.question||"";render()}}catch{}
   </script>
+${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/research" })}
 </body></html>`;
 }
 

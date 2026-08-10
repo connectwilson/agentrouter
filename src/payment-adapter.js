@@ -1,9 +1,13 @@
 export const PAYMENT_BACKENDS = ["credits", "x402", "omniagentpay", "circle_arc"];
 
 export function currentPaymentBackend() {
-  const backend = process.env.ADN_PAYMENT_BACKEND || process.env.ADN_PAYMENT_MODE || "circle_arc";
+  // Hosted MCP is the default new-user path. It can authenticate prepaid
+  // credits, but it deliberately does not receive a local wallet. Keep Arc
+  // settlement as an explicit advanced mode instead of advertising a payment
+  // executor that is not present in the published bridge.
+  const backend = process.env.ADN_PAYMENT_BACKEND || process.env.ADN_PAYMENT_MODE || "credits";
   if (backend === "real") return "x402";
-  return PAYMENT_BACKENDS.includes(backend) ? backend : "circle_arc";
+  return PAYMENT_BACKENDS.includes(backend) ? backend : "credits";
 }
 
 export function describePaymentBackend() {
@@ -22,7 +26,7 @@ export function describePaymentBackend() {
   };
 }
 
-export function createPaymentQuote({ manifest, constraints = {}, selectedService }) {
+export function createPaymentQuote({ manifest, constraints = {}, selectedService, paymentExecutorAvailable = false }) {
   const maxPrice = constraints.max_price_usdc || constraints.max_price || constraints.max_amount;
   const pricing = effectivePricing(manifest);
   const price = Number(pricing.amount);
@@ -31,11 +35,23 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
   const verified = selectedService?.selection_badges?.includes("verified_live_endpoint") || selectedService?.verification_status === "verified";
   const healthy = !selectedService?.health_status || ["healthy", "unknown"].includes(selectedService.health_status);
   const hasBudget = maxPrice != null && maxPrice !== "";
-  const autoInvokeAllowed = Boolean(allowed && hasBudget && verified && healthy);
+  const paymentAuthorizedByBudget = Boolean(allowed && hasBudget);
+  const executionAvailable = Boolean(paymentAuthorizedByBudget && paymentExecutorAvailable);
+  const autoInvokeAllowed = Boolean(executionAvailable && verified && healthy);
+  const paymentBackend = describePaymentBackend();
+  const settlement = {
+    backend: paymentBackend.backend,
+    network: pricing.network || null,
+    caip2: pricing.caip2 || null,
+    chain_id: pricing.chain_id || null,
+    protocol: pricing.protocol || null,
+    settlement_model: pricing.settlement_model || null
+  };
   return {
     quote_version: "agent_router_payment_quote_v1",
     quote_id: `quote_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
-    payment_backend: describePaymentBackend(),
+    payment_backend: paymentBackend,
+    settlement,
     service_id: manifest.service_id,
     provider_id: manifest.provider.provider_id,
     selected_service: selectedService || null,
@@ -52,8 +68,11 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
       decision_version: "agentrouter_quote_decision_v1",
       quote_status: allowed ? "quote_ready" : "quote_blocked",
       can_answer: allowed,
+      payment_authorized_by_budget: paymentAuthorizedByBudget,
+      payment_executor_available: Boolean(paymentExecutorAvailable),
+      execution_available: executionAvailable,
       auto_invoke_allowed: autoInvokeAllowed,
-      requires_additional_user_confirmation: !autoInvokeAllowed,
+      requires_additional_user_confirmation: !allowed,
       user_budget_policy: {
         policy_version: "agentrouter_budget_policy_v1",
         source: hasBudget ? "caller_configured_max_price" : "missing_explicit_budget",
@@ -62,11 +81,13 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
       },
       expected_data: expectedDataForManifest(manifest),
       why_paid_data_is_justified: paidDataJustification(manifest),
-      main_agent_next_action: autoInvokeAllowed
-        ? "invoke_agentrouter_request"
-        : allowed
-          ? "ask_user_to_confirm_paid_call_or_configure_budget_policy"
-          : "ask_user_to_raise_budget_or_choose_free_answer",
+      main_agent_next_action: !allowed
+        ? "ask_user_to_raise_budget_or_choose_free_answer"
+        : !executionAvailable
+          ? "connect_credits_or_configure_local_payment"
+          : autoInvokeAllowed
+            ? "invoke_agentrouter_request"
+            : "ask_user_to_confirm_paid_call_or_configure_budget_policy",
       do_not_use_provider_direct_fallback: true
     },
     reason: allowed

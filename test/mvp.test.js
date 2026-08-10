@@ -588,7 +588,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.8.0");
+    assert.equal(packageJson.version, "0.9.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -667,6 +667,11 @@ test("public agentrouter installer migrates an existing legacy bridge before cho
       CURSOR_TRACE_ID: "",
       CURSOR_SESSION_ID: "",
       CURSOR_MCP_CONFIG: "",
+      CODEX_SANDBOX: "",
+      CODEX_SANDBOX_NETWORK_DISABLED: "",
+      CODEX_THREAD_ID: "",
+      CODEX_HOME: "",
+      CODEX_MCP_CONFIG: "",
       CLAUDE_DESKTOP: "",
       CLAUDE_DESKTOP_MCP_CONFIG: "",
       AGENTROUTER_SKIP_BROWSER_SETUP: "1"
@@ -1638,19 +1643,23 @@ test("AgentRouter quote simulates route and payment guards without invoking prov
     assert.equal(quoted.exact_match, true);
     assert.equal(quoted.selected_service.service_id, "btc_liquidation_max_pain_demo");
     assert.equal(quoted.preflight_validation.ok, true);
-    assert.equal(quoted.route_decision.next_action, "pay_and_invoke_with_local_wallet");
+    assert.equal(quoted.route_decision.next_action, "connect_credits_or_configure_local_payment");
     assert.equal(quoted.route_decision.main_agent_policy.payment_required_is_not_failure, true);
     assert.equal(quoted.route_decision.main_agent_policy.do_not_blind_invoke_alternatives, true);
     assert.equal(quoted.quote.would_pay, true);
     assert.equal(quoted.quote.guard_result, "pass");
     assert.equal(quoted.quote.payment_backend.backend, "circle_arc");
     assert.equal(quoted.quote.agent_decision.quote_status, "quote_ready");
-    assert.equal(quoted.quote.agent_decision.auto_invoke_allowed, true);
+    assert.equal(quoted.quote.agent_decision.payment_authorized_by_budget, true);
+    assert.equal(quoted.quote.agent_decision.payment_executor_available, false);
+    assert.equal(quoted.quote.agent_decision.execution_available, false);
+    assert.equal(quoted.quote.agent_decision.auto_invoke_allowed, false);
     assert.equal(quoted.quote.agent_decision.requires_additional_user_confirmation, false);
     assert.match(quoted.quote.agent_decision.why_paid_data_is_justified, /public/i);
     assert.ok(quoted.quote.agent_decision.expected_data.length > 0);
-    assert.equal(quoted.quote.agent_decision.main_agent_next_action, "invoke_agentrouter_request");
-    assert.equal(quoted.quote_feedback_request.must_submit_if_not_invoked, true);
+    assert.equal(quoted.quote.agent_decision.main_agent_next_action, "connect_credits_or_configure_local_payment");
+    assert.equal(quoted.quote_feedback_request.recommended_if_not_invoked, true);
+    assert.equal(quoted.quote_feedback_request.must_submit_if_not_invoked, false);
     assert.equal(quoted.result, undefined);
     const feedback = await fetch(`${baseUrl}/services/btc_liquidation_max_pain_demo/feedback`).then((res) => res.json());
     assert.equal(feedback.length, 0);

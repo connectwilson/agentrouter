@@ -53,3 +53,26 @@ Paid results should return an `agent_data_envelope_v1`-style object:
 - `limitations`
 
 The exact provider data can vary by service, but the envelope gives the calling agent stable places to inspect freshness, confidence, limitations, and source metadata.
+
+## Distribution Channels
+
+AgentRouter reaches agent clients through two complementary channels.
+
+**Installer** (`packages/agentrouter-installer`, one command: `npx @agentrouternetwork/agentrouter`). Hand-writes the Skill and an MCP entry into one detected current-user client and verifies the hosted runtime. It knows nine client config formats (standard `mcpServers` JSON, Codex TOML, OpenClaw `mcp.servers`, opencode argv-array + `environment`, WorkBuddy `.mcp.json` dotfile, and more). The Agent Plugins standard leaves distribution and installation out of scope, and most of AgentRouter's current target clients — Claude Code, Claude Desktop, Hermes, opencode, OpenClaw, WorkBuddy, Windsurf, Gemini CLI — are not yet on the launch support list, so the installer remains the primary path for those.
+
+**Agent Plugins package** (`plugin/`). A spec-conformant Agent Plugins 1.0.0 bundle that any conformant client (ChatGPT, Codex, Cursor, GitHub Copilot, VS Code, Kiro) can install as one artifact. Layout per the spec's fixed locations:
+
+```
+plugin/
+  plugin.json                     # manifest (metadata only; $schema + name required)
+  mcp.json                        # MCP server declarations
+  skills/agentrouter/SKILL.md     # Agent Skill
+```
+
+- `plugin.json` is metadata only — skills and MCP servers are found at the fixed `skills/` and `mcp.json` locations; the schema is `additionalProperties: false` and declares no `skills`/`mcpServers` fields.
+- `mcp.json` declares the **stdio** bridge running `@agentrouternetwork/mcp@latest`. Both modes are expressible here, but the plugin ships stdio specifically so the free local-browser reads (X, YouTube, Bilibili, Reddit, Xiaohongshu, Zhihu, Weibo, TikTok via OpenCLI) survive — a remote-only `streamable-http` plugin would silently lose the product's main differentiator against resold-scraping competitors.
+- `plugin/skills/agentrouter/SKILL.md` is synced from the hosted skill (`GET /SKILL.md`); `scripts/sync-plugin-skill.js` (`npm run plugin:skill:sync`) refreshes it, and `test/agent-plugin.test.js` fails on drift.
+
+Keeping the two channels in sync is deliberate: the installer serves clients without plugin support; the plugin serves conformant clients. They should not diverge in the Skill or bridge package they install.
+
+A separate remote-only plugin variant is **not** shipped today. In sandboxes or serverless environments that cannot spawn local processes, the `mcp.json` stdio server can be swapped in place to `streamable-http → https://agentrouter.network/mcp` (see `plugin/README.md` → "Deprovision / downgrade to remote-only"). That one-line swap is the supported path until a concrete client needs its own remote variant; it intentionally trades away the free local-browser reads for portability.
