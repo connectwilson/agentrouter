@@ -54,6 +54,10 @@ const clientLogoPaths = {
   "windsurf.svg": new URL("../public/assets/client-logos/windsurf.svg", import.meta.url)
 };
 const brandLogoPath = new URL("../public/assets/brand/logo.png", import.meta.url);
+const designFontPaths = {
+  "GeistPixel_Circle.woff2": new URL("../public/assets/fonts/GeistPixel_Circle.woff2", import.meta.url),
+  "GeistPixel_Square.woff2": new URL("../public/assets/fonts/GeistPixel_Square.woff2", import.meta.url)
+};
 const agentRouterSkillPath = new URL("../claude-skills/agent-router/SKILL.md", import.meta.url);
 const remoteMcpTools = [
   {
@@ -212,6 +216,11 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/assets/client-logos/")) {
     await sendClientLogo(req, res, url);
+    return;
+  }
+
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/assets/fonts/")) {
+    await sendDesignFont(req, res, url);
     return;
   }
 
@@ -1680,6 +1689,23 @@ async function sendBrandLogo(req, res) {
     res.end(req.method === "HEAD" ? undefined : body);
   } catch {
     sendNotFound(res, "BRAND_LOGO_NOT_FOUND");
+  }
+}
+
+async function sendDesignFont(req, res, url) {
+  const fileName = decodeURIComponent(url.pathname.replace("/assets/fonts/", ""));
+  const filePath = designFontPaths[fileName];
+  if (!filePath) return sendNotFound(res, "DESIGN_FONT_NOT_FOUND");
+  try {
+    const body = await fs.readFile(filePath);
+    res.writeHead(200, {
+      "content-type": "font/woff2",
+      "cache-control": "public, max-age=86400",
+      "content-length": body.length
+    });
+    res.end(req.method === "HEAD" ? undefined : body);
+  } catch {
+    sendNotFound(res, "DESIGN_FONT_NOT_FOUND");
   }
 }
 

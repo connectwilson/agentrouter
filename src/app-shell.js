@@ -4,6 +4,8 @@
 
 export function naiveDesignSystemStyles() {
   return `
+    @font-face { font-family:"GeistPixelCircle"; src:url("/assets/fonts/GeistPixel_Circle.woff2") format("woff2"); font-style:normal; font-weight:500; font-display:swap; }
+    @font-face { font-family:"GeistPixelSquare"; src:url("/assets/fonts/GeistPixel_Square.woff2") format("woff2"); font-style:normal; font-weight:500; font-display:swap; }
     :root {
       color-scheme:dark;
       --ar-bg:#000000;
@@ -15,6 +17,9 @@ export function naiveDesignSystemStyles() {
       --ar-muted:#8a8a8a;
       --ar-border:rgb(255 255 255 / .07);
       --ar-border-light:rgb(255 255 255 / .14);
+      --ar-button-small:32px;
+      --ar-button-default:40px;
+      --ar-button-large:48px;
       --ar-display:"GeistPixelCircle", "Geist Mono", ui-monospace, monospace;
       --ar-sans:"Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --ar-mono:"Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -45,12 +50,16 @@ export function naiveDesignSystemStyles() {
     body[data-agentrouter-app] .brand-word { font-size:18px; letter-spacing:-.04em; }
     body[data-agentrouter-app] .brand-prompt { color:var(--ar-muted); font-family:var(--ar-mono); font-weight:400; }
     body[data-agentrouter-app] .brand-caret { color:var(--ar-text); animation:ar-blink 1.1s steps(1) infinite; }
-    body[data-agentrouter-app] .nav-links, body[data-agentrouter-app] .nav-links a, body[data-agentrouter-app] .logout-link { color:var(--ar-secondary); font-family:var(--ar-mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+    body[data-agentrouter-app] .nav-links, body[data-agentrouter-app] .nav-links a, body[data-agentrouter-app] .logout-link { color:var(--ar-secondary); font-family:var(--ar-mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
     body[data-agentrouter-app] .nav-links a:hover, body[data-agentrouter-app] .nav-links a:focus-visible { color:var(--ar-text); border-bottom-color:var(--ar-text); }
-    body[data-agentrouter-app] .auth-link, body[data-agentrouter-app] .button, body[data-agentrouter-app] .hero-cta, body[data-agentrouter-app] .path-action, body[data-agentrouter-app] .dash-button { border-radius:0; border-color:var(--ar-border-light); background:var(--ar-text); color:#000; font-family:var(--ar-mono); font-size:11px; font-weight:500; letter-spacing:.08em; text-transform:uppercase; }
+    body[data-agentrouter-app] .auth-link, body[data-agentrouter-app] .button, body[data-agentrouter-app] .hero-cta, body[data-agentrouter-app] .path-action, body[data-agentrouter-app] .dash-button { border-radius:0; border-color:var(--ar-border-light); background:var(--ar-text); color:#000; font-family:var(--ar-mono); font-size:12px; font-weight:400; letter-spacing:.08em; text-transform:uppercase; }
+    body[data-agentrouter-app] .auth-link { min-height:var(--ar-button-small); height:var(--ar-button-small); padding:0 14px; }
+    body[data-agentrouter-app] .button, body[data-agentrouter-app] .path-action, body[data-agentrouter-app] .dash-button { min-height:var(--ar-button-default); height:var(--ar-button-default); padding:0 18px; }
+    body[data-agentrouter-app] .hero-cta { min-height:var(--ar-button-large); height:var(--ar-button-large); padding:0 26px; }
     body[data-agentrouter-app] .auth-link:hover, body[data-agentrouter-app] .button:hover, body[data-agentrouter-app] .hero-cta:hover, body[data-agentrouter-app] .path-action:hover { background:#e6e6e6; border-color:#e6e6e6; }
     body[data-agentrouter-app] .button.ghost, body[data-agentrouter-app] .button.secondary, body[data-agentrouter-app] .dash-button.secondary { background:transparent; color:var(--ar-text); border-color:var(--ar-border-light); }
     body[data-agentrouter-app] .hero, body[data-agentrouter-app] .app-header { background:var(--ar-bg); }
+    body[data-agentrouter-app] .hero h1 { max-width:900px; font-size:clamp(40px, 5.5vw, 56px); font-weight:400; letter-spacing:-1.4px; line-height:1.1; }
     body[data-agentrouter-app] .dot-grid, body[data-agentrouter-app] .app-header::before { border-color:var(--ar-border); background-image:radial-gradient(rgb(255 255 255 / .28) .7px, transparent .7px); }
     body[data-agentrouter-app] .lead, body[data-agentrouter-app] p, body[data-agentrouter-app] .install-note { color:var(--ar-secondary); }
     body[data-agentrouter-app] .install-strip, body[data-agentrouter-app] .code-preview, body[data-agentrouter-app] pre { border-radius:0; border-color:var(--ar-border-light); background:var(--ar-elevated); box-shadow:none; }
