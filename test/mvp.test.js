@@ -19,7 +19,7 @@ process.env.ADN_ERC8004_MODE = "mock";
 process.env.ADN_ERC8004_AGENT_ID = "1001";
 process.env.ADN_PROVIDER_RECEIVE_ADDRESS = "0x2c4d600a04c0d3bbb1e3cc8a13e54e21c2b6c0bb";
 
-const { createServer, seedDemoService } = await import("../src/server.js");
+const { createServer, publicApiAutomationOptions, seedDemoService } = await import("../src/server.js");
 const { loadProviderConfigs, registerService, searchServices } = await import("../src/registry.js");
 const { withCurrentRuntimeEndpoint } = await import("../src/registry.js");
 const { baseFundFlowManifest } = await import("../src/fixtures.js");
@@ -1635,6 +1635,13 @@ test("AgentRouter category endpoint returns only populated, mutually-exclusive c
     );
     assert.ok(payload.categories.every((entry) => !["Animals", "Finance", "Weather"].includes(entry.category)));
   });
+});
+
+test("Public API automation keeps draining validated candidates instead of waiting a day", () => {
+  const options = publicApiAutomationOptions({});
+  assert.equal(options.validationLimit, 50);
+  assert.equal(options.refreshIntervalMs, 5 * 60 * 1000);
+  assert.equal(options.catalogRefreshIntervalMs, 24 * 60 * 60 * 1000);
 });
 
 test("AgentRouter quote simulates route and payment guards without invoking provider", async () => {
