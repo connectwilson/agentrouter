@@ -1517,3 +1517,27 @@ function html(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+const PUBLIC_API_SOURCE_CATEGORIES = [
+  "Animals", "Anime", "Anti-Malware", "Art & Design", "Authentication & Authorization",
+  "Blockchain", "Books", "Business", "Calendar", "Cloud Storage & File Sharing",
+  "Continuous Integration", "Cryptocurrency", "Currency Exchange", "Data Validation", "Development",
+  "Dictionaries", "Documents & Productivity", "Email", "Entertainment", "Environment", "Events",
+  "Finance", "Food & Drink", "Games & Comics", "Geocoding", "Government", "Health", "Jobs",
+  "Machine Learning", "Music", "News", "Open Data", "Science & Math", "Security", "Social",
+  "Sports & Fitness", "Test Data", "Text Analysis", "Tracking", "Transportation", "Video", "Weather"
+];
+
+function publicApiSourceCategoryLinks() {
+  return PUBLIC_API_SOURCE_CATEGORIES.map((category) =>
+    `<a class="category source-category" href="/public-apis?category=${encodeURIComponent(category)}">${html(category)}</a>`
+  ).join("");
+}
+
+              <div class="rail-note source-taxonomy">
+                <strong>Sources</strong>
+                <span>Public APIs catalog</span>
+                <div class="category-row vertical">${publicApiSourceCategoryLinks()}</div>
+                <a class="category source-category" href="/public-apis">All Public APIs coverage</a>
+              </div>
+        const publicApiCategory = new URLSearchParams(location.search).get("category") || "";
+          if (publicApiCategory) params.set("category", publicApiCategory);

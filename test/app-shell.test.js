@@ -49,6 +49,6 @@ test("agent hub exposes Public APIs source taxonomy and routes categories to cov
   assert.match(hub, /Animals/);
   assert.match(hub, /Authentication &amp; Authorization/);
   assert.match(hub, /href="\/public-apis\?category=/);
-  assert.match(coverage, /searchParams\.get\("category"\)/);
+  assert.match(coverage, /new URLSearchParams\(location\.search\)\.get\("category"\)/);
   assert.match(coverage, /params\.set\("category"/);
 });
