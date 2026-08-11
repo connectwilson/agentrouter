@@ -49,3 +49,10 @@ test("agent hub renders one data-backed Categories list without empty source tax
   assert.doesNotMatch(hub, /Public APIs catalog/);
   assert.doesNotMatch(hub, /const PUBLIC_API_SOURCE_CATEGORIES/);
 });
+
+test("agent hub category links restore the selected category from the URL", () => {
+  const hub = agentHtml({});
+
+  assert.match(hub, /const requestedCategory = pageParams\.get\("category"\)/);
+  assert.match(hub, /categories\.some\(\(item\) => item\.category === requestedCategory\)/);
+});

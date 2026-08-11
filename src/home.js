@@ -33,8 +33,9 @@ export function homeHtml({ auth = {} } = {}) {
       <header class="hero">
         <div class="dot-grid" aria-hidden="true"></div>
         <div class="shell wide-shell hero-center">
-          <h1>Agent-native API routing layer</h1>
-          <p class="lead">AgentRouter gives your agent access to verifiable premium data sources, per call, with no subscriptions.</p>
+          <p class="eyebrow">AgentRouter · Model Routing Infrastructure</p>
+          <h1>Agent-native API routing layer.<br>One Install. All your agent needs.</h1>
+          <p class="lead">1200+ APIs through one router. Smart routing per task, access to verifiable premium data sources — built for agents that never hear, &ldquo;I can&rsquo;t get that data.&rdquo;</p>
           <a class="hero-cta" href="/agent">Explore Data/APIs</a>
 
           <div class="install-strip" aria-label="AgentRouter setup instruction">
@@ -464,12 +465,16 @@ export function agentHtml({ auth = {} } = {}) {
 
           <div class="market-toolbar">
             <input id="service-search" placeholder="Search APIs, providers, categories, or capabilities" />
-            <select id="sort-services">
-              <option value="relevance">By relevance</option>
-              <option value="calls">Most called</option>
-              <option value="trust">Highest trust</option>
-              <option value="price">Lowest price</option>
-            </select>
+            <div class="dropdown" id="sort-dropdown">
+              <button type="button" class="dropdown-trigger" id="sort-trigger" aria-haspopup="listbox" aria-expanded="false">By relevance <span class="nav-caret">▾</span></button>
+              <input type="hidden" id="sort-services" value="relevance" />
+              <div class="dropdown-menu" role="listbox" id="sort-menu">
+                <button type="button" class="dropdown-option active" data-value="relevance" role="option" aria-selected="true"><span class="drop-check">✓</span>By relevance</button>
+                <button type="button" class="dropdown-option" data-value="calls" role="option" aria-selected="false"><span class="drop-check">✓</span>Most called</button>
+                <button type="button" class="dropdown-option" data-value="trust" role="option" aria-selected="false"><span class="drop-check">✓</span>Highest trust</button>
+                <button type="button" class="dropdown-option" data-value="price" role="option" aria-selected="false"><span class="drop-check">✓</span>Lowest price</button>
+              </div>
+            </div>
           </div>
 
           <div class="market-shell list-only">
@@ -494,7 +499,7 @@ export function agentHtml({ auth = {} } = {}) {
               <div class="market-grid" id="agent-api-cards"></div>
               <div class="pager" id="service-pager">
                 <button type="button" id="service-prev">Previous</button>
-                <span id="service-page-status">Page 1</span>
+                <div class="pager-pages" id="service-pages"></div>
                 <button type="button" id="service-next">Next</button>
               </div>
             </section>
@@ -518,9 +523,39 @@ export function agentHtml({ auth = {} } = {}) {
             loadAgentServices();
           }, 180);
         });
-        document.getElementById("sort-services").addEventListener("change", () => {
+        const sortDropdown = document.getElementById("sort-dropdown");
+        const sortTrigger = document.getElementById("sort-trigger");
+        const sortMenu = document.getElementById("sort-menu");
+        const sortInput = document.getElementById("sort-services");
+        function setSort(value, label) {
+          sortInput.value = value;
+          sortTrigger.childNodes[0].textContent = label;
+          sortMenu.querySelectorAll(".dropdown-option").forEach((opt) => {
+            const selected = opt.dataset.value === value;
+            opt.classList.toggle("active", selected);
+            opt.setAttribute("aria-selected", String(selected));
+            opt.querySelector(".drop-check").style.opacity = selected ? "1" : "0";
+          });
           currentPage = 0;
           loadAgentServices();
+        }
+        sortTrigger.addEventListener("click", () => {
+          const open = sortDropdown.classList.toggle("open");
+          sortTrigger.setAttribute("aria-expanded", String(open));
+        });
+        sortMenu.querySelectorAll(".dropdown-option").forEach((opt) => {
+          opt.addEventListener("click", () => {
+            const label = opt.textContent.replace("✓", "").trim();
+            setSort(opt.dataset.value, label);
+            sortDropdown.classList.remove("open");
+            sortTrigger.setAttribute("aria-expanded", "false");
+          });
+        });
+        document.addEventListener("click", (e) => {
+          if (!sortDropdown.contains(e.target)) {
+            sortDropdown.classList.remove("open");
+            sortTrigger.setAttribute("aria-expanded", "false");
+          }
         });
         document.getElementById("service-prev").addEventListener("click", () => {
           if (currentPage <= 0) return;
@@ -533,7 +568,9 @@ export function agentHtml({ auth = {} } = {}) {
           loadAgentServices();
         });
         async function renderPage() {
-          const query = new URLSearchParams(location.search).get("q") || "";
+          const pageParams = new URLSearchParams(location.search);
+          const query = pageParams.get("q") || "";
+          const requestedCategory = pageParams.get("category") || "All";
           document.getElementById("service-search").value = query;
           try {
             const [categoryResponse, builtInResponse] = await Promise.all([
@@ -549,6 +586,7 @@ export function agentHtml({ auth = {} } = {}) {
               ...(builtInCapabilities.length ? [{ category: builtInCategory, count: builtInCapabilities.length }] : [])
             ];
           } catch {}
+          activeCategory = categories.some((item) => item.category === requestedCategory) ? requestedCategory : "All";
           renderCategories();
           loadAgentServices();
         }
@@ -618,6 +656,31 @@ export function agentHtml({ auth = {} } = {}) {
             '<div class="byline"><span>Read-only · local connector</span><span>' + escapeHtml(capability.credential_policy === "never_upload" ? "Credentials stay local" : capability.credential_policy || "") + '</span></div>' +
             '<span class="detail-link">' + escapeHtml(capability.connector_status === "local_connector_required" ? "Connect browser to use" : "Ready to use") + '</span>' +
           '</article>';
+        }
+        function renderPager() {
+          const total = Number(servicePage.total || 0);
+          const pages = Math.max(1, Math.ceil(total / pageSize));
+          const cur = currentPage;
+          const items = [];
+          const pushPage = (n, label) => items.push({ n, label });
+          if (pages <= 5) {
+            for (let i = 1; i <= pages; i++) pushPage(i, String(i));
+          } else {
+            for (let i = 1; i <= 5; i++) pushPage(i, String(i));
+            if (pages > 6) items.push({ n: null, label: "…" });
+            pushPage(pages, String(pages));
+          }
+          document.getElementById("service-pages").innerHTML = items.map((it) => {
+            if (it.n === null) return '<span class="pg-ellipsis">' + it.label + "</span>";
+            const active = it.n - 1 === cur ? "active" : "";
+            return '<button type="button" class="pg-btn ' + active + '" data-page="' + it.n + '">' + it.label + "</button>";
+          }).join("");
+          document.querySelectorAll("#service-pages .pg-btn").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              currentPage = Number(btn.dataset.page) - 1;
+              loadAgentServices();
+            });
+          });
         }
         renderPage();
       </script>
@@ -1056,7 +1119,31 @@ function page({ title, auth = {}, body }) {
       <nav class="nav-links" aria-label="Primary">
         <a href="/">Home</a>
         <a href="/research">Research</a>
-        <a href="/agent">Services</a>
+        <div class="nav-has-menu">
+          <a href="/agent" class="nav-trigger">Services <span class="nav-caret">▾</span></a>
+          <div class="nav-menu">
+            <a class="nav-menu-item" href="/agent?category=Data">
+              <span class="nav-menu-icon">◉</span>
+              <span class="nav-menu-text"><b>Data Services</b><small>Market data, token prices, on-chain metrics</small></span>
+            </a>
+            <a class="nav-menu-item" href="/agent?category=Crypto">
+              <span class="nav-menu-icon">◈</span>
+              <span class="nav-menu-text"><b>Crypto &amp; Derivatives</b><small>Perp liquidations, funding rates, OHLC</small></span>
+            </a>
+            <a class="nav-menu-item" href="/agent?category=On-chain">
+              <span class="nav-menu-icon">◯</span>
+              <span class="nav-menu-text"><b>On-chain Analytics</b><small>Wallet, transactions, liquidation heatmaps</small></span>
+            </a>
+            <a class="nav-menu-item" href="/agent?category=Market%20Data">
+              <span class="nav-menu-icon">◍</span>
+              <span class="nav-menu-text"><b>Market Data</b><small>ETF flows, indices, premium &amp; discount</small></span>
+            </a>
+            <a class="nav-menu-item" href="/agent">
+              <span class="nav-menu-icon">▣</span>
+              <span class="nav-menu-text"><b>Browse All</b><small>224 callable services, search &amp; sort</small></span>
+            </a>
+          </div>
+        </div>
         <a href="/human">Provider Studio</a>
       </nav>
       ${user ? `<div class="auth-actions">
@@ -1067,7 +1154,10 @@ function page({ title, auth = {}, body }) {
   </div>
   ${body}
   <footer class="footer">
-    <div class="shell">AgentRouter Markets · <a href="/research">Creator Research</a> · <a href="/human">For human</a> · <a href="/agent">For agent</a> · <a href="/studio">Provider Studio</a></div>
+    <div class="shell footer-inner">
+      <span class="nav-brand">AgentRouter <span class="prompt">&gt;<span class="caret">_</span></span></span>
+      <p class="tagline">Agent-native API routing layer. One Install. All your agent needs.</p>
+    </div>
   </footer>
   ${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/" })}
   <script data-agentrouter-spa>${clientRouterScript()}</script>
