@@ -823,6 +823,15 @@ test("higher tiers are converted before lower ones", async () => {
   assert.deepEqual(attempted, ["Gov P0", "Crypto P1", "Health P2"]);
 });
 
+test("spec-first candidates are converted before documentation-only candidates", async () => {
+  const store = tierStore([
+    { title: "Docs first-tier", category: "Government", auth: "No", source_catalog: "github:public-apis/public-apis" },
+    { title: "Spec lower-tier", category: "Development", auth: "No", source_catalog: "apis.guru" }
+  ]);
+  const attempted = await runTierBatch(store, { limit: 1 });
+  assert.deepEqual(attempted, ["Spec lower-tier"]);
+});
+
 test("APIs.guru entries arrive spec-first so conversion skips doc scraping", async () => {
   const { fetchApisGuruCatalogEntries } = await import("../src/openapi-import.js");
   const listing = {
