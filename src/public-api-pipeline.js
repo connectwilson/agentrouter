@@ -8,6 +8,8 @@ import {
   writePersistentPublicApiCandidates,
   writePersistentPublicApiPipelineRun
 } from "./persistence.js";
+import { createHostedHttpProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
+import { registerService, unregisterService, validateService } from "./registry.js";
 
 const RETRYABLE_STATUSES = new Set(["queued", "retryable_failure"]);
 const DEFAULT_SOURCE_CATALOG = "github:public-apis/public-apis";
@@ -286,6 +288,25 @@ export async function runPublicApiConversionBatch(store, options = {}) {
         usable_endpoint_count: candidate.usable_drafts.length,
         unusable_endpoint_count: candidate.unusable_drafts.length
       };
+      if (options.autoPublish !== false) {
+        const promote = options.promoteDrafts || ((entry, drafts) =>
+          promoteValidatedPublicApiDrafts(store, entry, drafts, options)
+        );
+        try {
+          candidate.promotion = await promote(candidate, candidate.usable_drafts);
+        } catch (error) {
+          // A direct probe already established the candidate is valid. Keep
+          // that evidence and record promotion failure separately for retry.
+          candidate.promotion = {
+            ok: false,
+            service_ids: [],
+            error: {
+              code: error.code || "PUBLIC_API_PROMOTION_FAILED",
+              message: String(error.message || error)
+            }
+          };
+        }
+      }
     } catch (error) {
       candidate.status = error.code === "UNSAFE_CATALOG_TARGET" ? "manual_review" : "retryable_failure";
       candidate.blocking_reason = error.code === "UNSAFE_CATALOG_TARGET" ? "unsafe_network_target" : null;
@@ -315,6 +336,76 @@ export async function runPublicApiConversionBatch(store, options = {}) {
     processed: selected.length,
     coverage: publicApiCoverageReport(store),
     run
+  };
+}
+
+export async function promoteValidatedPublicApiDrafts(store, candidate, drafts, options = {}) {
+  const published = [];
+  const failed = [];
+  const providerId = "public_apis_catalog";
+  const baseUrl = options.baseUrl || "";
+
+  for (const [index, draft] of drafts.entries()) {
+    const serviceId = publicApiServiceId(candidate, index);
+    try {
+      const existing = store.services.get(serviceId);
+      if (existing?.verification_status === "verified") {
+        published.push({ service_id: serviceId, already_registered: true });
+        continue;
+      }
+      if (existing) unregisterService(store, serviceId);
+
+      const config = createHostedHttpProviderConfig({
+        baseUrl,
+        serviceId,
+        providerId,
+        title: draft.title || candidate.title || serviceId,
+        description: candidate.description || `${candidate.title || "Public API"} verified from the Public APIs catalog.`,
+        capabilities: draft.capabilities?.length ? draft.capabilities : ["data_service"],
+        price: "0",
+        sampleRequest: draft.sample_request || {},
+        sampleData: {},
+        upstreamUrl: draft.upstream_url,
+        upstreamMethod: "GET",
+        summary: `Read-only public endpoint validated from ${candidate.source_catalog || DEFAULT_SOURCE_CATALOG}.`
+      });
+      config.manifest.source_provenance = {
+        source_type: "public_api_catalog",
+        source_catalog: candidate.source_catalog || DEFAULT_SOURCE_CATALOG,
+        catalog_candidate_id: candidate.candidate_id,
+        catalog_category: candidate.category || "Uncategorized",
+        documentation_url: candidate.documentation_url || null,
+        validation: draft.validation || candidate.validation || null
+      };
+      config.source.catalog = config.manifest.source_provenance;
+
+      await writeProviderConfig(config);
+      registerService(store, config.manifest, baseUrl);
+      const validation = await validateService(store, serviceId);
+      if (!validation.ok) {
+        unregisterService(store, serviceId);
+        await deleteProviderConfig(serviceId);
+        failed.push({ service_id: serviceId, error: "PROMOTION_VALIDATION_FAILED", validation });
+        continue;
+      }
+      published.push({ service_id: serviceId, validation });
+    } catch (error) {
+      unregisterService(store, serviceId);
+      await deleteProviderConfig(serviceId);
+      failed.push({
+        service_id: serviceId,
+        error: error.code || "PUBLIC_API_PROMOTION_FAILED",
+        message: String(error.message || error)
+      });
+    }
+  }
+
+  return {
+    ok: published.length > 0 && failed.length === 0,
+    service_ids: published.map((item) => item.service_id),
+    published,
+    failed,
+    promoted_at: timestamp(options)
   };
 }
 
@@ -653,6 +744,15 @@ function catalogCandidateId(entry) {
     entry.documentation_url || ""
   ].join("\n");
   return `public_api_${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
+}
+
+function publicApiServiceId(candidate, index) {
+  const suffix = String(candidate.candidate_id || "public_api")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(-20)
+    .toLowerCase();
+  return `public_api_${suffix}_${index + 1}`;
 }
 
 function isHttpsUrl(value) {
