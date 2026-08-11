@@ -485,9 +485,20 @@ export function agentHtml({ auth = {} } = {}) {
             </aside>
 
             <section>
-              <div class="market-section-head">
+              <section class="builtin-capabilities" id="builtin-capabilities-section">
+                <div class="market-section-head">
+                  <div>
+                    <span class="eyebrow">Local-first</span>
+                    <h2>Built-in capabilities</h2>
+                    <p>Read-only capabilities that use your local browser connection. Credentials and raw content stay on your device.</p>
+                  </div>
+                </div>
+                <div class="market-grid" id="builtin-api-cards"></div>
+              </section>
+              <section id="registered-services-section">
+                <div class="market-section-head">
                 <div>
-                  <h2>Available services</h2>
+                  <h2>Registered API services</h2>
                   <p id="agent-result-count">Loading services...</p>
                 </div>
               </div>
@@ -497,6 +508,7 @@ export function agentHtml({ auth = {} } = {}) {
                 <span id="service-page-status">Page 1</span>
                 <button type="button" id="service-next">Next</button>
               </div>
+              </section>
             </section>
           </div>
         </div>
@@ -504,6 +516,8 @@ export function agentHtml({ auth = {} } = {}) {
       <script>
         ${serviceClientScript()}
         let categories = [{ category: "All", count: 0 }];
+        let builtInCapabilities = [];
+        const builtInCategory = "Social research";
         const pageSize = 24;
         let servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
         let activeCategory = "All";
@@ -534,9 +548,18 @@ export function agentHtml({ auth = {} } = {}) {
           const query = new URLSearchParams(location.search).get("q") || "";
           document.getElementById("service-search").value = query;
           try {
-            const response = await fetch("/agent-router/service-categories");
-            const payload = await response.json();
-            categories = [{ category: "All", count: Number(payload.total || 0) }, ...(payload.categories || [])];
+            const [categoryResponse, builtInResponse] = await Promise.all([
+              fetch("/agent-router/service-categories"),
+              fetch("/agent-router/builtin-capabilities")
+            ]);
+            const payload = await categoryResponse.json();
+            const builtInPayload = await builtInResponse.json();
+            builtInCapabilities = Array.isArray(builtInPayload.capabilities) ? builtInPayload.capabilities : [];
+            categories = [
+              { category: "All", count: Number(payload.total || 0) + builtInCapabilities.length },
+              ...(payload.categories || []),
+              ...(builtInCapabilities.length ? [{ category: builtInCategory, count: builtInCapabilities.length }] : [])
+            ];
           } catch {}
           renderCategories();
           loadAgentServices();
@@ -555,6 +578,11 @@ export function agentHtml({ auth = {} } = {}) {
           });
         }
         async function loadAgentServices() {
+          if (activeCategory === builtInCategory) {
+            servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
+            renderAgentHub();
+            return;
+          }
           const params = new URLSearchParams({
             q: document.getElementById("service-search").value.trim(),
             sort: document.getElementById("sort-services").value,
@@ -572,15 +600,36 @@ export function agentHtml({ auth = {} } = {}) {
           renderAgentHub();
         }
         function renderAgentHub() {
+          const query = document.getElementById("service-search").value.trim().toLowerCase();
+          const visibleBuiltIns = (activeCategory === "All" || activeCategory === builtInCategory)
+            ? builtInCapabilities.filter((capability) => !query || [capability.title, capability.description, capability.capability, ...(capability.platforms || [])].join(" ").toLowerCase().includes(query))
+            : [];
+          document.getElementById("builtin-capabilities-section").hidden = visibleBuiltIns.length === 0;
+          document.getElementById("registered-services-section").hidden = activeCategory === builtInCategory;
+          document.getElementById("builtin-api-cards").innerHTML = visibleBuiltIns.map(builtInCapabilityCard).join("");
           const services = servicePage.services || [];
           document.getElementById("agent-api-cards").innerHTML = services.map((service) => apiCard(service, { link: true })).join("") ||
             '<div class="empty-market">No matching services found.</div>';
           const start = servicePage.total ? Number(servicePage.offset || 0) + 1 : 0;
           const end = Number(servicePage.offset || 0) + services.length;
-          setText("agent-result-count", servicePage.total ? start + "-" + end + " of " + servicePage.total + " callable services" : "No services match this view");
+          setText("agent-result-count", servicePage.total ? start + "-" + end + " of " + servicePage.total + " registered API services" : "No registered API services match this view");
           document.getElementById("service-prev").disabled = currentPage <= 0;
           document.getElementById("service-next").disabled = !servicePage.has_more;
-          document.getElementById("service-page-status").textContent = "Page " + (currentPage + 1);
+          if (typeof renderPager === "function") renderPager();
+          else {
+            const pageStatus = document.getElementById("service-page-status");
+            if (pageStatus) pageStatus.textContent = "Page " + (currentPage + 1);
+          }
+        }
+        function builtInCapabilityCard(capability) {
+          const platforms = (capability.platforms || []).map((platform) => '<span class="pill">' + escapeHtml(platform) + '</span>').join("");
+          return '<article class="api-card builtin-capability-card">' +
+            '<div class="api-top"><span class="type-badge">Built-in</span><span class="heart">◌</span></div>' +
+            '<div class="api-main"><div class="logo">⌁</div><div><h3>' + escapeHtml(capability.title) + '</h3><p>' + escapeHtml(capability.description) + '</p></div></div>' +
+            '<div class="pill-row">' + platforms + '</div>' +
+            '<div class="byline"><span>Read-only · local connector</span><span>' + escapeHtml(capability.credential_policy === "never_upload" ? "Credentials stay local" : capability.credential_policy || "") + '</span></div>' +
+            '<span class="detail-link">' + escapeHtml(capability.connector_status === "local_connector_required" ? "Connect browser to use" : "Ready to use") + '</span>' +
+          '</article>';
         }
         renderPage();
       </script>

@@ -162,7 +162,7 @@ test("home page and Provider Studio render separately", async () => {
     assert.match(agentHtml, /API Hub for agents/);
     assert.match(agentHtml, /Built-in capabilities/);
     assert.match(agentHtml, /Social research/);
-    assert.match(agentHtml, /Available services/);
+    assert.match(agentHtml, /Registered API services/);
     assert.doesNotMatch(agentHtml, /Universal MCP command/);
 
     const builtInCapabilitiesResponse = await fetch(`${baseUrl}/agent-router/builtin-capabilities`);

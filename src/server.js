@@ -34,6 +34,7 @@ import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
 import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
+import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import {
   bootstrapPublicApiPipeline,
   hydratePublicApiCoverage,
@@ -509,6 +510,16 @@ async function routeRequest(req, res, store, baseUrl, {
       category_list_version: "agent_router_service_categories_v1",
       total: store.services.size,
       categories: listServiceCategoryCounts(store)
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/builtin-capabilities") {
+    const capabilities = getBuiltinCapabilities();
+    sendJson(res, 200, {
+      capability_list_version: "agent_router_builtin_capabilities_v1",
+      total: capabilities.length,
+      capabilities
     });
     return;
   }
