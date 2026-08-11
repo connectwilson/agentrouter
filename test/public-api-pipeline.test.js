@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   assertSafePublicUrl,
   bootstrapPublicApiPipeline,
+  fetchDefaultPublicApiCatalogEntries,
   createSafePublicFetch,
   createSerializedTask,
   publicApiCoverageReport,
@@ -70,6 +71,15 @@ test("catalog sync gives every API a durable coverage state", async () => {
   const legacy = [...store.publicApiCatalog.values()].find((item) => item.title === "Old HTTP API");
   assert.equal(legacy.status, "blocked_insecure_transport");
   assert.equal(legacy.blocking_reason, "https_required");
+});
+
+test("default catalog sync combines public-apis discovery with spec-first APIs.guru entries", async () => {
+  const entries = await fetchDefaultPublicApiCatalogEntries({
+    fetchPublicApisEntries: async () => [{ title: "Directory API", source_catalog: "github:public-apis/public-apis" }],
+    fetchApisGuruEntries: async () => [{ title: "Spec API", source_catalog: "apis.guru", spec_url: "https://spec.example/openapi.json" }]
+  });
+
+  assert.deepEqual(entries.map((entry) => entry.title), ["Directory API", "Spec API"]);
 });
 
 test("empty Public APIs coverage is synchronized and queued for a bounded automatic validation batch", async () => {
