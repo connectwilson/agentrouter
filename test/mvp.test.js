@@ -1618,6 +1618,20 @@ test("AgentRouter services endpoint returns paginated lightweight service summar
   });
 });
 
+test("AgentRouter category endpoint returns only categories with callable services", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/service-categories`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+
+    assert.equal(payload.category_list_version, "agent_router_service_categories_v1");
+    assert.ok(payload.total > 0);
+    assert.ok(payload.categories.length > 0);
+    assert.ok(payload.categories.every((entry) => entry.count > 0));
+    assert.ok(payload.categories.every((entry) => !["Animals", "Finance", "Weather"].includes(entry.category)));
+  });
+});
+
 test("AgentRouter quote simulates route and payment guards without invoking provider", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/agent-router/quote`, {

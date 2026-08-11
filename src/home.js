@@ -503,7 +503,7 @@ export function agentHtml({ auth = {} } = {}) {
       </main>
       <script>
         ${serviceClientScript()}
-        const categories = ["All", "Data", "Crypto", "Market Data", "On-chain", "Derivatives", "Wallet"];
+        let categories = [{ category: "All", count: 0 }];
         const pageSize = 24;
         let servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
         let activeCategory = "All";
@@ -530,15 +530,20 @@ export function agentHtml({ auth = {} } = {}) {
           currentPage += 1;
           loadAgentServices();
         });
-        function renderPage() {
+        async function renderPage() {
           const query = new URLSearchParams(location.search).get("q") || "";
           document.getElementById("service-search").value = query;
+          try {
+            const response = await fetch("/agent-router/service-categories");
+            const payload = await response.json();
+            categories = [{ category: "All", count: Number(payload.total || 0) }, ...(payload.categories || [])];
+          } catch {}
           renderCategories();
           loadAgentServices();
         }
         function renderCategories() {
-          document.getElementById("category-row").innerHTML = categories.map((category) =>
-            '<button type="button" class="category ' + (category === activeCategory ? "active" : "") + '" data-category="' + escapeHtml(category) + '">' + escapeHtml(category) + '</button>'
+          document.getElementById("category-row").innerHTML = categories.map(({ category, count }) =>
+            '<button type="button" class="category ' + (category === activeCategory ? "active" : "") + '" data-category="' + escapeHtml(category) + '">' + escapeHtml(category) + ' <small>' + formatCount(count) + '</small></button>'
           ).join("");
           document.querySelectorAll(".category").forEach((button) => {
             button.addEventListener("click", () => {
@@ -1517,27 +1522,3 @@ function html(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-const PUBLIC_API_SOURCE_CATEGORIES = [
-  "Animals", "Anime", "Anti-Malware", "Art & Design", "Authentication & Authorization",
-  "Blockchain", "Books", "Business", "Calendar", "Cloud Storage & File Sharing",
-  "Continuous Integration", "Cryptocurrency", "Currency Exchange", "Data Validation", "Development",
-  "Dictionaries", "Documents & Productivity", "Email", "Entertainment", "Environment", "Events",
-  "Finance", "Food & Drink", "Games & Comics", "Geocoding", "Government", "Health", "Jobs",
-  "Machine Learning", "Music", "News", "Open Data", "Science & Math", "Security", "Social",
-  "Sports & Fitness", "Test Data", "Text Analysis", "Tracking", "Transportation", "Video", "Weather"
-];
-
-function publicApiSourceCategoryLinks() {
-  return PUBLIC_API_SOURCE_CATEGORIES.map((category) =>
-    `<a class="category source-category" href="/public-apis?category=${encodeURIComponent(category)}">${html(category)}</a>`
-  ).join("");
-}
-
-              <div class="rail-note source-taxonomy">
-                <strong>Sources</strong>
-                <span>Public APIs catalog</span>
-                <div class="category-row vertical">${publicApiSourceCategoryLinks()}</div>
-                <a class="category source-category" href="/public-apis">All Public APIs coverage</a>
-              </div>
-        const publicApiCategory = new URLSearchParams(location.search).get("category") || "";
-          if (publicApiCategory) params.set("category", publicApiCategory);

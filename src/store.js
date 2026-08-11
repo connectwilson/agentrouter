@@ -522,6 +522,17 @@ export function listServiceSummaries(store, {
   };
 }
 
+const AGENT_HUB_CATEGORIES = ["Data", "Crypto", "Market Data", "On-chain", "Derivatives", "Wallet"];
+
+export function listServiceCategoryCounts(store) {
+  return AGENT_HUB_CATEGORIES
+    .map((category) => ({
+      category,
+      count: [...store.services.values()].filter((record) => serviceCategoryMatches(record.manifest, category)).length
+    }))
+    .filter((entry) => entry.count > 0);
+}
+
 export function publicServiceSummary(record) {
   const trust = summarizeTrust(record);
   const health = summarizeHealth(record);

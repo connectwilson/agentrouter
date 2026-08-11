@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
-import { createMemoryStore, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
+import { createMemoryStore, listServiceCategoryCounts, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
   fetchApifyActorMetadata,
@@ -494,6 +494,16 @@ async function routeRequest(req, res, store, baseUrl, {
       return;
     }
     sendJson(res, 200, listServiceSummaries(store, { query, capabilities, maxPrice, verifiedOnly, category, sort, limit, offset }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/service-categories") {
+    await loadProviderConfigs(store, baseUrl, { validate: false });
+    sendJson(res, 200, {
+      category_list_version: "agent_router_service_categories_v1",
+      total: store.services.size,
+      categories: listServiceCategoryCounts(store)
+    });
     return;
   }
 
