@@ -35,6 +35,7 @@ import { createSocialConnection, deleteSocialConnection, hydrateSocialConnection
 import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import {
+  bootstrapPublicApiPipeline,
   hydratePublicApiCoverage,
   listPublicApiCatalog,
   publicApiCoverageReport,
@@ -193,6 +194,7 @@ export function createServer({
   });
 
   server.store = store;
+  server.publicApiPipelineOptions = publicApiPipelineOptions;
   return server;
 }
 
@@ -3190,6 +3192,45 @@ export async function bootstrapServer(server, baseUrl) {
   await hydratePersistentServiceEvents(server.store);
   await hydrateSocialConnections(server.store);
   await hydratePublicApiCoverage(server.store);
+
+  const automation = publicApiAutomationOptions();
+  const publicApiBoot = await bootstrapPublicApiPipeline(server.store, {
+    ...server.publicApiPipelineOptions,
+    ...automation,
+    // The catalog was hydrated just above; avoid a duplicate database read.
+    hydrate: async () => publicApiCoverageReport(server.store)
+  });
+  server.publicApiPipelineBoot = publicApiBoot;
+  if (!publicApiBoot.ok) {
+    console.warn("[public-api-pipeline] bootstrap deferred", JSON.stringify(publicApiBoot.error));
+  }
+  schedulePublicApiRefresh(server, automation);
+}
+
+function publicApiAutomationOptions() {
+  return {
+    autoSync: process.env.ADN_PUBLIC_API_AUTOSYNC !== "0",
+    autoValidate: process.env.ADN_PUBLIC_API_AUTOVALIDATE !== "0",
+    validationLimit: Math.max(1, Math.min(100, Number(process.env.ADN_PUBLIC_API_AUTOVALIDATE_LIMIT) || 25)),
+    refreshIntervalMs: Math.max(0, Number(process.env.ADN_PUBLIC_API_REFRESH_INTERVAL_MS) || 24 * 60 * 60 * 1000)
+  };
+}
+
+function schedulePublicApiRefresh(server, automation) {
+  if (server.publicApiPipelineTimer || automation.refreshIntervalMs <= 0) return;
+  const refresh = async () => {
+    const result = await bootstrapPublicApiPipeline(server.store, {
+      ...server.publicApiPipelineOptions,
+      ...automation,
+      forceSync: true
+    });
+    if (!result.ok) console.warn("[public-api-pipeline] scheduled refresh deferred", JSON.stringify(result.error));
+  };
+  server.publicApiPipelineTimer = setInterval(() => {
+    void refresh();
+  }, automation.refreshIntervalMs);
+  server.publicApiPipelineTimer.unref?.();
+  server.once("close", () => clearInterval(server.publicApiPipelineTimer));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

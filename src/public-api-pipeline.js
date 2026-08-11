@@ -123,6 +123,49 @@ export async function syncPublicApiCoverage(store, options = {}) {
   };
 }
 
+// Keep the public catalog useful without making application availability depend
+// on GitHub or third-party API documentation. The caller can run this on boot
+// and on a timer; sync failures are returned as diagnostics rather than thrown.
+export async function bootstrapPublicApiPipeline(store, options = {}) {
+  ensurePipelineStore(store);
+  const hydrate = options.hydrate || hydratePublicApiCoverage;
+  const startConversionJob = options.startConversionJob || startPublicApiConversionJob;
+  const autoSync = options.autoSync !== false;
+  const autoValidate = options.autoValidate !== false;
+  const validationLimit = clamp(options.validationLimit, 1, 100, 25);
+  let coverage;
+
+  try {
+    coverage = await hydrate(store, options);
+    let synced = false;
+    let sync = null;
+    if (autoSync && (options.forceSync === true || coverage.active === 0)) {
+      sync = await syncPublicApiCoverage(store, options);
+      coverage = sync.coverage;
+      synced = true;
+    }
+
+    const hasQueuedCandidates = [...store.publicApiCatalog.values()].some((candidate) =>
+      candidate.catalog_presence !== "removed" && RETRYABLE_STATUSES.has(candidate.status)
+    );
+    const validation = autoValidate && hasQueuedCandidates
+      ? startConversionJob(store, { ...options, limit: validationLimit })
+      : null;
+
+    return { ok: true, synced, sync, coverage, validation };
+  } catch (error) {
+    return {
+      ok: false,
+      synced: false,
+      coverage: coverage || publicApiCoverageReport(store),
+      error: {
+        code: error.code || "PUBLIC_API_BOOTSTRAP_FAILED",
+        message: String(error.message || error)
+      }
+    };
+  }
+}
+
 export async function runPublicApiConversionBatch(store, options = {}) {
   ensurePipelineStore(store);
   const limit = clamp(options.limit, 1, 100, 25);
