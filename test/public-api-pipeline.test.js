@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assertSafePublicUrl,
+  bootstrapPublicApiPipeline,
   createSafePublicFetch,
   createSerializedTask,
   publicApiCoverageReport,
@@ -69,6 +70,30 @@ test("catalog sync gives every API a durable coverage state", async () => {
   const legacy = [...store.publicApiCatalog.values()].find((item) => item.title === "Old HTTP API");
   assert.equal(legacy.status, "blocked_insecure_transport");
   assert.equal(legacy.blocking_reason, "https_required");
+});
+
+test("empty Public APIs coverage is synchronized and queued for a bounded automatic validation batch", async () => {
+  const store = pipelineStore();
+  const conversions = [];
+
+  const result = await bootstrapPublicApiPipeline(store, {
+    hydrate: async () => publicApiCoverageReport(store),
+    fetchCatalogEntries: async () => catalogEntries,
+    persistCandidates: async () => {},
+    persistRun: async () => {},
+    startConversionJob: (target, options) => {
+      conversions.push({ target, options });
+      return { accepted: true, job: { status: "running" } };
+    },
+    validationLimit: 12
+  });
+
+  assert.equal(result.synced, true);
+  assert.equal(result.coverage.active, 3);
+  assert.equal(result.validation.accepted, true);
+  assert.equal(conversions.length, 1);
+  assert.equal(conversions[0].target, store);
+  assert.equal(conversions[0].options.limit, 12);
 });
 
 test("catalog resync preserves completed work and marks removed entries", async () => {
