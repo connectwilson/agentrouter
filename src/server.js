@@ -3205,29 +3205,35 @@ export async function bootstrapServer(server, baseUrl) {
     hydrate: async () => publicApiCoverageReport(server.store)
   });
   server.publicApiPipelineBoot = publicApiBoot;
+  if (publicApiBoot.synced) server.publicApiLastCatalogSyncAt = Date.now();
   if (!publicApiBoot.ok) {
     console.warn("[public-api-pipeline] bootstrap deferred", JSON.stringify(publicApiBoot.error));
   }
   schedulePublicApiRefresh(server, automation);
 }
 
-function publicApiAutomationOptions() {
+export function publicApiAutomationOptions(env = process.env) {
   return {
-    autoSync: process.env.ADN_PUBLIC_API_AUTOSYNC !== "0",
-    autoValidate: process.env.ADN_PUBLIC_API_AUTOVALIDATE !== "0",
-    validationLimit: Math.max(1, Math.min(100, Number(process.env.ADN_PUBLIC_API_AUTOVALIDATE_LIMIT) || 25)),
-    refreshIntervalMs: Math.max(0, Number(process.env.ADN_PUBLIC_API_REFRESH_INTERVAL_MS) || 24 * 60 * 60 * 1000)
+    autoSync: env.ADN_PUBLIC_API_AUTOSYNC !== "0",
+    autoValidate: env.ADN_PUBLIC_API_AUTOVALIDATE !== "0",
+    validationLimit: Math.max(1, Math.min(100, Number(env.ADN_PUBLIC_API_AUTOVALIDATE_LIMIT) || 50)),
+    refreshIntervalMs: Math.max(0, Number(env.ADN_PUBLIC_API_REFRESH_INTERVAL_MS) || 5 * 60 * 1000),
+    catalogRefreshIntervalMs: Math.max(0, Number(env.ADN_PUBLIC_API_CATALOG_REFRESH_INTERVAL_MS) || 24 * 60 * 60 * 1000)
   };
 }
 
 function schedulePublicApiRefresh(server, automation) {
   if (server.publicApiPipelineTimer || automation.refreshIntervalMs <= 0) return;
   const refresh = async () => {
+    const now = Date.now();
+    const forceSync = !server.publicApiLastCatalogSyncAt
+      || now - server.publicApiLastCatalogSyncAt >= automation.catalogRefreshIntervalMs;
     const result = await bootstrapPublicApiPipeline(server.store, {
       ...server.publicApiPipelineOptions,
       ...automation,
-      forceSync: true
+      forceSync
     });
+    if (result.synced) server.publicApiLastCatalogSyncAt = now;
     if (!result.ok) console.warn("[public-api-pipeline] scheduled refresh deferred", JSON.stringify(result.error));
   };
   server.publicApiPipelineTimer = setInterval(() => {
