@@ -525,11 +525,17 @@ export function listServiceSummaries(store, {
 const AGENT_HUB_CATEGORIES = ["Data", "Crypto", "Market Data", "On-chain", "Derivatives", "Wallet"];
 
 export function listServiceCategoryCounts(store) {
-  return AGENT_HUB_CATEGORIES
-    .map((category) => ({
-      category,
-      count: [...store.services.values()].filter((record) => serviceCategoryMatches(record.manifest, category)).length
-    }))
+  const counts = new Map();
+  for (const record of store.services.values()) {
+    const category = servicePrimaryCategory(record.manifest);
+    counts.set(category, (counts.get(category) || 0) + 1);
+  }
+  const categories = [
+    ...AGENT_HUB_CATEGORIES,
+    ...[...counts.keys()].filter((category) => !AGENT_HUB_CATEGORIES.includes(category)).sort()
+  ];
+  return categories
+    .map((category) => ({ category, count: counts.get(category) || 0 }))
     .filter((entry) => entry.count > 0);
 }
 
@@ -670,14 +676,28 @@ function serviceSummaryHaystack(manifest) {
 
 function serviceCategoryMatches(manifest, category) {
   if (!category || category === "All") return true;
+  return servicePrimaryCategory(manifest) === category;
+}
+
+function servicePrimaryCategory(manifest) {
+  const catalogCategory = publicApiCatalogCategory(manifest);
+  if (catalogCategory) return catalogCategory;
   const text = [manifest.title, manifest.description_for_agent, ...(manifest.capabilities || [])].join(" ").toLowerCase();
-  if (category === "Data") return text.includes("data");
-  if (category === "Crypto") return /crypto|btc|eth|chain|perp|nansen/.test(text);
-  if (category === "Market Data") return /market|price|etf|funding|ohlcv/.test(text);
-  if (category === "On-chain") return /onchain|chain|wallet|fund[_\s-]?flow|smart[_\s-]?money/.test(text);
-  if (category === "Derivatives") return /derivative|perp|liquidation|funding|options/.test(text);
-  if (category === "Wallet") return /wallet|address|profiler/.test(text);
-  return true;
+  if (/derivative|perp|liquidation|funding|options/.test(text)) return "Derivatives";
+  if (/wallet|address|profiler/.test(text)) return "Wallet";
+  if (/onchain|chain|fund[_\s-]?flow|smart[_\s-]?money/.test(text)) return "On-chain";
+  if (/market|price|etf|ohlcv/.test(text)) return "Market Data";
+  if (/crypto|btc|eth|nansen/.test(text)) return "Crypto";
+  return "Data";
+}
+
+function publicApiCatalogCategory(manifest) {
+  const provenance = manifest.source_provenance || {};
+  const sourceType = provenance.source_type || manifest.source_type;
+  const category = provenance.catalog_category || manifest.catalog_category || manifest.public_api_category;
+  return sourceType === "public_api_catalog" && String(category || "").trim()
+    ? String(category).trim()
+    : null;
 }
 
 function summarizeProviders(services) {
