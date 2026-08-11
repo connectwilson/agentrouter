@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { localSocialPostRequest, runLocalSocialPostRead } from "./local-social-post.js";
+import { readStoredCredential, writeStoredCredential } from "./credential-store.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
-const creditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
+const configuredCreditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
 let remoteSessionId = "";
+let deviceAuthorization = null;
 let buffer = Buffer.alloc(0);
 let processing = Promise.resolve();
 
@@ -65,6 +67,10 @@ function readMessages() {
 
 async function forwardRequest(message) {
   try {
+    if (isConnectRequest(message)) {
+      send({ jsonrpc: "2.0", id: message.id, result: await handleConnectRequest(message) });
+      return;
+    }
     const localSocialPost = localSocialPostRequest(message);
     if (localSocialPost) {
       const result = await runLocalSocialPostRead(localSocialPost.canonical_url);
@@ -97,6 +103,7 @@ async function forwardRequest(message) {
     if (!payload || typeof payload !== "object") {
       throw new Error("AgentRouter remote MCP returned an invalid JSON response");
     }
+    if (message.method === "tools/list") appendLocalTools(payload);
     send(payload);
   } catch (error) {
     send({
@@ -123,9 +130,10 @@ async function postRemote(message) {
     "content-type": "application/json",
     accept: "application/json, text/event-stream"
   };
-  if (creditApiKey) {
-    headers["x-agentrouter-api-key"] = creditApiKey;
-    headers.authorization = `Bearer ${creditApiKey}`;
+  const credential = await currentCredential();
+  if (credential) {
+    headers["x-agentrouter-api-key"] = credential;
+    headers.authorization = `Bearer ${credential}`;
   }
   if (remoteSessionId) headers["mcp-session-id"] = remoteSessionId;
 
@@ -137,6 +145,109 @@ async function postRemote(message) {
   const nextSessionId = response.headers.get("mcp-session-id");
   if (nextSessionId) remoteSessionId = nextSessionId;
   return response;
+}
+
+function isConnectRequest(message) {
+  return message?.method === "tools/call" && message?.params?.name === "agentrouter_connect";
+}
+
+function appendLocalTools(payload) {
+  const tools = payload?.result?.tools;
+  if (!Array.isArray(tools) || tools.some((tool) => tool?.name === "agentrouter_connect")) return;
+  tools.unshift({
+    name: "agentrouter_connect",
+    description: "Connect this AI client to the user's AgentRouter account through one browser approval. Use this when a paid call reports that no AgentRouter payment credential is available. Never ask the user to copy an API key or edit an MCP configuration file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string", description: "Human-readable AI client name." },
+        wait_seconds: { type: "integer", minimum: 0, maximum: 55, default: 45, description: "How long to wait for browser approval before returning pending status." },
+        restart: { type: "boolean", default: false, description: "Start a new authorization if the previous code expired." }
+      }
+    }
+  });
+}
+
+async function handleConnectRequest(message) {
+  const args = message?.params?.arguments || {};
+  const stored = await currentCredential();
+  if (stored && !args.restart) {
+    return toolResult({ status: "connected", auth_method: configuredCreditApiKey ? "api_key" : "device", message: "AgentRouter is connected and ready for paid calls." });
+  }
+  if (args.restart) deviceAuthorization = null;
+  if (!deviceAuthorization) {
+    const started = await postJson("/auth/device/start", {
+      client_name: String(args.client_name || "AI agent").slice(0, 120)
+    });
+    if (!started.ok) return toolResult({ status: "connection_failed", error: started.payload?.error || `HTTP ${started.status}` }, true);
+    deviceAuthorization = started.payload;
+  }
+
+  const waitSeconds = Math.max(0, Math.min(55, Number(args.wait_seconds ?? 45) || 0));
+  const deadline = Date.now() + waitSeconds * 1000;
+  let tokenResult = await pollDeviceToken();
+  while (tokenResult.error === "authorization_pending" && Date.now() < deadline) {
+    await delay(Math.max(1, Number(deviceAuthorization.interval) || 3) * 1000);
+    tokenResult = await pollDeviceToken();
+  }
+  if (tokenResult.access_token) {
+    await writeStoredCredential({
+      origin: baseUrl,
+      accessToken: tokenResult.access_token,
+      keyId: tokenResult.key_id,
+      clientName: String(args.client_name || "AI agent").slice(0, 120)
+    });
+    deviceAuthorization = null;
+    return toolResult({
+      status: "connected",
+      auth_method: "device",
+      message: "AgentRouter is connected. The credential was saved privately on this device; no API key was added to the MCP configuration."
+    });
+  }
+  if (tokenResult.error === "expired_token") {
+    const expired = deviceAuthorization;
+    deviceAuthorization = null;
+    return toolResult({ status: "authorization_expired", user_code: expired.user_code, action: "Call agentrouter_connect again to create a new code." }, true);
+  }
+  return toolResult({
+    status: "authorization_required",
+    user_code: deviceAuthorization.user_code,
+    verification_uri: deviceAuthorization.verification_uri,
+    verification_uri_complete: deviceAuthorization.verification_uri_complete,
+    expires_in: deviceAuthorization.expires_in,
+    message: "Open the authorization link and approve this agent. Then call agentrouter_connect again if this call returns before approval."
+  });
+}
+
+async function pollDeviceToken() {
+  const response = await postJson("/auth/device/token", { device_code: deviceAuthorization.device_code });
+  return response.payload || { error: "connection_failed" };
+}
+
+async function postJson(pathname, body) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(body)
+  });
+  return { ok: response.ok, status: response.status, payload: await response.json().catch(() => null) };
+}
+
+async function currentCredential() {
+  if (configuredCreditApiKey) return configuredCreditApiKey;
+  const stored = await readStoredCredential({ origin: baseUrl });
+  return stored?.access_token || "";
+}
+
+function toolResult(payload, isError = false) {
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    isError
+  };
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function safeJson(value) {
