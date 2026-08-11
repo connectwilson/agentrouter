@@ -571,8 +571,18 @@ export async function assertSafePublicUrl(value, options = {}) {
   const lookup = options.lookup || dnsLookup;
   let addresses;
   try {
-    addresses = await lookup(hostname, { all: true, verbatim: true });
+    addresses = await withTimeout(
+      lookup(hostname, { all: true, verbatim: true }),
+      clamp(options.dnsTimeoutMs, 1, 60000, 5000),
+      () => {
+        const error = new Error(`Timed out resolving catalog target: ${hostname}`);
+        error.code = "CATALOG_TARGET_DNS_TIMEOUT";
+        error.statusCode = 504;
+        return error;
+      }
+    );
   } catch (error) {
+    if (error.code === "CATALOG_TARGET_DNS_TIMEOUT") throw error;
     const wrapped = new Error(`Could not resolve catalog target: ${error.message}`);
     wrapped.code = "CATALOG_TARGET_DNS_FAILED";
     wrapped.statusCode = 502;
@@ -589,6 +599,14 @@ export async function assertSafePublicUrl(value, options = {}) {
     throw unsafeTarget("Target resolves to a private or reserved network.");
   }
   return url;
+}
+
+function withTimeout(promise, timeoutMs, createError) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(createError()), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 export function createSafePublicFetch(options = {}) {
