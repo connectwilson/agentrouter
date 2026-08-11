@@ -160,8 +160,22 @@ test("home page and Provider Studio render separately", async () => {
     assert.equal(agent.status, 200);
     const agentHtml = await agent.text();
     assert.match(agentHtml, /API Hub for agents/);
+    assert.match(agentHtml, /Built-in capabilities/);
+    assert.match(agentHtml, /Social research/);
     assert.match(agentHtml, /Available services/);
     assert.doesNotMatch(agentHtml, /Universal MCP command/);
+
+    const builtInCapabilitiesResponse = await fetch(`${baseUrl}/agent-router/builtin-capabilities`);
+    assert.equal(builtInCapabilitiesResponse.status, 200);
+    const builtInCapabilities = await builtInCapabilitiesResponse.json();
+    assert.equal(builtInCapabilities.total, 2);
+    assert.deepEqual(
+      builtInCapabilities.capabilities.map((capability) => capability.capability),
+      ["social_user_voice_research", "social_post_read"]
+    );
+    assert.deepEqual(builtInCapabilities.capabilities[0].platforms, ["X", "Reddit", "小红书", "B站", "YouTube", "Facebook"]);
+    assert.equal(builtInCapabilities.capabilities[0].execution_location, "user_device");
+    assert.equal(builtInCapabilities.capabilities[0].credential_policy, "never_upload");
 
     const lockedStudio = await fetch(`${baseUrl}/studio`, { redirect: "manual" });
     assert.equal(lockedStudio.status, 302);
