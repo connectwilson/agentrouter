@@ -12,3 +12,4 @@ node_modules/
 .gstack/
 .env.local
 .env.*.local
+server.log

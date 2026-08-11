@@ -617,6 +617,7 @@ export function agentHtml({ auth = {} } = {}) {
             offset: String(currentPage * pageSize)
           });
           document.getElementById("agent-result-count").textContent = "Loading services...";
+          showSkeleton();
           try {
             const response = await fetch("/agent-router/services?" + params.toString());
             servicePage = await response.json();
@@ -624,6 +625,21 @@ export function agentHtml({ auth = {} } = {}) {
             servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
           }
           renderAgentHub();
+        }
+        function showSkeleton() {
+          const skeletonCard = (key) =>
+            '<div class="api-card skeleton-card" data-key="' + key + '">' +
+              '<div class="api-top"><span class="sk sk-badge"></span><span class="sk sk-heart"></span></div>' +
+              '<div class="api-main"><div class="sk sk-logo"></div><div class="api-main-txt">' +
+                '<span class="sk sk-title"></span>' +
+                '<span class="sk sk-line"></span>' +
+                '<span class="sk sk-line short"></span>' +
+              '</div></div>' +
+              '<div class="pill-row sk-row"><span class="sk sk-pill"></span><span class="sk sk-pill"></span><span class="sk sk-pill"></span></div>' +
+              '<div class="stat-row sk-row"><span class="sk sk-pill"></span><span class="sk sk-pill"></span><span class="sk sk-pill"></span><span class="sk sk-pill"></span></div>' +
+              '<span class="sk sk-link"></span>' +
+            '</div>';
+          document.getElementById("agent-api-cards").innerHTML = Array.from({ length: 6 }, (_, i) => skeletonCard(i)).join("");
         }
         function renderAgentHub() {
           const query = document.getElementById("service-search").value.trim().toLowerCase();
