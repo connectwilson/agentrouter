@@ -42,7 +42,10 @@ test("credit account API requires login and returns balance", async () => {
 
     const accountPage = await fetch(`${baseUrl}/account`, { headers: { cookie } });
     assert.equal(accountPage.status, 200);
-    assert.match(await accountPage.text(), /Account &amp; credits|Account & credits/);
+    const accountHtml = await accountPage.text();
+    assert.match(accountHtml, /AgentRouter dashboard/);
+    assert.match(accountHtml, /--dash-bg:var\(--color-bg\)/);
+    assert.doesNotMatch(accountHtml, /body \{ background:#07100f/);
 
     const denied = await fetch(`${baseUrl}/account/credits`);
     assert.equal(denied.status, 401);
@@ -53,6 +56,122 @@ test("credit account API requires login and returns balance", async () => {
     assert.equal(payload.balance, "0");
     assert.match(payload.account.account_id, /^acct_/);
     assert.deepEqual(payload.ledger, []);
+  });
+});
+
+test("account dashboard exposes only the signed-in user's credit summary and safe API-key metadata", async () => {
+  await withCreditServer(async ({ baseUrl, cookie }) => {
+    const initial = await fetch(`${baseUrl}/account/dashboard`, { headers: { cookie } });
+    assert.equal(initial.status, 200);
+    const initialPayload = await initial.json();
+    assert.equal(initialPayload.summary.available_credits, "0");
+    assert.equal(initialPayload.summary.successful_paid_calls, 0);
+    assert.deepEqual(initialPayload.api_keys, []);
+
+    await fetch(`${baseUrl}/account/credits/topup`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ amount: "1.00" })
+    });
+    const created = await fetch(`${baseUrl}/account/api-keys`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ label: "Dashboard test" })
+    });
+    assert.equal(created.status, 201);
+
+    const dashboard = await fetch(`${baseUrl}/account/dashboard`, { headers: { cookie } });
+    const payload = await dashboard.json();
+    assert.equal(payload.summary.available_credits, "1");
+    assert.equal(payload.summary.active_api_keys, 1);
+    assert.equal(payload.api_keys[0].label, "Dashboard test");
+    assert.equal("api_key" in payload.api_keys[0], false);
+  });
+});
+
+test("an installed agent can connect through browser approval without copying an API key", async () => {
+  await withCreditServer(async ({ store, baseUrl, cookie }) => {
+    const started = await fetch(`${baseUrl}/auth/device/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_name: "Claude Desktop" })
+    });
+    assert.equal(started.status, 201);
+    const flow = await started.json();
+    assert.match(flow.device_code, /^ard_/);
+    assert.match(flow.user_code, /^AR-/);
+    assert.equal(flow.verification_uri, `${baseUrl}/connect`);
+
+    const pending = await fetch(`${baseUrl}/auth/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: flow.device_code })
+    });
+    assert.equal(pending.status, 400);
+    assert.equal((await pending.json()).error, "authorization_pending");
+
+    const signedOutPage = await fetch(flow.verification_uri_complete, { redirect: "manual" });
+    assert.equal(signedOutPage.status, 302);
+    assert.match(signedOutPage.headers.get("location"), /^\/\?login=1&return_to=/);
+
+    const approvalPage = await fetch(flow.verification_uri_complete, { headers: { cookie } });
+    assert.equal(approvalPage.status, 200);
+    const approvalHtml = await approvalPage.text();
+    assert.match(approvalHtml, /Connect Claude Desktop/);
+    assert.match(approvalHtml, new RegExp(flow.user_code));
+    assert.doesNotMatch(approvalHtml, new RegExp(flow.device_code));
+
+    const approved = await fetch(`${baseUrl}/auth/device/approve`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ user_code: flow.user_code })
+    });
+    assert.equal(approved.status, 200);
+    assert.equal((await approved.json()).status, "approved");
+
+    const tokenResponse = await fetch(`${baseUrl}/auth/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: flow.device_code })
+    });
+    assert.equal(tokenResponse.status, 200);
+    const token = await tokenResponse.json();
+    assert.match(token.access_token, /^ar_device_/);
+    assert.equal(token.token_type, "Bearer");
+
+    const dashboard = await fetch(`${baseUrl}/account/dashboard`, { headers: { cookie } });
+    const dashboardPayload = await dashboard.json();
+    const connection = dashboardPayload.api_keys.find((key) => key.key_id === token.key_id);
+    assert.equal(connection.auth_method, "device");
+    assert.equal(connection.client_name, "Claude Desktop");
+
+    const { authenticateCreditRequest } = await import("../src/credits.js");
+    const authenticated = await authenticateCreditRequest(store, {
+      headers: { authorization: `Bearer ${token.access_token}` }
+    });
+    assert.equal(authenticated.account.owner_key, "github:credit-http-user");
+    assert.equal(authenticated.key.auth_method, "device");
+
+    const revoked = await fetch(`${baseUrl}/account/api-keys/${encodeURIComponent(token.key_id)}/revoke`, {
+      method: "POST",
+      headers: { cookie }
+    });
+    assert.equal(revoked.status, 200);
+    assert.equal((await revoked.json()).status, "revoked");
+    assert.equal(await authenticateCreditRequest(store, {
+      headers: { authorization: `Bearer ${token.access_token}` }
+    }), null);
+  });
+});
+
+test("account dashboard presents agent connections as the default and developer keys as advanced", async () => {
+  await withCreditServer(async ({ baseUrl, cookie }) => {
+    const response = await fetch(`${baseUrl}/account`, { headers: { cookie } });
+    const html = await response.text();
+    assert.match(html, /Connected agents/);
+    assert.match(html, /Developer API keys/);
+    assert.match(html, /No API key needs to be copied into an MCP configuration/);
+    assert.doesNotMatch(html, /Use it only in your MCP client configuration/);
   });
 });
 
@@ -79,7 +198,7 @@ test("localhost development login creates a session only when explicitly enabled
       const account = await fetch(`${baseUrl}/account`, { headers: { cookie } });
       assert.equal(account.status, 200);
       const accountHtml = await account.text();
-      assert.match(accountHtml, /Account &amp; credits|Account & credits/);
+      assert.match(accountHtml, /AgentRouter dashboard/);
       assert.match(accountHtml, /href="\/auth\/logout"[^>]*>Sign out<\/a>/);
 
       const studio = await fetch(`${baseUrl}/studio`, { headers: { cookie } });

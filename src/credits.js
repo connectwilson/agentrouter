@@ -3,10 +3,12 @@ import crypto from "node:crypto";
 import { authUserKey } from "./auth.js";
 import {
   listPersistentCreditLedger,
+  listPersistentCreditApiKeys,
   persistenceEnabled,
   persistentCreditBalance,
   readPersistentCreditAccountByOwner,
   readPersistentCreditApiKeyByHash,
+  revokePersistentCreditApiKey,
   upsertPersistentCreditAccount,
   writePersistentCreditApiKey,
   writePersistentCreditLedgerEntry
@@ -63,9 +65,15 @@ export async function ensureCreditAccount(store, user) {
   return saved;
 }
 
-export async function createCreditApiKey(store, { account, label = "AgentRouter client" }) {
+export async function createCreditApiKey(store, {
+  account,
+  label = "AgentRouter client",
+  authMethod = "api_key",
+  clientName = null,
+  prefix = "ar_live"
+}) {
   if (!account?.account_id) throw creditError("Credit account is required.", 400, "CREDIT_ACCOUNT_REQUIRED");
-  const rawKey = `ar_live_${crypto.randomBytes(24).toString("base64url")}`;
+  const rawKey = `${prefix}_${crypto.randomBytes(24).toString("base64url")}`;
   const record = {
     key_id: `key_${crypto.randomUUID()}`,
     account_id: account.account_id,
@@ -73,6 +81,8 @@ export async function createCreditApiKey(store, { account, label = "AgentRouter 
     user_profile: account.user_profile || {},
     key_hash: hashApiKey(rawKey),
     label: String(label || "AgentRouter client").slice(0, 120),
+    auth_method: authMethod === "device" ? "device" : "api_key",
+    client_name: clientName ? String(clientName).slice(0, 120) : null,
     created_at: new Date().toISOString(),
     revoked_at: null
   };
@@ -83,7 +93,53 @@ export async function createCreditApiKey(store, { account, label = "AgentRouter 
     key_id: saved.key_id,
     label: saved.label,
     api_key: rawKey,
-    created_at: saved.created_at
+    created_at: saved.created_at,
+    auth_method: saved.auth_method || record.auth_method,
+    client_name: saved.client_name || record.client_name
+  };
+}
+
+export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) {
+  const rows = persistenceEnabled()
+    ? await listPersistentCreditApiKeys(accountId, { limit })
+    : [...store.creditApiKeys.values()]
+      .filter((key) => key.account_id === accountId)
+      .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
+      .slice(0, Math.max(1, Math.min(1000, Number(limit) || 100)));
+  return rows.map((key) => ({
+    key_id: key.key_id,
+    label: key.label || "AgentRouter client",
+    created_at: key.created_at,
+    revoked_at: key.revoked_at || null,
+    status: key.revoked_at ? "revoked" : "active",
+    auth_method: key.auth_method || "api_key",
+    client_name: key.client_name || null
+  }));
+}
+
+export async function revokeCreditApiKey(store, { accountId, keyId }) {
+  if (!accountId || !keyId) throw creditError("API key not found.", 404, "API_KEY_NOT_FOUND");
+  let revoked;
+  if (persistenceEnabled()) {
+    revoked = await revokePersistentCreditApiKey(accountId, keyId);
+  } else {
+    revoked = [...store.creditApiKeys.values()].find((key) => key.account_id === accountId && key.key_id === keyId) || null;
+    if (revoked) revoked.revoked_at ||= new Date().toISOString();
+  }
+  if (!revoked) throw creditError("API key not found.", 404, "API_KEY_NOT_FOUND");
+
+  for (const [keyHash, cached] of store.creditApiKeys.entries()) {
+    if (cached.account_id === accountId && cached.key_id === keyId) {
+      store.creditApiKeys.set(keyHash, { ...cached, revoked_at: revoked.revoked_at });
+    }
+  }
+  return {
+    key_id: revoked.key_id,
+    label: revoked.label || "AgentRouter client",
+    auth_method: revoked.auth_method || "api_key",
+    client_name: revoked.client_name || null,
+    status: "revoked",
+    revoked_at: revoked.revoked_at
   };
 }
 
@@ -113,7 +169,9 @@ export async function authenticateCreditRequest(store, req) {
     key: {
       key_id: key.key_id,
       label: key.label || null,
-      created_at: key.created_at || null
+      created_at: key.created_at || null,
+      auth_method: key.auth_method || "api_key",
+      client_name: key.client_name || null
     }
   };
 }

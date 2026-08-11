@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.9.0";
+const INSTALLER_VERSION = "0.10.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -184,7 +184,7 @@ export function formatInstallResult(result) {
       ...formatBrowserConnectorLines(result.browser_connector),
       "No local wallet was created. Hosted paid calls use AgentRouter account credits.",
       `For paid calls, sign in and manage credits at: ${result.payment.account_url}`,
-      "Never paste an AgentRouter API key into an AI chat; store it only in the local client configuration or a future secure-connect flow.",
+      "No API key setup is required. On the first paid call, use agentrouter_connect and approve the named client in your browser.",
       "Reload the AI client once if the new tools are not visible yet."
     ].join("\n") + "\n";
   }

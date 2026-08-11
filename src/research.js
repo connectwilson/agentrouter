@@ -1,4 +1,5 @@
 import { authModalHtml, authModalStyles } from "./auth-modal.js";
+import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
 
 const PLATFORMS = new Set(["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"]);
 const STANCES = new Set(["support", "oppose", "neutral"]);
@@ -93,7 +94,7 @@ export function researchHtml(auth = {}) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Creator Research Terminal · AgentRouter</title>
-  <style>
+  <style data-agentrouter-page-style>
     :root{--bg:#0b0c0e;--panel:#121418;--panel2:#181b20;--line:#292d34;--text:#f3f4f6;--muted:#8d95a3;--accent:#f0b90b;--green:#18b981;--red:#e6546b;--blue:#5aa7ff;--radius:10px;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-size:14px}.shell{max-width:1440px;margin:auto;padding:0 24px}.topbar{height:58px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:rgba(11,12,14,.94);backdrop-filter:blur(14px);z-index:20}.brand{display:flex;align-items:center;gap:10px;font-weight:800}.brand i{width:11px;height:11px;border-radius:3px;background:var(--accent);box-shadow:0 0 18px rgba(240,185,11,.38)}.topbar a{color:var(--muted);text-decoration:none;font-size:12px}.topbar a:hover{color:var(--text)}
     main{padding:32px 0 64px}.hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:22px}.eyebrow{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.12em;font-weight:800}.hero h1{font-size:34px;letter-spacing:-.04em;margin:8px 0}.hero p{margin:0;color:var(--muted);max-width:710px;line-height:1.65}.mode{border:1px solid var(--line);background:var(--panel);padding:8px 11px;border-radius:999px;color:var(--muted);font-size:11px}.mode b{color:var(--accent)}
@@ -106,9 +107,10 @@ export function researchHtml(auth = {}) {
     dialog{width:min(620px,calc(100vw - 30px));border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:10px;padding:0;box-shadow:0 28px 80px rgba(0,0,0,.55)}dialog::backdrop{background:rgba(0,0,0,.72)}.dialog-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.dialog-head h3{margin:0;font-size:14px}.dialog-body{padding:18px}.dialog-foot{padding:13px 18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:7px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     @media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{position:static}.metric-grid{grid-template-columns:1fr 1fr}.hero{align-items:flex-start;flex-direction:column}.columns{grid-template-columns:1fr}}@media(max-width:560px){.shell{padding:0 14px}.hero h1{font-size:27px}.metric-grid,.grid2{grid-template-columns:1fr}.actions{flex-wrap:wrap}.project-head{flex-direction:column}}
     ${authModalStyles()}
+    ${naiveDesignSystemStyles()}
   </style>
 </head>
-<body>
+<body data-agentrouter-app>
   <header class="topbar"><div class="shell" style="width:100%;display:flex;justify-content:space-between"><div class="brand"><i></i>Creator Research Terminal</div><nav style="display:flex;gap:14px;align-items:center"><button class="button" id="manage-connections">连接数据源</button><a href="/">AgentRouter</a>${authNavigation}</nav></div></header>
   <main class="shell">
     <section class="hero"><div><span class="eyebrow">Dogfood MVP · Evidence first</span><h1>从真实讨论到内容判断</h1><p>通过本地只读连接器检索 X、Reddit、小红书、B站、YouTube 和 Facebook。登录凭证与原始数据默认留在你的设备上。</p></div><div class="mode"><b>●</b> Local-first privacy</div></section>
@@ -172,6 +174,7 @@ export function researchHtml(auth = {}) {
     function save(){localStorage.setItem(storageKey,JSON.stringify(project))}try{const stored=JSON.parse(localStorage.getItem(storageKey));if(stored?.project_version){project=stored;el("question").value=project.question||"";render()}}catch{}
   </script>
 ${authModalHtml({ auth, returnTo: auth.loginReturnTo || "/research" })}
+<script data-agentrouter-spa>${clientRouterScript()}</script>
 </body></html>`;
 }
 

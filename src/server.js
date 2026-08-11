@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
-import { createMemoryStore, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
+import { createMemoryStore, listServiceCategoryCounts, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
   fetchApifyActorMetadata,
@@ -22,7 +22,8 @@ import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
-import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditLedger } from "./credits.js";
+import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey } from "./credits.js";
+import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
@@ -34,7 +35,9 @@ import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
 import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
+import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import {
+  bootstrapPublicApiPipeline,
   hydratePublicApiCoverage,
   listPublicApiCatalog,
   publicApiCoverageReport,
@@ -54,6 +57,10 @@ const clientLogoPaths = {
   "windsurf.svg": new URL("../public/assets/client-logos/windsurf.svg", import.meta.url)
 };
 const brandLogoPath = new URL("../public/assets/brand/logo.png", import.meta.url);
+const designFontPaths = {
+  "GeistPixel_Circle.woff2": new URL("../public/assets/fonts/GeistPixel_Circle.woff2", import.meta.url),
+  "GeistPixel_Square.woff2": new URL("../public/assets/fonts/GeistPixel_Square.woff2", import.meta.url)
+};
 const agentRouterSkillPath = new URL("../claude-skills/agent-router/SKILL.md", import.meta.url);
 const remoteMcpTools = [
   {
@@ -169,13 +176,17 @@ export function createServer({
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {}
 } = {}) {
+  const resolvedPublicApiPipelineOptions = {
+    ...publicApiAutomationOptions(),
+    ...publicApiPipelineOptions
+  };
   const server = http.createServer(async (req, res) => {
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
         socialResearchRunner,
         socialConnectionOptions,
         socialProviderFactory,
-        publicApiPipelineOptions
+        publicApiPipelineOptions: resolvedPublicApiPipelineOptions
       });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
@@ -189,6 +200,7 @@ export function createServer({
   });
 
   server.store = store;
+  server.publicApiPipelineOptions = resolvedPublicApiPipelineOptions;
   return server;
 }
 
@@ -212,6 +224,11 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/assets/client-logos/")) {
     await sendClientLogo(req, res, url);
+    return;
+  }
+
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/assets/fonts/")) {
+    await sendDesignFont(req, res, url);
     return;
   }
 
@@ -321,6 +338,60 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/auth/device/start") {
+    const body = await readJson(req);
+    sendJson(res, 201, beginDeviceAuthorization(store, {
+      baseUrl,
+      clientName: body.client_name || body.clientName || "AI agent"
+    }), { "cache-control": "no-store" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/device/token") {
+    const body = await readJson(req);
+    const result = await pollDeviceAuthorization(store, {
+      deviceCode: body.device_code,
+      issueCredential: ({ account, clientName }) => createCreditApiKey(store, {
+        account,
+        label: `Connected agent · ${clientName}`,
+        authMethod: "device",
+        clientName,
+        prefix: "ar_device"
+      })
+    });
+    const status = result.error === "slow_down" ? 429 : result.error ? 400 : 200;
+    sendJson(res, status, result, { "cache-control": "no-store" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/connect") {
+    const userCode = String(url.searchParams.get("user_code") || "").trim();
+    const authorization = getDeviceAuthorizationByUserCode(store, userCode);
+    if (!authorization) {
+      sendHtml(res, 400, deviceConnectHtml({ authorization: null, error: "This connection code is invalid or expired." }));
+      return;
+    }
+    if (!auth.user) {
+      const returnTo = `/connect?user_code=${encodeURIComponent(authorization.user_code)}`;
+      redirect(res, `/?login=1&return_to=${encodeURIComponent(returnTo)}`);
+      return;
+    }
+    sendHtml(res, 200, deviceConnectHtml({ authorization, user: auth.user }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/device/approve") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to connect this agent.");
+    const body = await readJson(req);
+    const account = await ensureCreditAccount(store, auth.user);
+    const approved = approveDeviceAuthorization(store, {
+      userCode: body.user_code,
+      account
+    });
+    sendJson(res, 200, approved, { "cache-control": "no-store" });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/webhooks/stripe/credits") {
     const rawBody = await readRawBody(req);
     const result = await processStripeCreditWebhook(store, {
@@ -343,6 +414,18 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/account/dashboard") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to view your AgentRouter dashboard.");
+    const account = await ensureCreditAccount(store, auth.user);
+    const [balance, ledger, apiKeys] = await Promise.all([
+      getCreditBalance(store, account.account_id),
+      listCreditLedger(store, account.account_id, { limit: 100 }),
+      listCreditApiKeys(store, account.account_id, { limit: 100 })
+    ]);
+    sendJson(res, 200, buildAccountDashboard({ account, balance, ledger, apiKeys }));
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/account/api-keys") {
     if (!auth.user) return sendAuthRequired(res, "Sign in to create an AgentRouter API key.");
     const body = await readJson(req);
@@ -352,6 +435,18 @@ async function routeRequest(req, res, store, baseUrl, {
       ...apiKey,
       note: "This API key is shown once. Store it in your AI client and do not share it."
     });
+    return;
+  }
+
+  const revokeKeyMatch = url.pathname.match(/^\/account\/api-keys\/([^/]+)\/revoke$/);
+  if (req.method === "POST" && revokeKeyMatch) {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to disconnect an AgentRouter client.");
+    const account = await ensureCreditAccount(store, auth.user);
+    const revoked = await revokeCreditApiKey(store, {
+      accountId: account.account_id,
+      keyId: decodeURIComponent(revokeKeyMatch[1])
+    });
+    sendJson(res, 200, revoked);
     return;
   }
 
@@ -476,6 +571,26 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/agent-router/service-categories") {
+    await loadProviderConfigs(store, baseUrl, { validate: false });
+    sendJson(res, 200, {
+      category_list_version: "agent_router_service_categories_v1",
+      total: store.services.size,
+      categories: listServiceCategoryCounts(store)
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/builtin-capabilities") {
+    const capabilities = getBuiltinCapabilities();
+    sendJson(res, 200, {
+      capability_list_version: "agent_router_builtin_capabilities_v1",
+      total: capabilities.length,
+      capabilities
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/agent-router/service") {
     const serviceId = url.searchParams.get("service_id");
     const record = store.services.get(serviceId);
@@ -518,14 +633,18 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "GET" && url.pathname === "/api/public-apis") {
-    sendJson(res, 200, listPublicApiCatalog(store, {
+    const catalog = listPublicApiCatalog(store, {
       query: url.searchParams.get("q"),
       category: url.searchParams.get("category"),
       availability: url.searchParams.get("availability"),
       status: url.searchParams.get("status"),
       limit: url.searchParams.get("limit"),
       offset: url.searchParams.get("offset")
-    }), {
+    });
+    sendJson(res, 200, {
+      ...catalog,
+      pipeline: publicApiPipelineProgress(store)
+    }, {
       "cache-control": "public, max-age=30, stale-while-revalidate=120"
     });
     return;
@@ -738,6 +857,9 @@ async function routeRequest(req, res, store, baseUrl, {
       ...publicApiPipelineOptions,
       limit: body.limit,
       concurrency: body.concurrency,
+      categories: body.categories,
+      sources: body.sources,
+      candidateIds: body.candidate_ids || body.candidateIds,
       baseUrl
     });
     sendJson(res, 200, result);
@@ -751,6 +873,9 @@ async function routeRequest(req, res, store, baseUrl, {
       ...publicApiPipelineOptions,
       limit: body.limit,
       concurrency: body.concurrency,
+      categories: body.categories,
+      sources: body.sources,
+      candidateIds: body.candidate_ids || body.candidateIds,
       baseUrl
     });
     sendJson(res, 202, { ok: true, accepted, job });
@@ -1671,6 +1796,23 @@ async function sendBrandLogo(req, res) {
   }
 }
 
+async function sendDesignFont(req, res, url) {
+  const fileName = decodeURIComponent(url.pathname.replace("/assets/fonts/", ""));
+  const filePath = designFontPaths[fileName];
+  if (!filePath) return sendNotFound(res, "DESIGN_FONT_NOT_FOUND");
+  try {
+    const body = await fs.readFile(filePath);
+    res.writeHead(200, {
+      "content-type": "font/woff2",
+      "cache-control": "public, max-age=86400",
+      "content-length": body.length
+    });
+    res.end(req.method === "HEAD" ? undefined : body);
+  } catch {
+    sendNotFound(res, "DESIGN_FONT_NOT_FOUND");
+  }
+}
+
 async function sendAgentRouterSkill(req, res) {
   try {
     const body = await fs.readFile(agentRouterSkillPath, "utf8");
@@ -1964,6 +2106,40 @@ function localServerPaidInvocationsAllowed(baseUrl) {
   }
 }
 
+function buildAccountDashboard({ account, balance, ledger = [], apiKeys = [] }) {
+  const since = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  const recent = ledger.filter((entry) => new Date(entry.created_at).getTime() >= since);
+  const paidCalls = recent.filter((entry) => entry.kind === "service_call");
+  const spend = paidCalls.reduce((sum, entry) => sum + Math.abs(Number(entry.delta) || 0), 0);
+  const topServiceCounts = new Map();
+  for (const entry of paidCalls) {
+    const serviceId = entry.service_id || "unknown_service";
+    topServiceCounts.set(serviceId, (topServiceCounts.get(serviceId) || 0) + Math.abs(Number(entry.delta) || 0));
+  }
+  const topServices = [...topServiceCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 5)
+    .map(([service_id, spend_credits]) => ({ service_id, spend_credits: Number(spend_credits.toFixed(6)) }));
+  return {
+    account: {
+      account_id: account.account_id,
+      user_profile: account.user_profile || {}
+    },
+    summary: {
+      available_credits: balance,
+      spend_30d: Number(spend.toFixed(6)),
+      successful_paid_calls: paidCalls.length,
+      active_api_keys: apiKeys.filter((key) => key.status === "active").length,
+      connected_agents: apiKeys.filter((key) => key.status === "active" && key.auth_method === "device").length,
+      developer_api_keys: apiKeys.filter((key) => key.status === "active" && key.auth_method !== "device").length,
+      window_days: 30
+    },
+    api_keys: apiKeys,
+    top_services: topServices,
+    recent_activity: ledger.slice(0, 12)
+  };
+}
+
 async function paidInvocationContext(req, baseUrl, store) {
   const consumerApiKey = creditApiKeyFromRequest(req);
   const creditIdentity = consumerApiKey ? await authenticateCreditRequest(store, req) : null;
@@ -2177,6 +2353,69 @@ function discoverPageHtml(result) {
   <h2>Raw Drafts</h2>
   <pre>${escapeHtml(JSON.stringify(result.drafts, null, 2))}</pre>
   <p><a href="/studio">Back to Provider Studio</a></p>
+</body>
+</html>`;
+}
+
+function deviceConnectHtml({ authorization, user = null, error = "" }) {
+  const title = authorization ? `Connect ${escapeHtml(authorization.client_name)}` : "Connection unavailable";
+  const code = authorization?.user_code || "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title} · AgentRouter</title>
+  <style>
+    :root { color-scheme:light; --ink:#151719; --muted:#6f7479; --line:#d8dcdf; --panel:#f3f4f2; --accent:#323842; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100svh; display:grid; place-items:center; padding:24px; background:#f3f4f2; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(100%,520px); padding:34px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 18px 55px rgba(22,27,29,.08); }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:34px; font-weight:800; letter-spacing:-.02em; }
+    .mark { display:grid; place-items:center; width:30px; height:30px; border-radius:8px; color:#fff; background:var(--accent); }
+    h1 { margin:0; font-size:28px; letter-spacing:-.04em; }
+    p { color:var(--muted); line-height:1.55; }
+    .code { margin:24px 0; padding:18px; border:1px solid var(--line); border-radius:10px; background:var(--panel); text-align:center; font:700 24px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; }
+    .identity { margin:20px 0; padding:12px 14px; border-left:3px solid var(--accent); background:var(--panel); font-size:14px; }
+    button { width:100%; min-height:46px; border:1px solid var(--accent); border-radius:8px; background:var(--accent); color:#fff; font:700 14px inherit; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .warning { font-size:12px; }
+    .error { color:#8c1d18; }
+    #result { margin-top:16px; font-size:14px; font-weight:650; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="mark">AR</span><span>AgentRouter</span></div>
+    <h1>${title}</h1>
+    ${authorization ? `
+      <p>This allows the agent to use your prepaid AgentRouter credits. It cannot see provider credentials or your GitHub password.</p>
+      <div class="code">${escapeHtml(code)}</div>
+      <div class="identity">Signed in as <strong>${escapeHtml(user?.name || user?.handle || "AgentRouter user")}</strong></div>
+      <button id="approve" type="button">Approve connection</button>
+      <p class="warning">Only approve if you started this connection from your own AI client.</p>
+      <div id="result" role="status"></div>
+      <script>
+        document.getElementById("approve").addEventListener("click", async function () {
+          this.disabled = true;
+          const result = document.getElementById("result");
+          try {
+            const response = await fetch("/auth/device/approve", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ user_code: ${JSON.stringify(code)} })
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error?.message || payload.error || "Approval failed");
+            result.textContent = "Connected. You can return to your AI client.";
+          } catch (error) {
+            result.className = "error";
+            result.textContent = error.message;
+            this.disabled = false;
+          }
+        });
+      </script>` : `<p class="error">${escapeHtml(error || "This connection request is unavailable.")}</p>`}
+  </main>
 </body>
 </html>`;
 }
@@ -3110,6 +3349,70 @@ export async function bootstrapServer(server, baseUrl) {
   await hydratePersistentServiceEvents(server.store);
   await hydrateSocialConnections(server.store);
   await hydratePublicApiCoverage(server.store);
+
+  const automation = publicApiAutomationOptions();
+  const publicApiBoot = await bootstrapPublicApiPipeline(server.store, {
+    ...server.publicApiPipelineOptions,
+    ...automation,
+    // The catalog was hydrated just above; avoid a duplicate database read.
+    hydrate: async () => publicApiCoverageReport(server.store)
+  });
+  server.publicApiPipelineBoot = publicApiBoot;
+  if (publicApiBoot.synced) server.publicApiLastCatalogSyncAt = Date.now();
+  if (!publicApiBoot.ok) {
+    console.warn("[public-api-pipeline] bootstrap deferred", JSON.stringify(publicApiBoot.error));
+  }
+  schedulePublicApiRefresh(server, automation);
+}
+
+export function publicApiAutomationOptions(env = process.env) {
+  return {
+    autoSync: env.ADN_PUBLIC_API_AUTOSYNC !== "0",
+    autoValidate: env.ADN_PUBLIC_API_AUTOVALIDATE !== "0",
+    validationLimit: Math.max(1, Math.min(100, Number(env.ADN_PUBLIC_API_AUTOVALIDATE_LIMIT) || 50)),
+    // Some local/corporate development networks map public DNS through the
+    // RFC 2544 synthetic range. Keep this explicit so it never weakens the
+    // normal production SSRF boundary.
+    allowSyntheticProxyAddresses: env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES === "1",
+    refreshIntervalMs: Math.max(0, Number(env.ADN_PUBLIC_API_REFRESH_INTERVAL_MS) || 5 * 60 * 1000),
+    catalogRefreshIntervalMs: Math.max(0, Number(env.ADN_PUBLIC_API_CATALOG_REFRESH_INTERVAL_MS) || 24 * 60 * 60 * 1000)
+  };
+}
+
+function schedulePublicApiRefresh(server, automation) {
+  if (server.publicApiPipelineTimer || automation.refreshIntervalMs <= 0) return;
+  const refresh = async () => {
+    const now = Date.now();
+    const forceSync = !server.publicApiLastCatalogSyncAt
+      || now - server.publicApiLastCatalogSyncAt >= automation.catalogRefreshIntervalMs;
+    const result = await bootstrapPublicApiPipeline(server.store, {
+      ...server.publicApiPipelineOptions,
+      ...automation,
+      forceSync
+    });
+    if (result.synced) server.publicApiLastCatalogSyncAt = now;
+    if (!result.ok) console.warn("[public-api-pipeline] scheduled refresh deferred", JSON.stringify(result.error));
+  };
+  server.publicApiPipelineTimer = setInterval(() => {
+    void refresh();
+  }, automation.refreshIntervalMs);
+  server.publicApiPipelineTimer.unref?.();
+  server.once("close", () => clearInterval(server.publicApiPipelineTimer));
+}
+
+function publicApiPipelineProgress(store) {
+  const candidates = [...(store.publicApiCatalog?.values?.() || [])]
+    .filter((candidate) => candidate.catalog_presence !== "removed");
+  const job = store.publicApiPipelineJob || null;
+  return {
+    status: job?.status || "idle",
+    started_at: job?.started_at || null,
+    completed_at: job?.completed_at || null,
+    processed: candidates.filter((candidate) => Number(candidate.attempt_count || 0) > 0).length,
+    queued: candidates.filter((candidate) => ["queued", "retryable_failure"].includes(candidate.status)).length,
+    promoted_services: candidates.reduce((total, candidate) => total + (candidate.promotion?.service_ids?.length || 0), 0),
+    error: job?.error || null
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

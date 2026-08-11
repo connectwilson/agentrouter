@@ -36,5 +36,7 @@ configuration:
 npx @agentrouternetwork/agentrouter --http-only
 ```
 
-Hosted paid calls use AgentRouter account credits and an optional API key
-created outside the installer.
+Hosted paid calls use AgentRouter account credits. On the first paid call, the
+local bridge provides a browser approval link and securely remembers the
+connection; users do not copy an API key into the MCP configuration. Manual
+API keys remain available only for CI and headless servers.

@@ -213,7 +213,12 @@ export async function fetchPublicApiCatalogEntries(options = {}) {
 // human documentation page (which is why the public-apis catalog mostly fails).
 export async function fetchApisGuruCatalogEntries(options = {}) {
   const source = "https://api.apis.guru/v2/list.json";
-  const response = await fetchWithTimeout(source, { fetchImpl: options.fetchImpl || globalThis.fetch });
+  // This is a multi-megabyte index. It should not inherit the short timeout
+  // for ordinary documentation pages, but it must remain bounded.
+  const response = await fetchWithTimeout(source, {
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    timeoutMs: Number(options.catalogTimeoutMs || process.env.ADN_APIS_GURU_CATALOG_TIMEOUT_MS || 60000)
+  });
   if (!response.ok) {
     const error = new Error(`APIs.guru catalog fetch failed with HTTP ${response.status}.`);
     error.statusCode = 502;
@@ -2216,8 +2221,7 @@ function requireString(value, name) {
 }
 
 function fetchWithTimeout(url, options = {}) {
-  const timeoutMs = Number(process.env.ADN_DOCS_FETCH_TIMEOUT_MS || 12000);
-  const { fetchImpl = globalThis.fetch, ...fetchOptions } = options;
+  const { fetchImpl = globalThis.fetch, timeoutMs = Number(process.env.ADN_DOCS_FETCH_TIMEOUT_MS || 12000), ...fetchOptions } = options;
   return fetchImpl(url, {
     ...fetchOptions,
     signal: fetchOptions.signal || AbortSignal.timeout(timeoutMs)

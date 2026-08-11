@@ -19,7 +19,7 @@ process.env.ADN_ERC8004_MODE = "mock";
 process.env.ADN_ERC8004_AGENT_ID = "1001";
 process.env.ADN_PROVIDER_RECEIVE_ADDRESS = "0x2c4d600a04c0d3bbb1e3cc8a13e54e21c2b6c0bb";
 
-const { createServer, seedDemoService } = await import("../src/server.js");
+const { createServer, publicApiAutomationOptions, seedDemoService } = await import("../src/server.js");
 const { loadProviderConfigs, registerService, searchServices } = await import("../src/registry.js");
 const { withCurrentRuntimeEndpoint } = await import("../src/registry.js");
 const { baseFundFlowManifest } = await import("../src/fixtures.js");
@@ -38,6 +38,7 @@ const { currentPaymentBackend } = await import("../src/payment-adapter.js");
 const { invokePaidServiceWithLocalWallet } = await import("../src/local-invoke.js");
 const { DEFAULT_PACKAGE_SPEC, diagnoseAgentRouter, formatDoctorResult, formatInstallResult, installAgentRouter, installUsage, parseInstallArgs } = await import("../src/agentrouter-installer.js");
 const { buildServiceAwareInput, inferIntent } = await import("../src/agent-router.js");
+const { createHostedHttpProviderConfig, deleteProviderConfig, writeProviderConfig } = await import("../src/provider-config.js");
 
 test.after(async () => {
   await fs.rm(runtimeRoot, { recursive: true, force: true });
@@ -159,8 +160,24 @@ test("home page and Provider Studio render separately", async () => {
     assert.equal(agent.status, 200);
     const agentHtml = await agent.text();
     assert.match(agentHtml, /API Hub for agents/);
+    assert.doesNotMatch(agentHtml, /Built-in capabilities/);
+    assert.match(agentHtml, /Social research/);
     assert.match(agentHtml, /Available services/);
+    assert.match(agentHtml, /Use browser/);
+    assert.match(agentHtml, /Free/);
     assert.doesNotMatch(agentHtml, /Universal MCP command/);
+
+    const builtInCapabilitiesResponse = await fetch(`${baseUrl}/agent-router/builtin-capabilities`);
+    assert.equal(builtInCapabilitiesResponse.status, 200);
+    const builtInCapabilities = await builtInCapabilitiesResponse.json();
+    assert.equal(builtInCapabilities.total, 2);
+    assert.deepEqual(
+      builtInCapabilities.capabilities.map((capability) => capability.capability),
+      ["social_user_voice_research", "social_post_read"]
+    );
+    assert.deepEqual(builtInCapabilities.capabilities[0].platforms, ["X", "Reddit", "小红书", "B站", "YouTube", "Facebook"]);
+    assert.equal(builtInCapabilities.capabilities[0].execution_location, "user_device");
+    assert.equal(builtInCapabilities.capabilities[0].credential_policy, "never_upload");
 
     const lockedStudio = await fetch(`${baseUrl}/studio`, { redirect: "manual" });
     assert.equal(lockedStudio.status, 302);
@@ -588,7 +605,7 @@ test("public agentrouter npm installer configures one local MCP bridge by defaul
     const packageDir = path.join(process.cwd(), "packages", "agentrouter-installer");
     const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
     assert.equal(packageJson.name, "@agentrouternetwork/agentrouter");
-    assert.equal(packageJson.version, "0.9.0");
+    assert.equal(packageJson.version, "0.10.0");
     assert.deepEqual(packageJson.files, ["bin", "server", "README.md", "LICENSE"]);
     assert.deepEqual(packageJson.bin, { agentrouter: "./bin/agentrouter.js" });
     assert.deepEqual(packageJson.dependencies || {}, {});
@@ -1618,6 +1635,47 @@ test("AgentRouter services endpoint returns paginated lightweight service summar
   });
 });
 
+test("AgentRouter category endpoint returns only populated, mutually-exclusive callable-service categories", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/service-categories`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+
+    assert.equal(payload.category_list_version, "agent_router_service_categories_v1");
+    assert.ok(payload.total > 0);
+    assert.ok(payload.categories.length > 0);
+    assert.ok(payload.categories.every((entry) => entry.count > 0));
+    assert.equal(
+      payload.total,
+      payload.categories.reduce((total, entry) => total + entry.count, 0),
+      "All must equal the sum of the visible child categories"
+    );
+    assert.ok(payload.categories.every((entry) => !["Animals", "Finance", "Weather"].includes(entry.category)));
+  });
+});
+
+test("Public API automation keeps draining validated candidates instead of waiting a day", () => {
+  const options = publicApiAutomationOptions({});
+  assert.equal(options.validationLimit, 50);
+  assert.equal(options.refreshIntervalMs, 5 * 60 * 1000);
+  assert.equal(options.catalogRefreshIntervalMs, 24 * 60 * 60 * 1000);
+  assert.equal(options.allowSyntheticProxyAddresses, false);
+  assert.equal(publicApiAutomationOptions({ ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES: "1" }).allowSyntheticProxyAddresses, true);
+});
+
+test("Public API HTTP runs inherit the explicit synthetic-proxy compatibility setting", () => {
+  const previous = process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES;
+  process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES = "1";
+  try {
+    const server = createServer();
+    assert.equal(server.publicApiPipelineOptions.allowSyntheticProxyAddresses, true);
+    server.close();
+  } finally {
+    if (previous == null) delete process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES;
+    else process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES = previous;
+  }
+});
+
 test("AgentRouter quote simulates route and payment guards without invoking provider", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/agent-router/quote`, {
@@ -2190,7 +2248,10 @@ test("AgentRouter npm MCP package discovers new tools from remote MCP without a 
       clientInfo: { name: "npm-remote-discovery-test", version: "0.1.0" }
     });
     const listed = await client.request("tools/list", {});
-    assert.deepEqual(listed.tools.map((tool) => tool.name), ["server_added_after_client_publish"]);
+    assert.deepEqual(listed.tools.map((tool) => tool.name), [
+      "agentrouter_connect",
+      "server_added_after_client_publish"
+    ]);
   } finally {
     client.close();
     await new Promise((resolve) => server.close(resolve));
@@ -4619,6 +4680,37 @@ test("provider configs can be reloaded into a fresh registry after restart", asy
       await new Promise((resolve) => freshServer.close(resolve));
     }
   });
+});
+
+test("provider config reload skips a duplicate persisted source without breaking service discovery", async () => {
+  const firstId = "duplicate_source_reload_one";
+  const secondId = "duplicate_source_reload_two";
+  const baseUrl = "http://127.0.0.1:8799";
+  const makeConfig = (serviceId) => createHostedHttpProviderConfig({
+    baseUrl,
+    serviceId,
+    providerId: "duplicate_source_reload_provider",
+    title: "Duplicate source reload",
+    description: "Reload safety test.",
+    capabilities: ["data_service"],
+    price: "0.01",
+    sampleRequest: {},
+    sampleData: {},
+    upstreamUrl: "https://example.com/identical-source",
+    upstreamMethod: "GET",
+    summary: "Reload safety test."
+  });
+  await writeProviderConfig(makeConfig(firstId));
+  await writeProviderConfig(makeConfig(secondId));
+  try {
+    const store = createMemoryStore();
+    const loaded = await loadProviderConfigs(store, baseUrl, { validate: false });
+    assert.equal(store.services.has(firstId) || store.services.has(secondId), true);
+    assert.equal(loaded.some((entry) => entry.duplicate_source === true), true);
+  } finally {
+    await deleteProviderConfig(firstId);
+    await deleteProviderConfig(secondId);
+  }
 });
 
 test("failed provider configs are not persisted or loaded after failed registration", async () => {

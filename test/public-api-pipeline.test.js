@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assertSafePublicUrl,
+  bootstrapPublicApiPipeline,
+  fetchDefaultPublicApiCatalogEntries,
   createSafePublicFetch,
   createSerializedTask,
   publicApiCoverageReport,
@@ -13,7 +15,7 @@ import {
 } from "../src/public-api-pipeline.js";
 import { createServer } from "../src/server.js";
 import { createMemoryStore } from "../src/store.js";
-import { discoverApiServices } from "../src/openapi-import.js";
+import { discoverApiServices, fetchApisGuruCatalogEntries } from "../src/openapi-import.js";
 
 const catalogEntries = [
   {
@@ -69,6 +71,69 @@ test("catalog sync gives every API a durable coverage state", async () => {
   const legacy = [...store.publicApiCatalog.values()].find((item) => item.title === "Old HTTP API");
   assert.equal(legacy.status, "blocked_insecure_transport");
   assert.equal(legacy.blocking_reason, "https_required");
+});
+
+test("default catalog sync combines public-apis discovery with spec-first APIs.guru entries", async () => {
+  const entries = await fetchDefaultPublicApiCatalogEntries({
+    fetchPublicApisEntries: async () => [{ title: "Directory API", source_catalog: "github:public-apis/public-apis" }],
+    fetchApisGuruEntries: async () => [{ title: "Spec API", source_catalog: "apis.guru", spec_url: "https://spec.example/openapi.json" }]
+  });
+
+  assert.deepEqual(entries.map((entry) => entry.title), [
+    "Directory API",
+    "Spec API",
+    "GitHub public API root",
+    "CoinGecko API health",
+    "Open-Meteo current conditions",
+    "Dog CEO random image",
+    "Cat Facts random fact",
+    "PokéAPI Pikachu",
+    "Agify age estimate",
+    "Random User sample",
+    "Open Library search sample",
+    "REST Countries names",
+    "Genderize estimate"
+  ]);
+});
+
+test("APIs.guru catalog gets its own bounded timeout for the large spec directory", async () => {
+  await assert.rejects(
+    fetchApisGuruCatalogEntries({
+      catalogTimeoutMs: 5,
+      fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+        const keepAlive = setTimeout(() => reject(new Error("catalog timeout did not abort")), 100);
+        options.signal.addEventListener("abort", () => {
+          clearTimeout(keepAlive);
+          reject(new DOMException("Timed out", "AbortError"));
+        });
+      })
+    }),
+    (error) => error.name === "AbortError"
+  );
+});
+
+test("empty Public APIs coverage is synchronized and queued for a bounded automatic validation batch", async () => {
+  const store = pipelineStore();
+  const conversions = [];
+
+  const result = await bootstrapPublicApiPipeline(store, {
+    hydrate: async () => publicApiCoverageReport(store),
+    fetchCatalogEntries: async () => catalogEntries,
+    persistCandidates: async () => {},
+    persistRun: async () => {},
+    startConversionJob: (target, options) => {
+      conversions.push({ target, options });
+      return { accepted: true, job: { status: "running" } };
+    },
+    validationLimit: 12
+  });
+
+  assert.equal(result.synced, true);
+  assert.equal(result.coverage.active, 3);
+  assert.equal(result.validation.accepted, true);
+  assert.equal(conversions.length, 1);
+  assert.equal(conversions[0].target, store);
+  assert.equal(conversions[0].options.limit, 12);
 });
 
 test("catalog resync preserves completed work and marks removed entries", async () => {
@@ -152,6 +217,88 @@ test("conversion discovers read-only drafts, probes public APIs, and separates c
   assert.equal(security.status, "credential_required");
   assert.equal(security.blocking_reason, "provider_credential_required");
   assert.equal(result.coverage.total, 3);
+});
+
+test("conversion can target an explicitly selected catalog candidate for deterministic recovery", async () => {
+  const store = pipelineStore();
+  await syncPublicApiCoverage(store, {
+    fetchCatalogEntries: async () => catalogEntries
+  });
+
+  const weather = [...store.publicApiCatalog.values()].find((item) => item.title === "Open Weather");
+  const result = await runPublicApiConversionBatch(store, {
+    candidateIds: [weather.candidate_id],
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => ({
+      ok: true,
+      drafts: [{ method: "GET", upstream_url: "https://weather.example/v1/forecast", sample_request: {} }]
+    }),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    autoPublish: false
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(weather.status, "validated_ready");
+  const security = [...store.publicApiCatalog.values()].find((item) => item.title === "Secure Scan");
+  assert.equal(security.status, "queued");
+});
+
+test("validated candidates with a failed registration are retried instead of remaining callable only on paper", async () => {
+  const store = pipelineStore();
+  await syncPublicApiCoverage(store, { fetchCatalogEntries: async () => [catalogEntries[0]] });
+  const candidate = [...store.publicApiCatalog.values()][0];
+  candidate.status = "validated_ready";
+  candidate.promotion = { ok: false, service_ids: [] };
+
+  const result = await runPublicApiConversionBatch(store, {
+    candidateIds: [candidate.candidate_id],
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => ({ ok: true, drafts: [{ method: "GET", upstream_url: "https://weather.example/data", sample_request: {} }] }),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    autoPublish: false
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(candidate.status, "validated_ready");
+});
+
+test("validated public API drafts are promoted with their catalog category only after a successful probe", async () => {
+  const store = pipelineStore();
+  await syncPublicApiCoverage(store, {
+    fetchCatalogEntries: async () => [catalogEntries[0]],
+    persistCandidates: async () => {},
+    persistRun: async () => {}
+  });
+  const promotions = [];
+
+  await runPublicApiConversionBatch(store, {
+    persistCandidates: async () => {},
+    persistRun: async () => {},
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => ({
+      ok: true,
+      drafts: [{
+        service_id: "open_weather_forecast",
+        title: "Open Weather forecast",
+        method: "GET",
+        upstream_url: "https://weather.example/v1/forecast",
+        capabilities: ["weather_forecast"],
+        sample_request: {}
+      }]
+    }),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    promoteDrafts: async (candidate, drafts) => {
+      promotions.push({ candidate, drafts });
+      return { ok: true, service_ids: ["open_weather_forecast"] };
+    }
+  });
+
+  const candidate = [...store.publicApiCatalog.values()][0];
+  assert.equal(candidate.status, "validated_ready");
+  assert.deepEqual(candidate.promotion.service_ids, ["open_weather_forecast"]);
+  assert.equal(promotions.length, 1);
+  assert.equal(promotions[0].candidate.category, "Weather");
+  assert.equal(promotions[0].drafts[0].upstream_url, "https://weather.example/v1/forecast");
 });
 
 test("conversion probes every discovered GET endpoint and keeps an auditable usable/unusable split", async () => {
@@ -445,6 +592,16 @@ test("automatic conversion rejects local and private network targets", async () 
   );
 });
 
+test("automatic conversion bounds a stalled public DNS lookup", async () => {
+  await assert.rejects(
+    () => assertSafePublicUrl("https://stalled.example/data", {
+      lookup: async () => new Promise(() => {}),
+      dnsTimeoutMs: 5
+    }),
+    (error) => error.code === "CATALOG_TARGET_DNS_TIMEOUT"
+  );
+});
+
 test("synthetic proxy DNS can be allowed explicitly without allowing real private targets", async () => {
   await assert.rejects(
     assertSafePublicUrl("https://api.example.com/data", {
@@ -588,6 +745,11 @@ test("pipeline HTTP API requires an admin token and exposes durable coverage", a
 
 test("public website exposes tested Public APIs with availability reasons without login", async (t) => {
   const store = createMemoryStore();
+  store.publicApiPipelineJob = {
+    job_id: "job_live_validation",
+    status: "running",
+    started_at: "2026-08-11T00:00:00.000Z"
+  };
   store.publicApiCatalog.set("usable", {
     candidate_id: "usable",
     catalog_presence: "active",
@@ -640,6 +802,8 @@ test("public website exposes tested Public APIs with availability reasons withou
   assert.equal(payload.apis[0].title, "Open Weather");
   assert.equal(payload.apis[0].availability, "usable");
   assert.deepEqual(payload.apis[0].endpoints.map((item) => item.service_id), ["weather_current"]);
+  assert.equal(payload.pipeline.status, "running");
+  assert.equal(payload.pipeline.processed, 0);
 
   const page = await fetch(`${baseUrl}/public-apis`);
   assert.equal(page.status, 200);
@@ -730,6 +894,15 @@ test("higher tiers are converted before lower ones", async () => {
   ]);
   const attempted = await runTierBatch(store, { categories: resolvePriorityCategories("P0,P1,P2") });
   assert.deepEqual(attempted, ["Gov P0", "Crypto P1", "Health P2"]);
+});
+
+test("spec-first candidates are converted before documentation-only candidates", async () => {
+  const store = tierStore([
+    { title: "Docs first-tier", category: "Government", auth: "No", source_catalog: "github:public-apis/public-apis" },
+    { title: "Spec lower-tier", category: "Development", auth: "No", source_catalog: "apis.guru" }
+  ]);
+  const attempted = await runTierBatch(store, { limit: 1 });
+  assert.deepEqual(attempted, ["Spec lower-tier"]);
 });
 
 test("APIs.guru entries arrive spec-first so conversion skips doc scraping", async () => {

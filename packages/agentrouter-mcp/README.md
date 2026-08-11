@@ -17,7 +17,9 @@ system password, Keychain access, or cookie values. The legacy `twitter` CLI is
 disabled by default and is attempted only when the MCP process is explicitly
 configured with `AGENTROUTER_ALLOW_TWITTER_CLI_FALLBACK=1`.
 
-Create `AGENT_ROUTER_API_KEY` from the signed-in AgentRouter account page. When present, the MCP server uses the prepaid credits balance and does not require a local Arc wallet.
+For paid calls, no API key needs to be copied into the MCP configuration. On the first request that needs account credits, call the bridge's `agentrouter_connect` tool. It returns a short browser approval link; after the user approves, the bridge stores the device credential privately and uses the prepaid balance automatically. The credential is never returned to the AI agent.
+
+`AGENT_ROUTER_API_KEY` remains an advanced override for CI and headless servers that cannot open a browser.
 
 ## Usage
 
@@ -36,8 +38,7 @@ Most AI clients configure MCP like this:
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_API_KEY": "ar_live_..."
+        "AGENT_ROUTER_URL": "https://agentrouter.network"
       }
     }
   }
@@ -70,7 +71,7 @@ To refresh the Skill and migrate an older GitHub-based MCP config:
 curl -fsSL https://agentrouter.network/update.sh | bash
 ```
 
-The updater preserves AgentRouter API keys, custom environment settings, unrelated MCP servers, and existing wallet files.
+The updater preserves optional developer API keys, device credentials, custom environment settings, unrelated MCP servers, and existing wallet files.
 
 ## Protocol Boundary
 

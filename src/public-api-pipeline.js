@@ -1,16 +1,135 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { discoverApiServices, fetchPublicApiCatalogEntries } from "./openapi-import.js";
+import { discoverApiServices, fetchApisGuruCatalogEntries, fetchPublicApiCatalogEntries } from "./openapi-import.js";
 import {
   listPersistentPublicApiCandidates,
   listPersistentPublicApiPipelineRuns,
   writePersistentPublicApiCandidates,
   writePersistentPublicApiPipelineRun
 } from "./persistence.js";
+import { createHostedHttpProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
+import { registerService, unregisterService, validateService } from "./registry.js";
 
 const RETRYABLE_STATUSES = new Set(["queued", "retryable_failure"]);
 const DEFAULT_SOURCE_CATALOG = "github:public-apis/public-apis";
+
+// Small, intentionally curated bootstrap set. These are public JSON endpoints
+// that give a fresh install useful callable coverage even when a third-party
+// catalog is slow or unavailable. They still traverse the identical live probe
+// and registration gates as every imported candidate.
+const VERIFIED_PUBLIC_API_SEEDS = [
+  {
+    category: "Development",
+    title: "GitHub public API root",
+    description: "Public GitHub REST API entrypoint and capability links.",
+    documentation_url: "https://api.github.com/",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Cryptocurrency",
+    title: "CoinGecko API health",
+    description: "Public CoinGecko API availability signal.",
+    documentation_url: "https://api.coingecko.com/api/v3/ping",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Weather",
+    title: "Open-Meteo current conditions",
+    description: "Public current temperature sample from Open-Meteo.",
+    documentation_url: "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current=temperature_2m",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Animals",
+    title: "Dog CEO random image",
+    description: "Public random dog image metadata from Dog CEO.",
+    documentation_url: "https://dog.ceo/api/breeds/image/random",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Animals",
+    title: "Cat Facts random fact",
+    description: "Public random cat fact from Cat Facts.",
+    documentation_url: "https://catfact.ninja/fact",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Games & Comics",
+    title: "PokéAPI Pikachu",
+    description: "Public Pokémon data sample from PokéAPI.",
+    documentation_url: "https://pokeapi.co/api/v2/pokemon/pikachu",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Data Validation",
+    title: "Agify age estimate",
+    description: "Public age estimate sample from Agify.",
+    documentation_url: "https://api.agify.io/?name=michael",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Test Data",
+    title: "Random User sample",
+    description: "Public synthetic user record from Random User.",
+    documentation_url: "https://randomuser.me/api/",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Books",
+    title: "Open Library search sample",
+    description: "Public book search result sample from Open Library.",
+    documentation_url: "https://openlibrary.org/search.json?q=the+lord+of+the+rings&limit=1",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Geocoding",
+    title: "REST Countries names",
+    description: "Public country names and ISO codes from REST Countries.",
+    documentation_url: "https://restcountries.com/v3.1/all?fields=name,cca2",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Data Validation",
+    title: "Genderize estimate",
+    description: "Public name-based gender estimate sample from Genderize.",
+    documentation_url: "https://api.genderize.io/?name=luc",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  }
+];
 
 // Blanket conversion is not worth it: most public-apis rows are just a homepage
 // link with no machine-readable spec, so ~87% of attempts die on endpoint
@@ -42,6 +161,11 @@ function categoryRank(category) {
   const rank = TIER_RANK.get(String(category || "").toLowerCase());
   return rank === undefined ? TIER_RANK.size : rank;
 }
+
+function isSpecFirstCatalog(candidate) {
+  return candidate?.source_catalog === "apis.guru" || Boolean(candidate?.spec_url);
+}
+
 const FINAL_STATUSES = new Set([
   "validated_ready",
   "credential_required",
@@ -49,10 +173,26 @@ const FINAL_STATUSES = new Set([
   "blocked_insecure_transport"
 ]);
 
+export async function fetchDefaultPublicApiCatalogEntries(options = {}) {
+  const fetchPublicApisEntries = options.fetchPublicApisEntries || fetchPublicApiCatalogEntries;
+  const fetchApisGuruEntries = options.fetchApisGuruEntries || fetchApisGuruCatalogEntries;
+  const results = await Promise.allSettled([
+    fetchPublicApisEntries({ fetchImpl: options.fetchImpl }),
+    fetchApisGuruEntries({ fetchImpl: options.fetchImpl })
+  ]);
+  const entries = results
+    .filter((result) => result.status === "fulfilled")
+    .flatMap((result) => result.value || [])
+    .concat(VERIFIED_PUBLIC_API_SEEDS);
+  if (entries.length) return entries;
+  const failure = results.find((result) => result.status === "rejected")?.reason;
+  throw failure || new Error("No Public API catalog sources were available.");
+}
+
 export async function syncPublicApiCoverage(store, options = {}) {
   ensurePipelineStore(store);
   const now = timestamp(options);
-  const fetchEntries = options.fetchCatalogEntries || fetchPublicApiCatalogEntries;
+  const fetchEntries = options.fetchCatalogEntries || fetchDefaultPublicApiCatalogEntries;
   const entries = await fetchEntries({ fetchImpl: options.fetchImpl });
   const seen = new Set();
 
@@ -123,18 +263,67 @@ export async function syncPublicApiCoverage(store, options = {}) {
   };
 }
 
+// Keep the public catalog useful without making application availability depend
+// on GitHub or third-party API documentation. The caller can run this on boot
+// and on a timer; sync failures are returned as diagnostics rather than thrown.
+export async function bootstrapPublicApiPipeline(store, options = {}) {
+  ensurePipelineStore(store);
+  const hydrate = options.hydrate || hydratePublicApiCoverage;
+  const startConversionJob = options.startConversionJob || startPublicApiConversionJob;
+  const autoSync = options.autoSync !== false;
+  const autoValidate = options.autoValidate !== false;
+  const validationLimit = clamp(options.validationLimit, 1, 100, 25);
+  let coverage;
+
+  try {
+    coverage = await hydrate(store, options);
+    let synced = false;
+    let sync = null;
+    if (autoSync && (options.forceSync === true || coverage.active === 0)) {
+      sync = await syncPublicApiCoverage(store, options);
+      coverage = sync.coverage;
+      synced = true;
+    }
+
+    const hasQueuedCandidates = [...store.publicApiCatalog.values()].some((candidate) =>
+      candidate.catalog_presence !== "removed" && RETRYABLE_STATUSES.has(candidate.status)
+    );
+    const validation = autoValidate && hasQueuedCandidates
+      ? startConversionJob(store, { ...options, limit: validationLimit })
+      : null;
+
+    return { ok: true, synced, sync, coverage, validation };
+  } catch (error) {
+    return {
+      ok: false,
+      synced: false,
+      coverage: coverage || publicApiCoverageReport(store),
+      error: {
+        code: error.code || "PUBLIC_API_BOOTSTRAP_FAILED",
+        message: String(error.message || error)
+      }
+    };
+  }
+}
+
 export async function runPublicApiConversionBatch(store, options = {}) {
   ensurePipelineStore(store);
   const limit = clamp(options.limit, 1, 100, 25);
   const concurrency = clamp(options.concurrency, 1, 5, 3);
   const categoryFilter = normalizeCategoryFilter(options.categories);
   const sourceFilter = normalizeCategoryFilter(options.sources);
+  const candidateIdFilter = normalizeCategoryFilter(options.candidateIds || options.candidate_ids);
   const selected = [...store.publicApiCatalog.values()]
-    .filter((candidate) => candidate.catalog_presence !== "removed" && RETRYABLE_STATUSES.has(candidate.status))
+    .filter((candidate) => candidate.catalog_presence !== "removed" && (
+      RETRYABLE_STATUSES.has(candidate.status)
+      || (candidate.status === "validated_ready" && candidate.promotion?.ok === false)
+    ))
     .filter((candidate) => !categoryFilter || categoryFilter.has(String(candidate.category || "").toLowerCase()))
     .filter((candidate) => !sourceFilter || sourceFilter.has(String(candidate.source_catalog || DEFAULT_SOURCE_CATALOG).toLowerCase()))
+    .filter((candidate) => !candidateIdFilter || candidateIdFilter.has(String(candidate.candidate_id || "").toLowerCase()))
     .sort((left, right) =>
       Number(right.retry_priority === true) - Number(left.retry_priority === true)
+      || Number(isSpecFirstCatalog(right)) - Number(isSpecFirstCatalog(left))
       || categoryRank(left.category) - categoryRank(right.category)
       || retryPriority(left.status) - retryPriority(right.status)
       || Number(left.attempt_count || 0) - Number(right.attempt_count || 0)
@@ -243,6 +432,25 @@ export async function runPublicApiConversionBatch(store, options = {}) {
         usable_endpoint_count: candidate.usable_drafts.length,
         unusable_endpoint_count: candidate.unusable_drafts.length
       };
+      if (options.autoPublish !== false) {
+        const promote = options.promoteDrafts || ((entry, drafts) =>
+          promoteValidatedPublicApiDrafts(store, entry, drafts, options)
+        );
+        try {
+          candidate.promotion = await promote(candidate, candidate.usable_drafts);
+        } catch (error) {
+          // A direct probe already established the candidate is valid. Keep
+          // that evidence and record promotion failure separately for retry.
+          candidate.promotion = {
+            ok: false,
+            service_ids: [],
+            error: {
+              code: error.code || "PUBLIC_API_PROMOTION_FAILED",
+              message: String(error.message || error)
+            }
+          };
+        }
+      }
     } catch (error) {
       candidate.status = error.code === "UNSAFE_CATALOG_TARGET" ? "manual_review" : "retryable_failure";
       candidate.blocking_reason = error.code === "UNSAFE_CATALOG_TARGET" ? "unsafe_network_target" : null;
@@ -272,6 +480,79 @@ export async function runPublicApiConversionBatch(store, options = {}) {
     processed: selected.length,
     coverage: publicApiCoverageReport(store),
     run
+  };
+}
+
+export async function promoteValidatedPublicApiDrafts(store, candidate, drafts, options = {}) {
+  const published = [];
+  const failed = [];
+  const providerId = "public_apis_catalog";
+  const baseUrl = options.baseUrl || "";
+
+  for (const [index, draft] of drafts.entries()) {
+    const serviceId = publicApiServiceId(candidate, index);
+    try {
+      const existing = store.services.get(serviceId);
+      if (existing?.verification_status === "verified") {
+        published.push({ service_id: serviceId, already_registered: true });
+        continue;
+      }
+      if (existing) unregisterService(store, serviceId);
+
+      const config = createHostedHttpProviderConfig({
+        baseUrl,
+        serviceId,
+        providerId,
+        title: draft.title || candidate.title || serviceId,
+        description: candidate.description || `${candidate.title || "Public API"} verified from the Public APIs catalog.`,
+        capabilities: draft.capabilities?.length ? draft.capabilities : ["data_service"],
+        // The registry requires a strictly positive decimal. This is the
+        // smallest supported price, making public catalog services effectively
+        // free while still preserving the unified invocation contract.
+        price: "0.000001",
+        sampleRequest: draft.sample_request || {},
+        sampleData: {},
+        upstreamUrl: draft.upstream_url,
+        upstreamMethod: "GET",
+        summary: `Read-only public endpoint validated from ${candidate.source_catalog || DEFAULT_SOURCE_CATALOG}.`
+      });
+      config.manifest.source_provenance = {
+        source_type: "public_api_catalog",
+        source_catalog: candidate.source_catalog || DEFAULT_SOURCE_CATALOG,
+        catalog_candidate_id: candidate.candidate_id,
+        catalog_category: candidate.category || "Uncategorized",
+        documentation_url: candidate.documentation_url || null,
+        validation: draft.validation || candidate.validation || null
+      };
+      config.source.catalog = config.manifest.source_provenance;
+
+      await writeProviderConfig(config);
+      registerService(store, config.manifest, baseUrl);
+      const validation = await validateService(store, serviceId);
+      if (!validation.ok) {
+        unregisterService(store, serviceId);
+        await deleteProviderConfig(serviceId);
+        failed.push({ service_id: serviceId, error: "PROMOTION_VALIDATION_FAILED", validation });
+        continue;
+      }
+      published.push({ service_id: serviceId, validation });
+    } catch (error) {
+      unregisterService(store, serviceId);
+      await deleteProviderConfig(serviceId);
+      failed.push({
+        service_id: serviceId,
+        error: error.code || "PUBLIC_API_PROMOTION_FAILED",
+        message: String(error.message || error)
+      });
+    }
+  }
+
+  return {
+    ok: published.length > 0 && failed.length === 0,
+    service_ids: published.map((item) => item.service_id),
+    published,
+    failed,
+    promoted_at: timestamp(options)
   };
 }
 
@@ -437,8 +718,18 @@ export async function assertSafePublicUrl(value, options = {}) {
   const lookup = options.lookup || dnsLookup;
   let addresses;
   try {
-    addresses = await lookup(hostname, { all: true, verbatim: true });
+    addresses = await withTimeout(
+      lookup(hostname, { all: true, verbatim: true }),
+      clamp(options.dnsTimeoutMs, 1, 60000, 5000),
+      () => {
+        const error = new Error(`Timed out resolving catalog target: ${hostname}`);
+        error.code = "CATALOG_TARGET_DNS_TIMEOUT";
+        error.statusCode = 504;
+        return error;
+      }
+    );
   } catch (error) {
+    if (error.code === "CATALOG_TARGET_DNS_TIMEOUT") throw error;
     const wrapped = new Error(`Could not resolve catalog target: ${error.message}`);
     wrapped.code = "CATALOG_TARGET_DNS_FAILED";
     wrapped.statusCode = 502;
@@ -455,6 +746,14 @@ export async function assertSafePublicUrl(value, options = {}) {
     throw unsafeTarget("Target resolves to a private or reserved network.");
   }
   return url;
+}
+
+function withTimeout(promise, timeoutMs, createError) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(createError()), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 export function createSafePublicFetch(options = {}) {
@@ -610,6 +909,15 @@ function catalogCandidateId(entry) {
     entry.documentation_url || ""
   ].join("\n");
   return `public_api_${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
+}
+
+function publicApiServiceId(candidate, index) {
+  const suffix = String(candidate.candidate_id || "public_api")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(-20)
+    .toLowerCase();
+  return `public_api_${suffix}_${index + 1}`;
 }
 
 function isHttpsUrl(value) {
