@@ -252,10 +252,10 @@ export async function writePersistentCreditApiKey(keyRecord) {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `insert into adn_credit_api_keys (key_id, account_id, key_hash, label, created_at)
-     values ($1, $2, $3, $4, now())
-     returning key_id, account_id, key_hash, label, created_at, revoked_at`,
-    [keyRecord.key_id, keyRecord.account_id, keyRecord.key_hash, keyRecord.label || null]
+    `insert into adn_credit_api_keys (key_id, account_id, key_hash, label, auth_method, client_name, created_at)
+     values ($1, $2, $3, $4, $5, $6, now())
+     returning key_id, account_id, key_hash, label, auth_method, client_name, created_at, revoked_at`,
+    [keyRecord.key_id, keyRecord.account_id, keyRecord.key_hash, keyRecord.label || null, keyRecord.auth_method || "api_key", keyRecord.client_name || null]
   );
   return result.rows[0] || null;
 }
@@ -265,7 +265,7 @@ export async function readPersistentCreditApiKeyByHash(keyHash) {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `select k.key_id, k.account_id, k.key_hash, k.label, k.created_at, k.revoked_at,
+    `select k.key_id, k.account_id, k.key_hash, k.label, k.auth_method, k.client_name, k.created_at, k.revoked_at,
             a.owner_key, a.user_profile
      from adn_credit_api_keys k
      join adn_credit_accounts a on a.account_id = k.account_id
@@ -280,7 +280,7 @@ export async function listPersistentCreditApiKeys(accountId, { limit = 100 } = {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `select key_id, account_id, label, created_at, revoked_at
+    `select key_id, account_id, label, auth_method, client_name, created_at, revoked_at
      from adn_credit_api_keys
      where account_id = $1
      order by created_at desc
@@ -426,9 +426,13 @@ async function ensureSchema(pool) {
       account_id text not null references adn_credit_accounts(account_id),
       key_hash text not null unique,
       label text,
+      auth_method text not null default 'api_key',
+      client_name text,
       created_at timestamptz not null default now(),
       revoked_at timestamptz
     );
+    alter table adn_credit_api_keys add column if not exists auth_method text not null default 'api_key';
+    alter table adn_credit_api_keys add column if not exists client_name text;
     create table if not exists adn_credit_ledger (
       entry_id text primary key,
       account_id text not null references adn_credit_accounts(account_id),

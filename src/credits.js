@@ -64,9 +64,15 @@ export async function ensureCreditAccount(store, user) {
   return saved;
 }
 
-export async function createCreditApiKey(store, { account, label = "AgentRouter client" }) {
+export async function createCreditApiKey(store, {
+  account,
+  label = "AgentRouter client",
+  authMethod = "api_key",
+  clientName = null,
+  prefix = "ar_live"
+}) {
   if (!account?.account_id) throw creditError("Credit account is required.", 400, "CREDIT_ACCOUNT_REQUIRED");
-  const rawKey = `ar_live_${crypto.randomBytes(24).toString("base64url")}`;
+  const rawKey = `${prefix}_${crypto.randomBytes(24).toString("base64url")}`;
   const record = {
     key_id: `key_${crypto.randomUUID()}`,
     account_id: account.account_id,
@@ -74,6 +80,8 @@ export async function createCreditApiKey(store, { account, label = "AgentRouter 
     user_profile: account.user_profile || {},
     key_hash: hashApiKey(rawKey),
     label: String(label || "AgentRouter client").slice(0, 120),
+    auth_method: authMethod === "device" ? "device" : "api_key",
+    client_name: clientName ? String(clientName).slice(0, 120) : null,
     created_at: new Date().toISOString(),
     revoked_at: null
   };
@@ -84,7 +92,9 @@ export async function createCreditApiKey(store, { account, label = "AgentRouter 
     key_id: saved.key_id,
     label: saved.label,
     api_key: rawKey,
-    created_at: saved.created_at
+    created_at: saved.created_at,
+    auth_method: saved.auth_method || record.auth_method,
+    client_name: saved.client_name || record.client_name
   };
 }
 
@@ -100,7 +110,9 @@ export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) 
     label: key.label || "AgentRouter client",
     created_at: key.created_at,
     revoked_at: key.revoked_at || null,
-    status: key.revoked_at ? "revoked" : "active"
+    status: key.revoked_at ? "revoked" : "active",
+    auth_method: key.auth_method || "api_key",
+    client_name: key.client_name || null
   }));
 }
 
@@ -130,7 +142,9 @@ export async function authenticateCreditRequest(store, req) {
     key: {
       key_id: key.key_id,
       label: key.label || null,
-      created_at: key.created_at || null
+      created_at: key.created_at || null,
+      auth_method: key.auth_method || "api_key",
+      client_name: key.client_name || null
     }
   };
 }

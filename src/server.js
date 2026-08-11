@@ -23,6 +23,7 @@ import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDet
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
 import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditApiKeys, listCreditLedger } from "./credits.js";
+import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
@@ -334,6 +335,60 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "GET" && url.pathname === "/auth/me") {
     sendJson(res, 200, { authenticated: Boolean(auth.user), user: auth.user });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/device/start") {
+    const body = await readJson(req);
+    sendJson(res, 201, beginDeviceAuthorization(store, {
+      baseUrl,
+      clientName: body.client_name || body.clientName || "AI agent"
+    }), { "cache-control": "no-store" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/device/token") {
+    const body = await readJson(req);
+    const result = await pollDeviceAuthorization(store, {
+      deviceCode: body.device_code,
+      issueCredential: ({ account, clientName }) => createCreditApiKey(store, {
+        account,
+        label: `Connected agent · ${clientName}`,
+        authMethod: "device",
+        clientName,
+        prefix: "ar_device"
+      })
+    });
+    const status = result.error === "slow_down" ? 429 : result.error ? 400 : 200;
+    sendJson(res, status, result, { "cache-control": "no-store" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/connect") {
+    const userCode = String(url.searchParams.get("user_code") || "").trim();
+    const authorization = getDeviceAuthorizationByUserCode(store, userCode);
+    if (!authorization) {
+      sendHtml(res, 400, deviceConnectHtml({ authorization: null, error: "This connection code is invalid or expired." }));
+      return;
+    }
+    if (!auth.user) {
+      const returnTo = `/connect?user_code=${encodeURIComponent(authorization.user_code)}`;
+      redirect(res, `/?login=1&return_to=${encodeURIComponent(returnTo)}`);
+      return;
+    }
+    sendHtml(res, 200, deviceConnectHtml({ authorization, user: auth.user }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/device/approve") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to connect this agent.");
+    const body = await readJson(req);
+    const account = await ensureCreditAccount(store, auth.user);
+    const approved = approveDeviceAuthorization(store, {
+      userCode: body.user_code,
+      account
+    });
+    sendJson(res, 200, approved, { "cache-control": "no-store" });
     return;
   }
 
@@ -2284,6 +2339,69 @@ function discoverPageHtml(result) {
   <h2>Raw Drafts</h2>
   <pre>${escapeHtml(JSON.stringify(result.drafts, null, 2))}</pre>
   <p><a href="/studio">Back to Provider Studio</a></p>
+</body>
+</html>`;
+}
+
+function deviceConnectHtml({ authorization, user = null, error = "" }) {
+  const title = authorization ? `Connect ${escapeHtml(authorization.client_name)}` : "Connection unavailable";
+  const code = authorization?.user_code || "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title} · AgentRouter</title>
+  <style>
+    :root { color-scheme:light; --ink:#151719; --muted:#6f7479; --line:#d8dcdf; --panel:#f3f4f2; --accent:#323842; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100svh; display:grid; place-items:center; padding:24px; background:#f3f4f2; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(100%,520px); padding:34px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 18px 55px rgba(22,27,29,.08); }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:34px; font-weight:800; letter-spacing:-.02em; }
+    .mark { display:grid; place-items:center; width:30px; height:30px; border-radius:8px; color:#fff; background:var(--accent); }
+    h1 { margin:0; font-size:28px; letter-spacing:-.04em; }
+    p { color:var(--muted); line-height:1.55; }
+    .code { margin:24px 0; padding:18px; border:1px solid var(--line); border-radius:10px; background:var(--panel); text-align:center; font:700 24px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; }
+    .identity { margin:20px 0; padding:12px 14px; border-left:3px solid var(--accent); background:var(--panel); font-size:14px; }
+    button { width:100%; min-height:46px; border:1px solid var(--accent); border-radius:8px; background:var(--accent); color:#fff; font:700 14px inherit; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .warning { font-size:12px; }
+    .error { color:#8c1d18; }
+    #result { margin-top:16px; font-size:14px; font-weight:650; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="mark">AR</span><span>AgentRouter</span></div>
+    <h1>${title}</h1>
+    ${authorization ? `
+      <p>This allows the agent to use your prepaid AgentRouter credits. It cannot see provider credentials or your GitHub password.</p>
+      <div class="code">${escapeHtml(code)}</div>
+      <div class="identity">Signed in as <strong>${escapeHtml(user?.name || user?.handle || "AgentRouter user")}</strong></div>
+      <button id="approve" type="button">Approve connection</button>
+      <p class="warning">Only approve if you started this connection from your own AI client.</p>
+      <div id="result" role="status"></div>
+      <script>
+        document.getElementById("approve").addEventListener("click", async function () {
+          this.disabled = true;
+          const result = document.getElementById("result");
+          try {
+            const response = await fetch("/auth/device/approve", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ user_code: ${JSON.stringify(code)} })
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error?.message || payload.error || "Approval failed");
+            result.textContent = "Connected. You can return to your AI client.";
+          } catch (error) {
+            result.className = "error";
+            result.textContent = error.message;
+            this.disabled = false;
+          }
+        });
+      </script>` : `<p class="error">${escapeHtml(error || "This connection request is unavailable.")}</p>`}
+  </main>
 </body>
 </html>`;
 }
