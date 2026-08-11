@@ -84,7 +84,15 @@ test("default catalog sync combines public-apis discovery with spec-first APIs.g
     "Spec API",
     "GitHub public API root",
     "CoinGecko API health",
-    "Open-Meteo current conditions"
+    "Open-Meteo current conditions",
+    "Dog CEO random image",
+    "Cat Facts random fact",
+    "PokéAPI Pikachu",
+    "Agify age estimate",
+    "Random User sample",
+    "Open Library search sample",
+    "REST Countries names",
+    "Genderize estimate"
   ]);
 });
 
