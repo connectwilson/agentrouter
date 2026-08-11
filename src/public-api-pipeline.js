@@ -48,6 +48,86 @@ const VERIFIED_PUBLIC_API_SEEDS = [
     https: true,
     cors: true,
     source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Animals",
+    title: "Dog CEO random image",
+    description: "Public random dog image metadata from Dog CEO.",
+    documentation_url: "https://dog.ceo/api/breeds/image/random",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Animals",
+    title: "Cat Facts random fact",
+    description: "Public random cat fact from Cat Facts.",
+    documentation_url: "https://catfact.ninja/fact",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Games & Comics",
+    title: "PokéAPI Pikachu",
+    description: "Public Pokémon data sample from PokéAPI.",
+    documentation_url: "https://pokeapi.co/api/v2/pokemon/pikachu",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Data Validation",
+    title: "Agify age estimate",
+    description: "Public age estimate sample from Agify.",
+    documentation_url: "https://api.agify.io/?name=michael",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Test Data",
+    title: "Random User sample",
+    description: "Public synthetic user record from Random User.",
+    documentation_url: "https://randomuser.me/api/",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Books",
+    title: "Open Library search sample",
+    description: "Public book search result sample from Open Library.",
+    documentation_url: "https://openlibrary.org/search.json?q=the+lord+of+the+rings&limit=1",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Geocoding",
+    title: "REST Countries names",
+    description: "Public country names and ISO codes from REST Countries.",
+    documentation_url: "https://restcountries.com/v3.1/all?fields=name,cca2",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Data Validation",
+    title: "Genderize estimate",
+    description: "Public name-based gender estimate sample from Genderize.",
+    documentation_url: "https://api.genderize.io/?name=luc",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
   }
 ];
 
