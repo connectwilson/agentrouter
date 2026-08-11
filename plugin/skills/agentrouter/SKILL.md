@@ -141,7 +141,7 @@ Setup flow:
    - args: `["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"]`
    - env: `{ "AGENT_ROUTER_URL": "https://agentrouter.network" }`
 5. Never attempt to bypass host safeguards. If the host blocks the install command or protects its own configuration, explain that native safeguard once. Do not attempt alternate writes around it.
-6. Preserve every unrelated setting. Do not create or configure a local wallet. Do not add Arc RPC, payment-backend, wallet-directory, or default-spend settings. Paid hosted calls use AgentRouter account credits and an optional `AGENT_ROUTER_API_KEY` created separately by the user; never ask the user to paste it into chat.
+6. Preserve every unrelated setting. Do not create or configure a local wallet. Do not add Arc RPC, payment-backend, wallet-directory, or default-spend settings. Paid hosted calls use AgentRouter account credits. For an installed local bridge, if a paid call reports that no account credential is available, call `agentrouter_connect`, show the returned browser verification link, and call it again after the user approves. The bridge stores the credential privately; never ask the user to copy a key into MCP configuration or paste it into chat. `AGENT_ROUTER_API_KEY` is only an advanced fallback for CI or a headless server.
 7. If the client cannot hot-reload, ask for one client reload without rerunning installation.
 
 For `social_post_read`, never replace the local connector with a generic web
