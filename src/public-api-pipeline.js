@@ -44,6 +44,11 @@ function categoryRank(category) {
   const rank = TIER_RANK.get(String(category || "").toLowerCase());
   return rank === undefined ? TIER_RANK.size : rank;
 }
+
+function isSpecFirstCatalog(candidate) {
+  return candidate?.source_catalog === "apis.guru" || Boolean(candidate?.spec_url);
+}
+
 const FINAL_STATUSES = new Set([
   "validated_ready",
   "credential_required",
@@ -195,6 +200,7 @@ export async function runPublicApiConversionBatch(store, options = {}) {
     .filter((candidate) => !sourceFilter || sourceFilter.has(String(candidate.source_catalog || DEFAULT_SOURCE_CATALOG).toLowerCase()))
     .sort((left, right) =>
       Number(right.retry_priority === true) - Number(left.retry_priority === true)
+      || Number(isSpecFirstCatalog(right)) - Number(isSpecFirstCatalog(left))
       || categoryRank(left.category) - categoryRank(right.category)
       || retryPriority(left.status) - retryPriority(right.status)
       || Number(left.attempt_count || 0) - Number(right.attempt_count || 0)
