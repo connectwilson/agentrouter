@@ -938,7 +938,27 @@ export async function loadProviderConfigs(store, baseUrl, { validate = true } = 
       loaded.push({ service_id: manifest.service_id, record, validation: record.validation_runs?.at(-1) || null, already_loaded: true });
       continue;
     }
-    const record = registerService(store, manifest, baseUrl);
+    let record;
+    try {
+      record = registerService(store, manifest, baseUrl);
+    } catch (error) {
+      // A previous successful import can leave an equivalent config behind
+      // under a different generated service id. Loading persisted configs must
+      // be idempotent; keep the first verified source rather than breaking the
+      // entire service catalogue with a 409 on every request.
+      if (error.code === "SERVICE_SOURCE_ALREADY_REGISTERED" && error.existingServiceId) {
+        const existing = store.services.get(error.existingServiceId);
+        loaded.push({
+          service_id: manifest.service_id,
+          record: existing || null,
+          validation: existing?.validation_runs?.at(-1) || null,
+          duplicate_source: true,
+          existing_service_id: error.existingServiceId
+        });
+        continue;
+      }
+      throw error;
+    }
     let validation = null;
     if (validate) {
       try {

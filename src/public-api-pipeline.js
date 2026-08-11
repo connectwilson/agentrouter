@@ -14,6 +14,43 @@ import { registerService, unregisterService, validateService } from "./registry.
 const RETRYABLE_STATUSES = new Set(["queued", "retryable_failure"]);
 const DEFAULT_SOURCE_CATALOG = "github:public-apis/public-apis";
 
+// Small, intentionally curated bootstrap set. These are public JSON endpoints
+// that give a fresh install useful callable coverage even when a third-party
+// catalog is slow or unavailable. They still traverse the identical live probe
+// and registration gates as every imported candidate.
+const VERIFIED_PUBLIC_API_SEEDS = [
+  {
+    category: "Development",
+    title: "GitHub public API root",
+    description: "Public GitHub REST API entrypoint and capability links.",
+    documentation_url: "https://api.github.com/",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Cryptocurrency",
+    title: "CoinGecko API health",
+    description: "Public CoinGecko API availability signal.",
+    documentation_url: "https://api.coingecko.com/api/v3/ping",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  },
+  {
+    category: "Weather",
+    title: "Open-Meteo current conditions",
+    description: "Public current temperature sample from Open-Meteo.",
+    documentation_url: "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current=temperature_2m",
+    auth: "No",
+    https: true,
+    cors: true,
+    source_catalog: "agentrouter:verified-public-api-seeds"
+  }
+];
+
 // Blanket conversion is not worth it: most public-apis rows are just a homepage
 // link with no machine-readable spec, so ~87% of attempts die on endpoint
 // discovery. Work the categories that actually carry agent-useful, key-free,
@@ -65,7 +102,8 @@ export async function fetchDefaultPublicApiCatalogEntries(options = {}) {
   ]);
   const entries = results
     .filter((result) => result.status === "fulfilled")
-    .flatMap((result) => result.value || []);
+    .flatMap((result) => result.value || [])
+    .concat(VERIFIED_PUBLIC_API_SEEDS);
   if (entries.length) return entries;
   const failure = results.find((result) => result.status === "rejected")?.reason;
   throw failure || new Error("No Public API catalog sources were available.");
@@ -194,10 +232,15 @@ export async function runPublicApiConversionBatch(store, options = {}) {
   const concurrency = clamp(options.concurrency, 1, 5, 3);
   const categoryFilter = normalizeCategoryFilter(options.categories);
   const sourceFilter = normalizeCategoryFilter(options.sources);
+  const candidateIdFilter = normalizeCategoryFilter(options.candidateIds || options.candidate_ids);
   const selected = [...store.publicApiCatalog.values()]
-    .filter((candidate) => candidate.catalog_presence !== "removed" && RETRYABLE_STATUSES.has(candidate.status))
+    .filter((candidate) => candidate.catalog_presence !== "removed" && (
+      RETRYABLE_STATUSES.has(candidate.status)
+      || (candidate.status === "validated_ready" && candidate.promotion?.ok === false)
+    ))
     .filter((candidate) => !categoryFilter || categoryFilter.has(String(candidate.category || "").toLowerCase()))
     .filter((candidate) => !sourceFilter || sourceFilter.has(String(candidate.source_catalog || DEFAULT_SOURCE_CATALOG).toLowerCase()))
+    .filter((candidate) => !candidateIdFilter || candidateIdFilter.has(String(candidate.candidate_id || "").toLowerCase()))
     .sort((left, right) =>
       Number(right.retry_priority === true) - Number(left.retry_priority === true)
       || Number(isSpecFirstCatalog(right)) - Number(isSpecFirstCatalog(left))
@@ -383,7 +426,10 @@ export async function promoteValidatedPublicApiDrafts(store, candidate, drafts, 
         title: draft.title || candidate.title || serviceId,
         description: candidate.description || `${candidate.title || "Public API"} verified from the Public APIs catalog.`,
         capabilities: draft.capabilities?.length ? draft.capabilities : ["data_service"],
-        price: "0",
+        // The registry requires a strictly positive decimal. This is the
+        // smallest supported price, making public catalog services effectively
+        // free while still preserving the unified invocation contract.
+        price: "0.000001",
         sampleRequest: draft.sample_request || {},
         sampleData: {},
         upstreamUrl: draft.upstream_url,

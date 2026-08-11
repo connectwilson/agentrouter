@@ -15,7 +15,7 @@ import {
 } from "../src/public-api-pipeline.js";
 import { createServer } from "../src/server.js";
 import { createMemoryStore } from "../src/store.js";
-import { discoverApiServices } from "../src/openapi-import.js";
+import { discoverApiServices, fetchApisGuruCatalogEntries } from "../src/openapi-import.js";
 
 const catalogEntries = [
   {
@@ -79,7 +79,29 @@ test("default catalog sync combines public-apis discovery with spec-first APIs.g
     fetchApisGuruEntries: async () => [{ title: "Spec API", source_catalog: "apis.guru", spec_url: "https://spec.example/openapi.json" }]
   });
 
-  assert.deepEqual(entries.map((entry) => entry.title), ["Directory API", "Spec API"]);
+  assert.deepEqual(entries.map((entry) => entry.title), [
+    "Directory API",
+    "Spec API",
+    "GitHub public API root",
+    "CoinGecko API health",
+    "Open-Meteo current conditions"
+  ]);
+});
+
+test("APIs.guru catalog gets its own bounded timeout for the large spec directory", async () => {
+  await assert.rejects(
+    fetchApisGuruCatalogEntries({
+      catalogTimeoutMs: 5,
+      fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+        const keepAlive = setTimeout(() => reject(new Error("catalog timeout did not abort")), 100);
+        options.signal.addEventListener("abort", () => {
+          clearTimeout(keepAlive);
+          reject(new DOMException("Timed out", "AbortError"));
+        });
+      })
+    }),
+    (error) => error.name === "AbortError"
+  );
 });
 
 test("empty Public APIs coverage is synchronized and queued for a bounded automatic validation batch", async () => {
@@ -187,6 +209,49 @@ test("conversion discovers read-only drafts, probes public APIs, and separates c
   assert.equal(security.status, "credential_required");
   assert.equal(security.blocking_reason, "provider_credential_required");
   assert.equal(result.coverage.total, 3);
+});
+
+test("conversion can target an explicitly selected catalog candidate for deterministic recovery", async () => {
+  const store = pipelineStore();
+  await syncPublicApiCoverage(store, {
+    fetchCatalogEntries: async () => catalogEntries
+  });
+
+  const weather = [...store.publicApiCatalog.values()].find((item) => item.title === "Open Weather");
+  const result = await runPublicApiConversionBatch(store, {
+    candidateIds: [weather.candidate_id],
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => ({
+      ok: true,
+      drafts: [{ method: "GET", upstream_url: "https://weather.example/v1/forecast", sample_request: {} }]
+    }),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    autoPublish: false
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(weather.status, "validated_ready");
+  const security = [...store.publicApiCatalog.values()].find((item) => item.title === "Secure Scan");
+  assert.equal(security.status, "queued");
+});
+
+test("validated candidates with a failed registration are retried instead of remaining callable only on paper", async () => {
+  const store = pipelineStore();
+  await syncPublicApiCoverage(store, { fetchCatalogEntries: async () => [catalogEntries[0]] });
+  const candidate = [...store.publicApiCatalog.values()][0];
+  candidate.status = "validated_ready";
+  candidate.promotion = { ok: false, service_ids: [] };
+
+  const result = await runPublicApiConversionBatch(store, {
+    candidateIds: [candidate.candidate_id],
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => ({ ok: true, drafts: [{ method: "GET", upstream_url: "https://weather.example/data", sample_request: {} }] }),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    autoPublish: false
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(candidate.status, "validated_ready");
 });
 
 test("validated public API drafts are promoted with their catalog category only after a successful probe", async () => {

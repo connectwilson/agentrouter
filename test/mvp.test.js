@@ -38,6 +38,7 @@ const { currentPaymentBackend } = await import("../src/payment-adapter.js");
 const { invokePaidServiceWithLocalWallet } = await import("../src/local-invoke.js");
 const { DEFAULT_PACKAGE_SPEC, diagnoseAgentRouter, formatDoctorResult, formatInstallResult, installAgentRouter, installUsage, parseInstallArgs } = await import("../src/agentrouter-installer.js");
 const { buildServiceAwareInput, inferIntent } = await import("../src/agent-router.js");
+const { createHostedHttpProviderConfig, deleteProviderConfig, writeProviderConfig } = await import("../src/provider-config.js");
 
 test.after(async () => {
   await fs.rm(runtimeRoot, { recursive: true, force: true });
@@ -1642,6 +1643,21 @@ test("Public API automation keeps draining validated candidates instead of waiti
   assert.equal(options.validationLimit, 50);
   assert.equal(options.refreshIntervalMs, 5 * 60 * 1000);
   assert.equal(options.catalogRefreshIntervalMs, 24 * 60 * 60 * 1000);
+  assert.equal(options.allowSyntheticProxyAddresses, false);
+  assert.equal(publicApiAutomationOptions({ ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES: "1" }).allowSyntheticProxyAddresses, true);
+});
+
+test("Public API HTTP runs inherit the explicit synthetic-proxy compatibility setting", () => {
+  const previous = process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES;
+  process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES = "1";
+  try {
+    const server = createServer();
+    assert.equal(server.publicApiPipelineOptions.allowSyntheticProxyAddresses, true);
+    server.close();
+  } finally {
+    if (previous == null) delete process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES;
+    else process.env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES = previous;
+  }
 });
 
 test("AgentRouter quote simulates route and payment guards without invoking provider", async () => {
@@ -4645,6 +4661,37 @@ test("provider configs can be reloaded into a fresh registry after restart", asy
       await new Promise((resolve) => freshServer.close(resolve));
     }
   });
+});
+
+test("provider config reload skips a duplicate persisted source without breaking service discovery", async () => {
+  const firstId = "duplicate_source_reload_one";
+  const secondId = "duplicate_source_reload_two";
+  const baseUrl = "http://127.0.0.1:8799";
+  const makeConfig = (serviceId) => createHostedHttpProviderConfig({
+    baseUrl,
+    serviceId,
+    providerId: "duplicate_source_reload_provider",
+    title: "Duplicate source reload",
+    description: "Reload safety test.",
+    capabilities: ["data_service"],
+    price: "0.01",
+    sampleRequest: {},
+    sampleData: {},
+    upstreamUrl: "https://example.com/identical-source",
+    upstreamMethod: "GET",
+    summary: "Reload safety test."
+  });
+  await writeProviderConfig(makeConfig(firstId));
+  await writeProviderConfig(makeConfig(secondId));
+  try {
+    const store = createMemoryStore();
+    const loaded = await loadProviderConfigs(store, baseUrl, { validate: false });
+    assert.equal(store.services.has(firstId) || store.services.has(secondId), true);
+    assert.equal(loaded.some((entry) => entry.duplicate_source === true), true);
+  } finally {
+    await deleteProviderConfig(firstId);
+    await deleteProviderConfig(secondId);
+  }
 });
 
 test("failed provider configs are not persisted or loaded after failed registration", async () => {

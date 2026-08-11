@@ -174,13 +174,17 @@ export function createServer({
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {}
 } = {}) {
+  const resolvedPublicApiPipelineOptions = {
+    ...publicApiAutomationOptions(),
+    ...publicApiPipelineOptions
+  };
   const server = http.createServer(async (req, res) => {
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
         socialResearchRunner,
         socialConnectionOptions,
         socialProviderFactory,
-        publicApiPipelineOptions
+        publicApiPipelineOptions: resolvedPublicApiPipelineOptions
       });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
@@ -194,7 +198,7 @@ export function createServer({
   });
 
   server.store = store;
-  server.publicApiPipelineOptions = publicApiPipelineOptions;
+  server.publicApiPipelineOptions = resolvedPublicApiPipelineOptions;
   return server;
 }
 
@@ -775,6 +779,9 @@ async function routeRequest(req, res, store, baseUrl, {
       ...publicApiPipelineOptions,
       limit: body.limit,
       concurrency: body.concurrency,
+      categories: body.categories,
+      sources: body.sources,
+      candidateIds: body.candidate_ids || body.candidateIds,
       baseUrl
     });
     sendJson(res, 200, result);
@@ -788,6 +795,9 @@ async function routeRequest(req, res, store, baseUrl, {
       ...publicApiPipelineOptions,
       limit: body.limit,
       concurrency: body.concurrency,
+      categories: body.categories,
+      sources: body.sources,
+      candidateIds: body.candidate_ids || body.candidateIds,
       baseUrl
     });
     sendJson(res, 202, { ok: true, accepted, job });
@@ -3217,6 +3227,10 @@ export function publicApiAutomationOptions(env = process.env) {
     autoSync: env.ADN_PUBLIC_API_AUTOSYNC !== "0",
     autoValidate: env.ADN_PUBLIC_API_AUTOVALIDATE !== "0",
     validationLimit: Math.max(1, Math.min(100, Number(env.ADN_PUBLIC_API_AUTOVALIDATE_LIMIT) || 50)),
+    // Some local/corporate development networks map public DNS through the
+    // RFC 2544 synthetic range. Keep this explicit so it never weakens the
+    // normal production SSRF boundary.
+    allowSyntheticProxyAddresses: env.ADN_ALLOW_SYNTHETIC_PROXY_ADDRESSES === "1",
     refreshIntervalMs: Math.max(0, Number(env.ADN_PUBLIC_API_REFRESH_INTERVAL_MS) || 5 * 60 * 1000),
     catalogRefreshIntervalMs: Math.max(0, Number(env.ADN_PUBLIC_API_CATALOG_REFRESH_INTERVAL_MS) || 24 * 60 * 60 * 1000)
   };
