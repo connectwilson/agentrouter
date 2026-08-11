@@ -22,7 +22,7 @@ import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
-import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditApiKeys, listCreditLedger } from "./credits.js";
+import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey } from "./credits.js";
 import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
@@ -435,6 +435,18 @@ async function routeRequest(req, res, store, baseUrl, {
       ...apiKey,
       note: "This API key is shown once. Store it in your AI client and do not share it."
     });
+    return;
+  }
+
+  const revokeKeyMatch = url.pathname.match(/^\/account\/api-keys\/([^/]+)\/revoke$/);
+  if (req.method === "POST" && revokeKeyMatch) {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to disconnect an AgentRouter client.");
+    const account = await ensureCreditAccount(store, auth.user);
+    const revoked = await revokeCreditApiKey(store, {
+      accountId: account.account_id,
+      keyId: decodeURIComponent(revokeKeyMatch[1])
+    });
+    sendJson(res, 200, revoked);
     return;
   }
 
@@ -2118,6 +2130,8 @@ function buildAccountDashboard({ account, balance, ledger = [], apiKeys = [] }) 
       spend_30d: Number(spend.toFixed(6)),
       successful_paid_calls: paidCalls.length,
       active_api_keys: apiKeys.filter((key) => key.status === "active").length,
+      connected_agents: apiKeys.filter((key) => key.status === "active" && key.auth_method === "device").length,
+      developer_api_keys: apiKeys.filter((key) => key.status === "active" && key.auth_method !== "device").length,
       window_days: 30
     },
     api_keys: apiKeys,

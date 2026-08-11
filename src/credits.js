@@ -8,6 +8,7 @@ import {
   persistentCreditBalance,
   readPersistentCreditAccountByOwner,
   readPersistentCreditApiKeyByHash,
+  revokePersistentCreditApiKey,
   upsertPersistentCreditAccount,
   writePersistentCreditApiKey,
   writePersistentCreditLedgerEntry
@@ -114,6 +115,32 @@ export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) 
     auth_method: key.auth_method || "api_key",
     client_name: key.client_name || null
   }));
+}
+
+export async function revokeCreditApiKey(store, { accountId, keyId }) {
+  if (!accountId || !keyId) throw creditError("API key not found.", 404, "API_KEY_NOT_FOUND");
+  let revoked;
+  if (persistenceEnabled()) {
+    revoked = await revokePersistentCreditApiKey(accountId, keyId);
+  } else {
+    revoked = [...store.creditApiKeys.values()].find((key) => key.account_id === accountId && key.key_id === keyId) || null;
+    if (revoked) revoked.revoked_at ||= new Date().toISOString();
+  }
+  if (!revoked) throw creditError("API key not found.", 404, "API_KEY_NOT_FOUND");
+
+  for (const [keyHash, cached] of store.creditApiKeys.entries()) {
+    if (cached.account_id === accountId && cached.key_id === keyId) {
+      store.creditApiKeys.set(keyHash, { ...cached, revoked_at: revoked.revoked_at });
+    }
+  }
+  return {
+    key_id: revoked.key_id,
+    label: revoked.label || "AgentRouter client",
+    auth_method: revoked.auth_method || "api_key",
+    client_name: revoked.client_name || null,
+    status: "revoked",
+    revoked_at: revoked.revoked_at
+  };
 }
 
 export function creditApiKeyFromRequest(req) {

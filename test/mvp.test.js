@@ -2248,7 +2248,10 @@ test("AgentRouter npm MCP package discovers new tools from remote MCP without a 
       clientInfo: { name: "npm-remote-discovery-test", version: "0.1.0" }
     });
     const listed = await client.request("tools/list", {});
-    assert.deepEqual(listed.tools.map((tool) => tool.name), ["server_added_after_client_publish"]);
+    assert.deepEqual(listed.tools.map((tool) => tool.name), [
+      "agentrouter_connect",
+      "server_added_after_client_publish"
+    ]);
   } finally {
     client.close();
     await new Promise((resolve) => server.close(resolve));

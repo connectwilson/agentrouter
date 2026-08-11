@@ -290,6 +290,20 @@ export async function listPersistentCreditApiKeys(accountId, { limit = 100 } = {
   return result.rows;
 }
 
+export async function revokePersistentCreditApiKey(accountId, keyId) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_credit_api_keys
+     set revoked_at = coalesce(revoked_at, now())
+     where account_id = $1 and key_id = $2
+     returning key_id, account_id, label, auth_method, client_name, created_at, revoked_at`,
+    [accountId, keyId]
+  );
+  return result.rows[0] || null;
+}
+
 export async function listPersistentCreditLedger(accountId, { limit = 100 } = {}) {
   if (!persistenceEnabled()) return [];
   const pool = await getPool();

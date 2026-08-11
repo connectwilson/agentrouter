@@ -184,7 +184,7 @@ export function formatInstallResult(result) {
       ...formatBrowserConnectorLines(result.browser_connector),
       "No local wallet was created. Hosted paid calls use AgentRouter account credits.",
       `For paid calls, sign in and manage credits at: ${result.payment.account_url}`,
-      "Never paste an AgentRouter API key into an AI chat; store it only in the local client configuration or a future secure-connect flow.",
+      "No API key setup is required. On the first paid call, use agentrouter_connect and approve the named client in your browser.",
       "Reload the AI client once if the new tools are not visible yet."
     ].join("\n") + "\n";
   }
