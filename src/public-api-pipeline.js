@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { discoverApiServices, fetchPublicApiCatalogEntries } from "./openapi-import.js";
+import { discoverApiServices, fetchApisGuruCatalogEntries, fetchPublicApiCatalogEntries } from "./openapi-import.js";
 import {
   listPersistentPublicApiCandidates,
   listPersistentPublicApiPipelineRuns,
@@ -51,10 +51,25 @@ const FINAL_STATUSES = new Set([
   "blocked_insecure_transport"
 ]);
 
+export async function fetchDefaultPublicApiCatalogEntries(options = {}) {
+  const fetchPublicApisEntries = options.fetchPublicApisEntries || fetchPublicApiCatalogEntries;
+  const fetchApisGuruEntries = options.fetchApisGuruEntries || fetchApisGuruCatalogEntries;
+  const results = await Promise.allSettled([
+    fetchPublicApisEntries({ fetchImpl: options.fetchImpl }),
+    fetchApisGuruEntries({ fetchImpl: options.fetchImpl })
+  ]);
+  const entries = results
+    .filter((result) => result.status === "fulfilled")
+    .flatMap((result) => result.value || []);
+  if (entries.length) return entries;
+  const failure = results.find((result) => result.status === "rejected")?.reason;
+  throw failure || new Error("No Public API catalog sources were available.");
+}
+
 export async function syncPublicApiCoverage(store, options = {}) {
   ensurePipelineStore(store);
   const now = timestamp(options);
-  const fetchEntries = options.fetchCatalogEntries || fetchPublicApiCatalogEntries;
+  const fetchEntries = options.fetchCatalogEntries || fetchDefaultPublicApiCatalogEntries;
   const entries = await fetchEntries({ fetchImpl: options.fetchImpl });
   const seen = new Set();
 
