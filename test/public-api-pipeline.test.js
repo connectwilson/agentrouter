@@ -179,6 +179,45 @@ test("conversion discovers read-only drafts, probes public APIs, and separates c
   assert.equal(result.coverage.total, 3);
 });
 
+test("validated public API drafts are promoted with their catalog category only after a successful probe", async () => {
+  const store = pipelineStore();
+  await syncPublicApiCoverage(store, {
+    fetchCatalogEntries: async () => [catalogEntries[0]],
+    persistCandidates: async () => {},
+    persistRun: async () => {}
+  });
+  const promotions = [];
+
+  await runPublicApiConversionBatch(store, {
+    persistCandidates: async () => {},
+    persistRun: async () => {},
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => ({
+      ok: true,
+      drafts: [{
+        service_id: "open_weather_forecast",
+        title: "Open Weather forecast",
+        method: "GET",
+        upstream_url: "https://weather.example/v1/forecast",
+        capabilities: ["weather_forecast"],
+        sample_request: {}
+      }]
+    }),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    promoteDrafts: async (candidate, drafts) => {
+      promotions.push({ candidate, drafts });
+      return { ok: true, service_ids: ["open_weather_forecast"] };
+    }
+  });
+
+  const candidate = [...store.publicApiCatalog.values()][0];
+  assert.equal(candidate.status, "validated_ready");
+  assert.deepEqual(candidate.promotion.service_ids, ["open_weather_forecast"]);
+  assert.equal(promotions.length, 1);
+  assert.equal(promotions[0].candidate.category, "Weather");
+  assert.equal(promotions[0].drafts[0].upstream_url, "https://weather.example/v1/forecast");
+});
+
 test("conversion probes every discovered GET endpoint and keeps an auditable usable/unusable split", async () => {
   const store = pipelineStore();
   await syncPublicApiCoverage(store, {
