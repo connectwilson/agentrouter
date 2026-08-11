@@ -89,6 +89,65 @@ test("account dashboard exposes only the signed-in user's credit summary and saf
   });
 });
 
+test("an installed agent can connect through browser approval without copying an API key", async () => {
+  await withCreditServer(async ({ store, baseUrl, cookie }) => {
+    const started = await fetch(`${baseUrl}/auth/device/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_name: "Claude Desktop" })
+    });
+    assert.equal(started.status, 201);
+    const flow = await started.json();
+    assert.match(flow.device_code, /^ard_/);
+    assert.match(flow.user_code, /^AR-/);
+    assert.equal(flow.verification_uri, `${baseUrl}/connect`);
+
+    const pending = await fetch(`${baseUrl}/auth/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: flow.device_code })
+    });
+    assert.equal(pending.status, 400);
+    assert.equal((await pending.json()).error, "authorization_pending");
+
+    const signedOutPage = await fetch(flow.verification_uri_complete, { redirect: "manual" });
+    assert.equal(signedOutPage.status, 302);
+    assert.match(signedOutPage.headers.get("location"), /^\/\?login=1&return_to=/);
+
+    const approvalPage = await fetch(flow.verification_uri_complete, { headers: { cookie } });
+    assert.equal(approvalPage.status, 200);
+    const approvalHtml = await approvalPage.text();
+    assert.match(approvalHtml, /Connect Claude Desktop/);
+    assert.match(approvalHtml, new RegExp(flow.user_code));
+    assert.doesNotMatch(approvalHtml, new RegExp(flow.device_code));
+
+    const approved = await fetch(`${baseUrl}/auth/device/approve`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ user_code: flow.user_code })
+    });
+    assert.equal(approved.status, 200);
+    assert.equal((await approved.json()).status, "approved");
+
+    const tokenResponse = await fetch(`${baseUrl}/auth/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: flow.device_code })
+    });
+    assert.equal(tokenResponse.status, 200);
+    const token = await tokenResponse.json();
+    assert.match(token.access_token, /^ar_device_/);
+    assert.equal(token.token_type, "Bearer");
+
+    const { authenticateCreditRequest } = await import("../src/credits.js");
+    const authenticated = await authenticateCreditRequest(store, {
+      headers: { authorization: `Bearer ${token.access_token}` }
+    });
+    assert.equal(authenticated.account.owner_key, "github:credit-http-user");
+    assert.equal(authenticated.key.auth_method, "device");
+  });
+});
+
 test("localhost development login creates a session only when explicitly enabled", async () => {
   const previous = process.env.ADN_AUTH_ALLOW_DEV_LOGIN;
   process.env.ADN_AUTH_ALLOW_DEV_LOGIN = "true";
