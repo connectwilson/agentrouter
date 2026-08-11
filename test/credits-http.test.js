@@ -139,12 +139,39 @@ test("an installed agent can connect through browser approval without copying an
     assert.match(token.access_token, /^ar_device_/);
     assert.equal(token.token_type, "Bearer");
 
+    const dashboard = await fetch(`${baseUrl}/account/dashboard`, { headers: { cookie } });
+    const dashboardPayload = await dashboard.json();
+    const connection = dashboardPayload.api_keys.find((key) => key.key_id === token.key_id);
+    assert.equal(connection.auth_method, "device");
+    assert.equal(connection.client_name, "Claude Desktop");
+
     const { authenticateCreditRequest } = await import("../src/credits.js");
     const authenticated = await authenticateCreditRequest(store, {
       headers: { authorization: `Bearer ${token.access_token}` }
     });
     assert.equal(authenticated.account.owner_key, "github:credit-http-user");
     assert.equal(authenticated.key.auth_method, "device");
+
+    const revoked = await fetch(`${baseUrl}/account/api-keys/${encodeURIComponent(token.key_id)}/revoke`, {
+      method: "POST",
+      headers: { cookie }
+    });
+    assert.equal(revoked.status, 200);
+    assert.equal((await revoked.json()).status, "revoked");
+    assert.equal(await authenticateCreditRequest(store, {
+      headers: { authorization: `Bearer ${token.access_token}` }
+    }), null);
+  });
+});
+
+test("account dashboard presents agent connections as the default and developer keys as advanced", async () => {
+  await withCreditServer(async ({ baseUrl, cookie }) => {
+    const response = await fetch(`${baseUrl}/account`, { headers: { cookie } });
+    const html = await response.text();
+    assert.match(html, /Connected agents/);
+    assert.match(html, /Developer API keys/);
+    assert.match(html, /No API key needs to be copied into an MCP configuration/);
+    assert.doesNotMatch(html, /Use it only in your MCP client configuration/);
   });
 });
 
