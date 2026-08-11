@@ -509,6 +509,16 @@ test("automatic conversion rejects local and private network targets", async () 
   );
 });
 
+test("automatic conversion bounds a stalled public DNS lookup", async () => {
+  await assert.rejects(
+    () => assertSafePublicUrl("https://stalled.example/data", {
+      lookup: async () => new Promise(() => {}),
+      dnsTimeoutMs: 5
+    }),
+    (error) => error.code === "CATALOG_TARGET_DNS_TIMEOUT"
+  );
+});
+
 test("synthetic proxy DNS can be allowed explicitly without allowing real private targets", async () => {
   await assert.rejects(
     assertSafePublicUrl("https://api.example.com/data", {
