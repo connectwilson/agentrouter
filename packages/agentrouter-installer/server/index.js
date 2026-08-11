@@ -7,7 +7,7 @@ import path from "node:path";
 const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
-const INSTALLER_VERSION = "0.9.0";
+const INSTALLER_VERSION = "0.10.0";
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
