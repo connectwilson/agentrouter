@@ -1618,7 +1618,7 @@ test("AgentRouter services endpoint returns paginated lightweight service summar
   });
 });
 
-test("AgentRouter category endpoint returns only categories with callable services", async () => {
+test("AgentRouter category endpoint returns only populated, mutually-exclusive callable-service categories", async () => {
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/agent-router/service-categories`);
     assert.equal(response.status, 200);
@@ -1628,6 +1628,11 @@ test("AgentRouter category endpoint returns only categories with callable servic
     assert.ok(payload.total > 0);
     assert.ok(payload.categories.length > 0);
     assert.ok(payload.categories.every((entry) => entry.count > 0));
+    assert.equal(
+      payload.total,
+      payload.categories.reduce((total, entry) => total + entry.count, 0),
+      "All must equal the sum of the visible child categories"
+    );
     assert.ok(payload.categories.every((entry) => !["Animals", "Finance", "Weather"].includes(entry.category)));
   });
 });
