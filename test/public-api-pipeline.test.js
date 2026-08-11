@@ -662,6 +662,11 @@ test("pipeline HTTP API requires an admin token and exposes durable coverage", a
 
 test("public website exposes tested Public APIs with availability reasons without login", async (t) => {
   const store = createMemoryStore();
+  store.publicApiPipelineJob = {
+    job_id: "job_live_validation",
+    status: "running",
+    started_at: "2026-08-11T00:00:00.000Z"
+  };
   store.publicApiCatalog.set("usable", {
     candidate_id: "usable",
     catalog_presence: "active",
@@ -714,6 +719,8 @@ test("public website exposes tested Public APIs with availability reasons withou
   assert.equal(payload.apis[0].title, "Open Weather");
   assert.equal(payload.apis[0].availability, "usable");
   assert.deepEqual(payload.apis[0].endpoints.map((item) => item.service_id), ["weather_current"]);
+  assert.equal(payload.pipeline.status, "running");
+  assert.equal(payload.pipeline.processed, 0);
 
   const page = await fetch(`${baseUrl}/public-apis`);
   assert.equal(page.status, 200);
