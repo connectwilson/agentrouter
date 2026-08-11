@@ -551,14 +551,18 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "GET" && url.pathname === "/api/public-apis") {
-    sendJson(res, 200, listPublicApiCatalog(store, {
+    const catalog = listPublicApiCatalog(store, {
       query: url.searchParams.get("q"),
       category: url.searchParams.get("category"),
       availability: url.searchParams.get("availability"),
       status: url.searchParams.get("status"),
       limit: url.searchParams.get("limit"),
       offset: url.searchParams.get("offset")
-    }), {
+    });
+    sendJson(res, 200, {
+      ...catalog,
+      pipeline: publicApiPipelineProgress(store)
+    }, {
       "cache-control": "public, max-age=30, stale-while-revalidate=120"
     });
     return;
@@ -3231,6 +3235,21 @@ function schedulePublicApiRefresh(server, automation) {
   }, automation.refreshIntervalMs);
   server.publicApiPipelineTimer.unref?.();
   server.once("close", () => clearInterval(server.publicApiPipelineTimer));
+}
+
+function publicApiPipelineProgress(store) {
+  const candidates = [...(store.publicApiCatalog?.values?.() || [])]
+    .filter((candidate) => candidate.catalog_presence !== "removed");
+  const job = store.publicApiPipelineJob || null;
+  return {
+    status: job?.status || "idle",
+    started_at: job?.started_at || null,
+    completed_at: job?.completed_at || null,
+    processed: candidates.filter((candidate) => Number(candidate.attempt_count || 0) > 0).length,
+    queued: candidates.filter((candidate) => ["queued", "retryable_failure"].includes(candidate.status)).length,
+    promoted_services: candidates.reduce((total, candidate) => total + (candidate.promotion?.service_ids?.length || 0), 0),
+    error: job?.error || null
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
