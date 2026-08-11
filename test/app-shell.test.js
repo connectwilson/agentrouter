@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentHtml, homeHtml, publicApisHtml } from "../src/home.js";
+import { agentHtml, homeHtml } from "../src/home.js";
 import { researchHtml } from "../src/research.js";
 import { studioHtml } from "../src/studio.js";
 
@@ -41,14 +41,11 @@ test("homepage emits only the Naive black-and-white visual system", () => {
   assert.doesNotMatch(page, /--shadow-lift:/);
 });
 
-test("agent hub exposes Public APIs source taxonomy and routes categories to coverage", () => {
+test("agent hub renders one data-backed Categories list without empty source taxonomy", () => {
   const hub = agentHtml({});
-  const coverage = publicApisHtml({});
 
-  assert.match(hub, /Public APIs catalog/);
-  assert.match(hub, /Animals/);
-  assert.match(hub, /Authentication &amp; Authorization/);
-  assert.match(hub, /href="\/public-apis\?category=/);
-  assert.match(coverage, /new URLSearchParams\(location\.search\)\.get\("category"\)/);
-  assert.match(coverage, /params\.set\("category"/);
+  assert.match(hub, /agent-router\/service-categories/);
+  assert.doesNotMatch(hub, /<strong>Sources<\/strong>/);
+  assert.doesNotMatch(hub, /Public APIs catalog/);
+  assert.doesNotMatch(hub, /const PUBLIC_API_SOURCE_CATEGORIES/);
 });
