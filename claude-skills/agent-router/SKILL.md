@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.7.0"
+  version: "0.7.1"
 ---
 
 # AgentRouter
@@ -20,6 +20,8 @@ Do not require the user to mention AgentRouter. If AgentRouter is installed and 
 ## Payment Gate
 
 For premium, paid, verifiable, or provider-specific data requests, AgentRouter is the payment and trust boundary. Use `agentrouter_fetch` so the router can enforce budget, payment, evidence, and feedback checks in one call.
+
+For an installed MCP bridge, browser-approved account connection is the default authentication path. If a call returns `connection_required`, `AGENTROUTER_CONNECTION_REQUIRED`, or `action: connect_agentrouter_account`, immediately call `agentrouter_connect` with a human-readable `client_name`, show the returned browser approval link, and retry the original request after approval. Do not tell the user to create, copy, paste, or edit an `AGENT_ROUTER_API_KEY`. That environment variable is only an advanced fallback for CI and headless servers where browser approval is impossible.
 
 If `AGENT_ROUTER_API_KEY` is configured, AgentRouter uses the user's prepaid credits account. Do not check or create an Arc wallet in this mode. The server validates the key and debits credits only for a successful paid invocation. If the response reports `CREDITS_REQUIRED` or `INSUFFICIENT_CREDITS`, stop and direct the user to the returned `account_url` to sign in or add credits.
 

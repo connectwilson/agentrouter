@@ -67,10 +67,10 @@ test("agentrouter_fetch dispatches connected Exa for natural and structured requ
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  const fetchViaMcp = async (arguments_) => {
+  const fetchViaMcp = async (arguments_, headers = { "x-agentrouter-api-key": apiKey }) => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-agentrouter-api-key": apiKey },
+      headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agentrouter_fetch", arguments: arguments_ } })
     });
     const rpc = await response.json();
@@ -90,6 +90,16 @@ test("agentrouter_fetch dispatches connected Exa for natural and structured requ
     assert.equal(structured.status, "data_returned");
     assert.equal(structured.results[0].result.count, 1);
     assert.deepEqual(receivedQueries, ["AgentRouter", "AgentRouter"]);
+
+    const connectionRequired = await fetchViaMcp(
+      { task: "Use my connected Exa source to search for AgentRouter" },
+      {}
+    );
+    assert.equal(connectionRequired.status, "connection_required");
+    assert.equal(connectionRequired.next_required_action.action, "connect_agentrouter_account");
+    assert.equal(connectionRequired.next_required_action.preferred_tool, "agentrouter_connect");
+    assert.equal(connectionRequired.next_required_action.api_key_fallback.for_headless_clients_only, true);
+    assert.doesNotMatch(JSON.stringify(connectionRequired), /provide a valid agentrouter api key/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -508,6 +518,9 @@ test("AgentRouter permits public providers without login but protects credential
       body: JSON.stringify({ capability: "external_api_query", params: { source: "youtube", operation: "search", query: "AgentRouter" } })
     });
     assert.equal(privateResponse.status, 401);
+    const privatePayload = await privateResponse.json();
+    assert.equal(privatePayload.status, "connection_required");
+    assert.equal(privatePayload.action_required.preferred_tool, "agentrouter_connect");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -565,7 +578,10 @@ test("remote MCP routes public and credit-key-owned external providers through t
     assert.equal(youtube.result.items[0].url, "https://www.youtube.com/watch?v=mcp-video");
 
     const denied = await mcpCall({ capability: "external_api_query", params: { source: "youtube", operation: "search", query: "AgentRouter" } });
-    assert.equal(denied.status, "authentication_required");
+    assert.equal(denied.status, "connection_required");
+    assert.equal(denied.action_required.action, "connect_agentrouter_account");
+    assert.equal(denied.action_required.preferred_tool, "agentrouter_connect");
+    assert.doesNotMatch(JSON.stringify(denied), /provide a valid agentrouter api key/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

@@ -1096,7 +1096,7 @@ async function routeRequest(req, res, store, baseUrl, {
       const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(body.params?.source || "").toLowerCase());
       if (!ownerKey && sourceDefinition?.connection_required !== false) {
-        return sendJson(res, 401, { ok: false, status: "authentication_required", error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in before using a connected API source." } });
+        return sendJson(res, 401, agentRouterConnectionRequired());
       }
       const result = await runExternalApiQuery(store, ownerKey, body.params || {}, socialConnectionOptions);
       sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
@@ -1510,14 +1510,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
       const ownerKey = paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(request.params?.source || "").toLowerCase());
       if (sourceDefinition?.connection_required !== false && !ownerKey) {
-        return {
-          ok: false,
-          status: "authentication_required",
-          error: {
-            code: "AUTHENTICATION_REQUIRED",
-            message: "Provide a valid AgentRouter API key owned by the account that connected this source."
-          }
-        };
+        return agentRouterConnectionRequired();
       }
       return runExternalApiQuery(store, ownerKey, request.params, paymentContext.socialConnectionOptions || {});
     }
@@ -1640,14 +1633,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
       const sourceDefinition = getExternalApiCatalog(store, ownerKey)
         .find((item) => item.source === String(request.params?.source || "").toLowerCase());
       if (!ownerKey && sourceDefinition?.connection_required !== false) {
-        results.push({
-          ok: false,
-          status: "authentication_required",
-          error: {
-            code: "AUTHENTICATION_REQUIRED",
-            message: "Provide a valid AgentRouter API key owned by the account that connected this source."
-          }
-        });
+        results.push(agentRouterConnectionRequired());
       } else {
         results.push(await runExternalApiQuery(store, ownerKey, request.params, socialConnectionOptions));
       }
@@ -1662,9 +1648,17 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
   const successful = results.filter((result) => result?.ok !== false && result?.result);
   const failed = results.filter((result) => result?.ok === false);
   const allPaymentRequired = failed.length === results.length && failed.every((result) => result?.status === "payment_required");
+  const connectionRequired = failed.find((result) => result?.status === "connection_required");
+  const feedbackRequired = results.some((result) => result?.consumer_feedback_request);
   return {
     ok: failed.length === 0,
-    status: allPaymentRequired ? "payment_required" : failed.length ? (successful.length ? "partial_data_returned" : "no_data_returned") : "data_returned",
+    status: connectionRequired && !successful.length
+      ? "connection_required"
+      : allPaymentRequired
+        ? "payment_required"
+        : failed.length
+          ? (successful.length ? "partial_data_returned" : "no_data_returned")
+          : "data_returned",
     protocol: {
       protocol_version: "agentrouter_fetch_v1",
       external_contract: "single_agent_data_call",
@@ -1675,10 +1669,32 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     data_returned_count: successful.length,
     results,
     compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
-    feedback_required: results.some((result) => result?.consumer_feedback_request),
-    next_required_action: results.some((result) => result?.consumer_feedback_request)
+    feedback_required: feedbackRequired,
+    next_required_action: connectionRequired?.action_required || (feedbackRequired
       ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
-      : null
+      : null)
+  };
+}
+
+function agentRouterConnectionRequired() {
+  const actionRequired = {
+    action: "connect_agentrouter_account",
+    preferred_tool: "agentrouter_connect",
+    tool_arguments: { client_name: "current AI client" },
+    user_experience: "Open the returned browser approval link. After approval, retry the original request automatically.",
+    api_key_fallback: {
+      for_headless_clients_only: true,
+      environment_variable: "AGENT_ROUTER_API_KEY"
+    }
+  };
+  return {
+    ok: false,
+    status: "connection_required",
+    error: {
+      code: "AGENTROUTER_CONNECTION_REQUIRED",
+      message: "Connect this AI client to the AgentRouter account that owns the data-source connection. Do not ask the user to create, paste, or edit an API key."
+    },
+    action_required: actionRequired
   };
 }
 
