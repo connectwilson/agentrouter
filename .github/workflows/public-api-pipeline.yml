@@ -2,9 +2,6 @@ name: Public API coverage pipeline
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 2 * * *"
-    - cron: "*/10 * * * *"
 
 permissions:
   contents: read
@@ -15,7 +12,6 @@ concurrency:
 
 jobs:
   sync:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *'
     runs-on: ubuntu-latest
     steps:
       - name: Sync the complete catalog
