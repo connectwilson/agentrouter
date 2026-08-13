@@ -33,7 +33,7 @@ import { buildCreatorResearchReport } from "./research-synthesis.js";
 import { runSocialResearchCapability } from "./research-capability.js";
 import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
-import { getExternalApiCatalog, runExternalApiQuery } from "./external-api-capability.js";
+import { getExternalApiCatalog, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import {
@@ -1095,7 +1095,7 @@ async function routeRequest(req, res, store, baseUrl, {
     if (body.capability === "external_api_query") {
       const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(body.params?.source || "").toLowerCase());
-      if (!auth.user && sourceDefinition?.connection_required !== false) {
+      if (!ownerKey && sourceDefinition?.connection_required !== false) {
         return sendJson(res, 401, { ok: false, status: "authentication_required", error: { code: "AUTHENTICATION_REQUIRED", message: "Sign in before using a connected API source." } });
       }
       const result = await runExternalApiQuery(store, ownerKey, body.params || {}, socialConnectionOptions);
@@ -1595,7 +1595,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser
 } = {}) {
-  const requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
+  let requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
   const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
   const currency = args.currency || args.budget?.currency || "USDC";
 
@@ -1605,6 +1605,11 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
       return runSocialPostReadCapability({ url: socialPost.canonical_url, platform: socialPost.platform }, { providers });
     }
+    const externalApiRequest = inferExternalApiRequest(args.task || args.query || "");
+    if (externalApiRequest) requirements = [externalApiRequest];
+  }
+
+  if (!requirements.length) {
     return askAgentRouter(store, {
       task: args.task || args.query || "",
       max_price: maxPrice,
@@ -1629,6 +1634,23 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     if (request.capability === "social_post_read") {
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
       results.push(await runSocialPostReadCapability(request.params, { providers }));
+      continue;
+    }
+    if (request.capability === "external_api_query") {
+      const sourceDefinition = getExternalApiCatalog(store, ownerKey)
+        .find((item) => item.source === String(request.params?.source || "").toLowerCase());
+      if (!ownerKey && sourceDefinition?.connection_required !== false) {
+        results.push({
+          ok: false,
+          status: "authentication_required",
+          error: {
+            code: "AUTHENTICATION_REQUIRED",
+            message: "Provide a valid AgentRouter API key owned by the account that connected this source."
+          }
+        });
+      } else {
+        results.push(await runExternalApiQuery(store, ownerKey, request.params, socialConnectionOptions));
+      }
       continue;
     }
     if (invoke) {

@@ -510,7 +510,9 @@ export function agentHtml({ auth = {} } = {}) {
         ${serviceClientScript()}
         let categories = [{ category: "All", count: 0 }];
         let builtInCapabilities = [];
+        let aiResearchSources = [];
         const builtInCategory = "Social research";
+        const aiResearchCategory = "AI Research";
         const pageSize = 24;
         let servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
         let activeCategory = "All";
@@ -573,16 +575,23 @@ export function agentHtml({ auth = {} } = {}) {
           const requestedCategory = pageParams.get("category") || "All";
           document.getElementById("service-search").value = query;
           try {
-            const [categoryResponse, builtInResponse] = await Promise.all([
+            const [categoryResponse, builtInResponse, apiSourcesResponse] = await Promise.all([
               fetch("/agent-router/service-categories"),
-              fetch("/agent-router/builtin-capabilities")
+              fetch("/agent-router/builtin-capabilities"),
+              fetch("/agent-router/api-sources")
             ]);
             const payload = await categoryResponse.json();
             const builtInPayload = await builtInResponse.json();
+            const apiSourcesPayload = await apiSourcesResponse.json();
             builtInCapabilities = Array.isArray(builtInPayload.capabilities) ? builtInPayload.capabilities : [];
+            aiResearchSources = (Array.isArray(apiSourcesPayload.sources) ? apiSourcesPayload.sources : [])
+              .filter((source) => source.implementation_status === "available" && source.hub_category === aiResearchCategory);
+            const registeredCategories = (payload.categories || [])
+              .filter((item) => ![builtInCategory, aiResearchCategory].includes(item.category));
             categories = [
-              { category: "All", count: Number(payload.total || 0) + builtInCapabilities.length },
-              ...(payload.categories || []),
+              { category: "All", count: Number(payload.total || 0) + builtInCapabilities.length + aiResearchSources.length },
+              ...registeredCategories,
+              ...(aiResearchSources.length ? [{ category: aiResearchCategory, count: aiResearchSources.length }] : []),
               ...(builtInCapabilities.length ? [{ category: builtInCategory, count: builtInCapabilities.length }] : [])
             ];
           } catch {}
@@ -604,7 +613,7 @@ export function agentHtml({ auth = {} } = {}) {
           });
         }
         async function loadAgentServices() {
-          if (activeCategory === builtInCategory) {
+          if (activeCategory === builtInCategory || activeCategory === aiResearchCategory) {
             servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
             renderAgentHub();
             return;
@@ -646,13 +655,22 @@ export function agentHtml({ auth = {} } = {}) {
           const visibleBuiltIns = (activeCategory === "All" || activeCategory === builtInCategory)
             ? builtInCapabilities.filter((capability) => !query || [capability.title, capability.description, capability.capability, ...(capability.platforms || [])].join(" ").toLowerCase().includes(query))
             : [];
+          const visibleAiResearchSources = (activeCategory === "All" || activeCategory === aiResearchCategory)
+            ? aiResearchSources.filter((source) => !query || [source.title, source.source, source.category, ...(source.operations || [])].join(" ").toLowerCase().includes(query))
+            : [];
           const services = servicePage.services || [];
-          const cards = [...visibleBuiltIns.map(builtInCapabilityCard), ...services.map((service) => apiCard(service, { link: true }))];
+          const cards = [
+            ...visibleBuiltIns.map(builtInCapabilityCard),
+            ...visibleAiResearchSources.map(externalApiSourceCard),
+            ...services.map((service) => apiCard(service, { link: true }))
+          ];
           document.getElementById("agent-api-cards").innerHTML = cards.join("") ||
             '<div class="empty-market">No matching services found.</div>';
           const availableTotal = activeCategory === builtInCategory
             ? visibleBuiltIns.length
-            : Number(servicePage.total || 0) + (activeCategory === "All" ? visibleBuiltIns.length : 0);
+            : activeCategory === aiResearchCategory
+              ? visibleAiResearchSources.length
+              : Number(servicePage.total || 0) + visibleBuiltIns.length + visibleAiResearchSources.length;
           setText("agent-result-count", availableTotal ? availableTotal + " available services" : "No services match this view");
           document.getElementById("service-prev").disabled = currentPage <= 0;
           document.getElementById("service-next").disabled = !servicePage.has_more;
@@ -671,6 +689,20 @@ export function agentHtml({ auth = {} } = {}) {
             '<div class="stat-row"><span class="stat-pill"><b>Price</b> Free</span></div>' +
             '<div class="byline"><span>Read-only · local connector</span><span>' + escapeHtml(capability.credential_policy === "never_upload" ? "Credentials stay local" : capability.credential_policy || "") + '</span></div>' +
             '<span class="detail-link">' + escapeHtml(capability.connector_status === "local_connector_required" ? "Connect browser to use" : "Ready to use") + '</span>' +
+          '</article>';
+        }
+        function externalApiSourceCard(source) {
+          const operations = (source.operations || []).map((operation) => '<span class="pill">' + escapeHtml(operation) + '</span>').join("");
+          const access = source.connection_required
+            ? (source.connected ? "Connected" : "Connection required")
+            : "Ready to call";
+          return '<article class="api-card external-api-source-card">' +
+            '<div class="api-top"><span class="type-badge">API</span><span class="heart">◌</span></div>' +
+            '<div class="api-main"><div class="logo">⌁</div><div><h3>' + escapeHtml(source.title) + '</h3><p>Read-only research source routed through AgentRouter.</p></div></div>' +
+            '<div class="pill-row"><span class="pill">AI Research</span>' + operations + '</div>' +
+            '<div class="stat-row"><span class="stat-pill"><b>Access</b> ' + escapeHtml(access) + '</span></div>' +
+            '<div class="byline"><span>' + escapeHtml(source.category || "Research") + '</span><span>Credentials stay encrypted</span></div>' +
+            '<a class="detail-link" href="/research">' + escapeHtml(source.connected || !source.connection_required ? "Available to agents" : "Connect API to use") + '</a>' +
           '</article>';
         }
         function renderPager() {

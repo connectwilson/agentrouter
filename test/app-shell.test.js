@@ -56,3 +56,11 @@ test("agent hub category links restore the selected category from the URL", () =
   assert.match(hub, /const requestedCategory = pageParams\.get\("category"\)/);
   assert.match(hub, /categories\.some\(\(item\) => item\.category === requestedCategory\)/);
 });
+
+test("agent hub exposes callable AI Research API sources as one category", () => {
+  const hub = agentHtml({});
+  assert.match(hub, /AI Research/);
+  assert.match(hub, /fetch\("\/agent-router\/api-sources"\)/);
+  assert.match(hub, /hub_category === aiResearchCategory/);
+  assert.match(hub, /externalApiSourceCard/);
+});

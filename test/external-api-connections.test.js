@@ -34,6 +34,101 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(catalog.find((item) => item.source === "openalex").operations.includes("search"), true);
   assert.equal(catalog.find((item) => item.source === "linkedin").implementation_status, "requires_partner_api");
   assert.equal(catalog.find((item) => item.source === "xiaohongshu").implementation_status, "browser_only");
+  assert.equal(catalog.find((item) => item.source === "exa").hub_category, "AI Research");
+  assert.equal(catalog.find((item) => item.source === "openalex").hub_category, "AI Research");
+  assert.equal(catalog.find((item) => item.source === "open_meteo").hub_category, null);
+});
+
+test("agentrouter_fetch dispatches connected Exa for natural and structured requests", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  const user = { provider: "github", id: "exa-fetch-user", name: "Exa Fetch User" };
+  const ownerKey = authUserKey(user);
+  const account = await ensureCreditAccount(store, user);
+  const { api_key: apiKey } = await createCreditApiKey(store, { account, label: "Exa agent" });
+  await createSocialConnection(store, ownerKey, {
+    platform: "exa",
+    provider_type: "exa_api",
+    credentials: { api_key: "exa-owner-secret" }
+  }, secretStore);
+  const receivedQueries = [];
+  const server = createServer({
+    store,
+    socialConnectionOptions: {
+      ...secretStore,
+      fetchImpl: async (url, options) => {
+        assert.equal(String(url), "https://api.exa.ai/search");
+        assert.equal(options.headers["x-api-key"], "exa-owner-secret");
+        const body = JSON.parse(options.body);
+        receivedQueries.push(body.query);
+        return { ok: true, status: 200, json: async () => ({ results: [{ title: "Agent research", url: "https://example.com/research", text: "Evidence" }] }) };
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const fetchViaMcp = async (arguments_) => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-agentrouter-api-key": apiKey },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agentrouter_fetch", arguments: arguments_ } })
+    });
+    const rpc = await response.json();
+    return JSON.parse(rpc.result.content[0].text);
+  };
+  try {
+    const natural = await fetchViaMcp({ task: "Use my connected Exa source to search for AgentRouter", max_price: "0.05" });
+    assert.equal(natural.ok, true);
+    assert.equal(natural.status, "data_returned");
+    assert.equal(natural.results[0].source.source, "exa");
+
+    const structured = await fetchViaMcp({
+      task: "Search Exa",
+      data_requirements: [{ capability: "external_api_query", params: { source: "exa", operation: "search", query: "AgentRouter", limit: 1 } }]
+    });
+    assert.equal(structured.ok, true);
+    assert.equal(structured.status, "data_returned");
+    assert.equal(structured.results[0].result.count, 1);
+    assert.deepEqual(receivedQueries, ["AgentRouter", "AgentRouter"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("HTTP external API request accepts the connected account's API credential without a browser session", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  const user = { provider: "github", id: "exa-http-user", name: "Exa HTTP User" };
+  const ownerKey = authUserKey(user);
+  const account = await ensureCreditAccount(store, user);
+  const { api_key: apiKey } = await createCreditApiKey(store, { account, label: "Exa HTTP" });
+  await createSocialConnection(store, ownerKey, {
+    platform: "exa",
+    provider_type: "exa_api",
+    credentials: { api_key: "exa-secret" }
+  }, secretStore);
+  const server = createServer({
+    store,
+    socialConnectionOptions: {
+      ...secretStore,
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ results: [{ title: "Result", url: "https://example.com/result" }] }) })
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-agentrouter-api-key": apiKey },
+      body: JSON.stringify({ capability: "external_api_query", params: { source: "exa", operation: "search", query: "AgentRouter", limit: 1 } })
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.result.count, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("AgentRouter capability schema and connection UI expose the expanded provider set", () => {

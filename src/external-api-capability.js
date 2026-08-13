@@ -1,5 +1,10 @@
 import { readProviderSecret } from "./provider-secrets.js";
 
+const AI_RESEARCH_SOURCES = new Set([
+  "brave_search", "tavily", "serper", "exa", "firecrawl", "jina",
+  "github", "gdelt", "sec_edgar", "openalex", "perplexity"
+]);
+
 const SOURCE_CATALOG = [
   source("brave_search", "搜索", "Brave Search", "available", "brave_api", ["search"]),
   source("tavily", "搜索", "Tavily", "available", "tavily_api", ["search"]),
@@ -43,6 +48,25 @@ export function getExternalApiCatalog(store, ownerKey) {
     ...item,
     connected: item.connection_required ? connections.has(item.source) : item.implementation_status === "available"
   }));
+}
+
+export function inferExternalApiRequest(task) {
+  const text = clean(task, 1000);
+  if (!text) return null;
+  const definition = SOURCE_CATALOG.find((item) =>
+    item.implementation_status === "available"
+      && item.operations.includes("search")
+      && sourceMentioned(text, item));
+  if (!definition) return null;
+  return {
+    capability: "external_api_query",
+    params: {
+      source: definition.source,
+      operation: "search",
+      query: extractSearchQuery(text),
+      limit: 10
+    }
+  };
 }
 
 export async function runExternalApiQuery(store, ownerKey, params = {}, options = {}) {
@@ -538,6 +562,7 @@ function source(id, category, title, implementationStatus, providerType, operati
   return {
     source: id,
     category,
+    hub_category: AI_RESEARCH_SOURCES.has(id) ? "AI Research" : null,
     title,
     implementation_status: implementationStatus,
     provider_type: providerType,
@@ -546,6 +571,23 @@ function source(id, category, title, implementationStatus, providerType, operati
     connection_required: connectionRequired,
     read_only: true
   };
+}
+
+function sourceMentioned(text, definition) {
+  const aliases = [definition.source.replaceAll("_", " "), definition.title]
+    .map((item) => item.toLowerCase());
+  const normalized = text.toLowerCase();
+  return aliases.some((alias) => {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(normalized);
+  });
+}
+
+function extractSearchQuery(text) {
+  const english = text.match(/\b(?:search|find|research|look\s+up)(?:\s+(?:for|about|on))?\s+(.+)$/i);
+  if (english?.[1]) return english[1].trim();
+  const chinese = text.match(/(?:搜索|查询|查找|研究)(?:一下|有关|关于)?\s*(.+)$/);
+  return chinese?.[1]?.trim() || text;
 }
 
 function publicSource(definition) {
