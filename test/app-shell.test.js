@@ -57,13 +57,19 @@ test("agent hub category links restore the selected category from the URL", () =
   assert.match(hub, /categories\.some\(\(item\) => item\.category === requestedCategory\)/);
 });
 
-test("agent hub exposes callable AI Research API sources as one category", () => {
+test("agent hub exposes callable AI Search API sources as one category", () => {
   const hub = agentHtml({});
-  assert.match(hub, /AI Research/);
+  assert.match(hub, /AI Search/);
+  assert.doesNotMatch(hub, /AI Research/);
   assert.match(hub, /fetch\("\/agent-router\/api-sources"\)/);
-  assert.match(hub, /hub_category === aiResearchCategory/);
+  assert.match(hub, /hub_category === aiSearchCategory/);
   assert.match(hub, /externalApiSourceCard/);
-  assert.match(hub, /available_to_agents/);
+  assert.match(hub, /return apiCard\(source, \{ link: true \}\)/);
+  assert.match(hub, /service\.price_label/);
+  assert.match(hub, /if \(value == null\) return "--"/);
+  assert.match(hub, /Calls<\/b>/);
+  assert.match(hub, /Success<\/b>/);
+  assert.match(hub, /Trust<\/b>/);
   assert.doesNotMatch(hub, /Connection required/);
   assert.doesNotMatch(hub, /Connect API to use/);
 });
@@ -73,4 +79,12 @@ test("agent hub browser capability cards keep compact content height", () => {
 
   assert.match(hub, /\.builtin-capability-card \.api-main\{flex:0 0 auto\}/);
   assert.match(hub, /\.builtin-capability-card \.detail-link\{[^}]*display:inline-block/);
+});
+
+test("agent hub service grid keeps three equal columns without content-driven overflow", () => {
+  const hub = agentHtml({});
+
+  assert.match(hub, /\.market-shell\.list-only > section \{ min-width:0; \}/);
+  assert.match(hub, /\.market-grid > \.api-card \{ width:100%; min-width:0; \}/);
+  assert.match(hub, /\.api-main > div:last-child \{ min-width:0; \}/);
 });

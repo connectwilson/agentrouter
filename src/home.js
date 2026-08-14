@@ -510,9 +510,9 @@ export function agentHtml({ auth = {} } = {}) {
         ${serviceClientScript()}
         let categories = [{ category: "All", count: 0 }];
         let builtInCapabilities = [];
-        let aiResearchSources = [];
+        let aiSearchSources = [];
         const builtInCategory = "Social research";
-        const aiResearchCategory = "AI Research";
+        const aiSearchCategory = "AI Search";
         const pageSize = 24;
         let servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
         let activeCategory = "All";
@@ -584,14 +584,14 @@ export function agentHtml({ auth = {} } = {}) {
             const builtInPayload = await builtInResponse.json();
             const apiSourcesPayload = await apiSourcesResponse.json();
             builtInCapabilities = Array.isArray(builtInPayload.capabilities) ? builtInPayload.capabilities : [];
-            aiResearchSources = (Array.isArray(apiSourcesPayload.sources) ? apiSourcesPayload.sources : [])
-              .filter((source) => source.implementation_status === "available" && source.hub_category === aiResearchCategory);
+            aiSearchSources = (Array.isArray(apiSourcesPayload.sources) ? apiSourcesPayload.sources : [])
+              .filter((source) => source.implementation_status === "available" && source.hub_category === aiSearchCategory);
             const registeredCategories = (payload.categories || [])
-              .filter((item) => ![builtInCategory, aiResearchCategory].includes(item.category));
+              .filter((item) => ![builtInCategory, aiSearchCategory].includes(item.category));
             categories = [
-              { category: "All", count: Number(payload.total || 0) + builtInCapabilities.length + aiResearchSources.length },
+              { category: "All", count: Number(payload.total || 0) + builtInCapabilities.length + aiSearchSources.length },
               ...registeredCategories,
-              ...(aiResearchSources.length ? [{ category: aiResearchCategory, count: aiResearchSources.length }] : []),
+              ...(aiSearchSources.length ? [{ category: aiSearchCategory, count: aiSearchSources.length }] : []),
               ...(builtInCapabilities.length ? [{ category: builtInCategory, count: builtInCapabilities.length }] : [])
             ];
           } catch {}
@@ -613,7 +613,7 @@ export function agentHtml({ auth = {} } = {}) {
           });
         }
         async function loadAgentServices() {
-          if (activeCategory === builtInCategory || activeCategory === aiResearchCategory) {
+          if (activeCategory === builtInCategory || activeCategory === aiSearchCategory) {
             servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
             renderAgentHub();
             return;
@@ -655,22 +655,22 @@ export function agentHtml({ auth = {} } = {}) {
           const visibleBuiltIns = (activeCategory === "All" || activeCategory === builtInCategory)
             ? builtInCapabilities.filter((capability) => !query || [capability.title, capability.description, capability.capability, ...(capability.platforms || [])].join(" ").toLowerCase().includes(query))
             : [];
-          const visibleAiResearchSources = (activeCategory === "All" || activeCategory === aiResearchCategory)
-            ? aiResearchSources.filter((source) => !query || [source.title, source.source, source.category, ...(source.operations || [])].join(" ").toLowerCase().includes(query))
+          const visibleAiSearchSources = (activeCategory === "All" || activeCategory === aiSearchCategory)
+            ? aiSearchSources.filter((source) => !query || [source.title, source.source, source.category, ...(source.operations || [])].join(" ").toLowerCase().includes(query))
             : [];
           const services = servicePage.services || [];
           const cards = [
             ...visibleBuiltIns.map(builtInCapabilityCard),
-            ...visibleAiResearchSources.map(externalApiSourceCard),
+            ...visibleAiSearchSources.map(externalApiSourceCard),
             ...services.map((service) => apiCard(service, { link: true }))
           ];
           document.getElementById("agent-api-cards").innerHTML = cards.join("") ||
             '<div class="empty-market">No matching services found.</div>';
           const availableTotal = activeCategory === builtInCategory
             ? visibleBuiltIns.length
-            : activeCategory === aiResearchCategory
-              ? visibleAiResearchSources.length
-              : Number(servicePage.total || 0) + visibleBuiltIns.length + visibleAiResearchSources.length;
+            : activeCategory === aiSearchCategory
+              ? visibleAiSearchSources.length
+              : Number(servicePage.total || 0) + visibleBuiltIns.length + visibleAiSearchSources.length;
           setText("agent-result-count", availableTotal ? availableTotal + " available services" : "No services match this view");
           document.getElementById("service-prev").disabled = currentPage <= 0;
           document.getElementById("service-next").disabled = !servicePage.has_more;
@@ -692,29 +692,7 @@ export function agentHtml({ auth = {} } = {}) {
           '</article>';
         }
         function externalApiSourceCard(source) {
-          const operations = (source.operations || []).map((operation) => '<span class="pill">' + escapeHtml(operation) + '</span>').join("");
-          const available = source.available_to_agents !== false && source.implementation_status === "available";
-          const access = available ? "Available" : "Unavailable";
-          const connectionDetail = source.connection_state === "connected"
-            ? "Connected to this account"
-            : source.connection_state === "not_connected"
-              ? "Not connected to this account"
-              : source.connection_state === "unknown"
-                ? "Account status not checked"
-                : "No account connection needed";
-          const action = source.connection_state === "not_connected"
-            ? "Manage account connection"
-            : available
-              ? "Available to agents"
-              : "Unavailable";
-          return '<article class="api-card external-api-source-card">' +
-            '<div class="api-top"><span class="type-badge">API</span><span class="heart">◌</span></div>' +
-            '<div class="api-main"><div class="logo">⌁</div><div><h3>' + escapeHtml(source.title) + '</h3><p>Read-only research source routed through AgentRouter.</p></div></div>' +
-            '<div class="pill-row"><span class="pill">AI Research</span>' + operations + '</div>' +
-            '<div class="stat-row"><span class="stat-pill"><b>Access</b> ' + escapeHtml(access) + '</span></div>' +
-            '<div class="byline"><span>' + escapeHtml(source.category || "Research") + '</span><span>' + escapeHtml(connectionDetail) + '</span></div>' +
-            '<a class="detail-link" href="/research">' + escapeHtml(action) + '</a>' +
-          '</article>';
+          return apiCard(source, { link: true });
         }
         function renderPager() {
           const total = Number(servicePage.total || 0);
@@ -869,6 +847,12 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
   const endpoint = manifest.endpoint || {};
   const capabilities = manifest.capabilities || service.capabilities || [];
   const price = manifest.pricing || {};
+  const priceDisplay = service.price_label || `${price.amount || service.price || "0.00"} ${price.currency || service.currency || "USDC"}`;
+  const upstreamPricing = service.upstream_pricing || manifest.upstream_pricing || {};
+  const priceContextLabel = service.price_scope === "upstream_api" ? "Upstream API cost" : "AgentRouter charge";
+  const pricingSourceLink = upstreamPricing.source_url
+    ? ` · <a href="${html(upstreamPricing.source_url)}" target="_blank" rel="noreferrer">Official pricing ↗</a>`
+    : "";
   const trust = service.trust || {};
   const health = service.health || {};
   const requestData = service.request_data || {};
@@ -918,14 +902,14 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
           <aside class="detail-summary-card">
             <div><span>Service ID</span><strong>${html(serviceId)}</strong></div>
             <div><span>Provider</span><strong>${html(service.provider_id || manifest.provider?.provider_id || "provider")}</strong></div>
-            <div><span>Price</span><strong>${html(price.amount || service.price || "0.00")} ${html(price.currency || service.currency || "USDC")}/call</strong></div>
+            <div><span>Price</span><strong>${html(priceDisplay)}</strong></div>
             <div><span>Status</span><strong>${html(service.verification_status || "unknown")}</strong></div>
           </aside>
         </section>
 
         <section class="detail-metrics" aria-label="Service quality summary">
-          <div><span>Price</span><strong>${html(price.amount || service.price || "0.00")} ${html(price.currency || service.currency || "USDC")}</strong><small>Per call</small></div>
-          <div><span>Service calls</span><strong>${html(trust.operational_feedback_count ?? service.total_calls ?? 0)}</strong><small>Observed demand</small></div>
+          <div><span>Price</span><strong>${html(priceDisplay)}</strong><small>${html(priceContextLabel)}${pricingSourceLink}</small></div>
+          <div><span>Service calls</span><strong>${html(service.metrics_available === false ? "--" : trust.operational_feedback_count ?? service.total_calls ?? 0)}</strong><small>Observed demand</small></div>
           <div><span>Success rate</span><strong>${html(formatPercent(trust.success_rate))}</strong><small>Runtime feedback</small></div>
           <div><span>Trust score</span><strong>${html(formatScore(trust.trust_score))}</strong><small>Verification + feedback</small></div>
           <div><span>Health</span><strong>${html(health.status || service.health_status || "unknown")}</strong><small>${html(health.last_validation_at || "No validation time")}</small></div>
@@ -1603,7 +1587,7 @@ function serviceClientScript() {
               <p>\${escapeHtml(truncate(description, 106))}</p>
               <div class="byline"><span>By \${escapeHtml(service.provider_id || "provider")}</span><span>Updated now</span></div>
               <div class="stat-row">
-                <span class="stat-pill"><b>Price</b> \${formatUsdc(Number(service.price || 0))} \${escapeHtml(service.currency || "USDC")}</span>
+                <span class="stat-pill"><b>Price</b> \${service.price_label ? escapeHtml(service.price_label) : formatUsdc(Number(service.price || 0)) + " " + escapeHtml(service.currency || "USDC")}</span>
                 <span class="stat-pill"><b>Calls</b> \${formatCount(service.total_calls)}</span>
                 <span class="stat-pill"><b>Success</b> \${formatSuccessRate(service.success_rate)}</span>
                 <span class="stat-pill"><b>Trust</b> \${formatRating(service.trust_score)}</span>
@@ -1630,6 +1614,7 @@ function serviceClientScript() {
       return Math.round(Math.max(0, Math.min(1, Number(value))) * 100) + "%";
     }
     function formatCount(value) {
+      if (value == null) return "--";
       const count = Number(value || 0);
       if (count >= 1000000) return (count / 1000000).toFixed(1).replace(/\\.0$/, "") + "M";
       if (count >= 1000) return (count / 1000).toFixed(1).replace(/\\.0$/, "") + "K";

@@ -33,7 +33,7 @@ import { buildCreatorResearchReport } from "./research-synthesis.js";
 import { runSocialResearchCapability } from "./research-capability.js";
 import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
-import { getExternalApiCatalog, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
+import { getExternalApiCatalog, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import {
@@ -594,8 +594,7 @@ async function routeRequest(req, res, store, baseUrl, {
   if (req.method === "GET" && url.pathname === "/agent-router/service") {
     const serviceId = url.searchParams.get("service_id");
     const record = store.services.get(serviceId);
-    if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
-    const payload = {
+    const payload = record ? {
       service_detail_version: "agent_router_service_detail_v1",
       data_context: {
         page_role: "service_capability_detail",
@@ -613,7 +612,8 @@ async function routeRequest(req, res, store, baseUrl, {
       recent_quality_events: (record.quality_events || []).slice(-20),
       recent_feedback_events: (record.feedback_events || []).slice(-20),
       recent_health_checks: (record.health_checks || []).slice(-20)
-    };
+    } : getExternalApiServiceDetail(store, serviceId, authUserKey(auth.user));
+    if (!payload) return sendNotFound(res, "SERVICE_NOT_FOUND");
     if (wantsHtml(req, url)) {
       sendHtml(res, 200, serviceDetailHtml(payload, { auth }));
       return;

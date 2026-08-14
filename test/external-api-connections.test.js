@@ -34,11 +34,16 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(catalog.find((item) => item.source === "openalex").operations.includes("search"), true);
   assert.equal(catalog.find((item) => item.source === "linkedin").implementation_status, "requires_partner_api");
   assert.equal(catalog.find((item) => item.source === "xiaohongshu").implementation_status, "browser_only");
-  assert.equal(catalog.find((item) => item.source === "exa").hub_category, "AI Research");
-  assert.equal(catalog.find((item) => item.source === "openalex").hub_category, "AI Research");
+  assert.equal(catalog.find((item) => item.source === "exa").hub_category, "AI Search");
+  assert.equal(catalog.find((item) => item.source === "openalex").hub_category, "AI Search");
   assert.equal(catalog.find((item) => item.source === "open_meteo").hub_category, null);
   const exa = catalog.find((item) => item.source === "exa");
   assert.equal(exa.available_to_agents, true);
+  assert.equal(exa.price_label, "$0.007/call");
+  assert.equal(exa.price_scope, "upstream_api");
+  assert.equal(exa.upstream_pricing.amount, 0.007);
+  assert.match(exa.upstream_pricing.source_url, /^https:\/\/exa\.ai\/pricing/);
+  assert.equal(exa.total_calls, null);
   assert.equal(exa.connection_state, "unknown");
   assert.equal(exa.connected, null);
 });
@@ -51,6 +56,83 @@ test("external API catalog separates service availability from account connectio
   assert.equal(exa.available_to_agents, true);
   assert.equal(exa.connection_state, "not_connected");
   assert.equal(exa.connected, false);
+});
+
+test("AI Search sources expose the same service metrics and detail metadata as registered APIs", () => {
+  const store = createMemoryStore();
+  store.feedbackEvents.push(
+    {
+      service_id: "external_api_exa",
+      status: "success",
+      schema_valid: true,
+      latency_ms: 120,
+      verification: { freshness_valid: true, coverage_valid: true, agent_friendly_score: 1 }
+    },
+    {
+      service_id: "external_api_exa",
+      status: "error",
+      schema_valid: false,
+      latency_ms: 500,
+      verification: null
+    }
+  );
+
+  const exa = getExternalApiCatalog(store, "github:user-a").find((item) => item.source === "exa");
+  assert.equal(exa.service_id, "external_api_exa");
+  assert.equal(exa.provider_id, "provider_exa_api");
+  assert.equal(exa.price_label, "$0.007/call");
+  assert.equal(exa.total_calls, 2);
+  assert.equal(exa.success_rate, 0.5);
+  assert.equal(typeof exa.trust_score, "number");
+  assert.deepEqual(exa.capabilities.slice(0, 3), ["exa", "ai_search", "search"]);
+  assert.equal(exa.detail_href, "/agent-router/service?service_id=external_api_exa");
+});
+
+test("AI Search virtual services have a standard AgentRouter detail endpoint", async () => {
+  const server = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/agent-router/service?service_id=external_api_exa`);
+    const detail = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(detail.service.service_id, "external_api_exa");
+    assert.equal(detail.service.provider_id, "provider_exa_api");
+    assert.equal(detail.service.trust.operational_feedback_count, 0);
+    assert.equal(detail.manifest.sample_request.params.source, "exa");
+    assert.equal(detail.manifest.pricing.amount, "0");
+    assert.equal(detail.manifest.upstream_pricing.amount, 0.007);
+
+    const htmlResponse = await fetch(`${baseUrl}/agent-router/service?service_id=external_api_exa&format=html`);
+    const html = await htmlResponse.text();
+    assert.equal(htmlResponse.status, 200);
+    assert.match(html, /Service calls/);
+    assert.match(html, /Success rate/);
+    assert.match(html, /Trust score/);
+    assert.match(html, /Official pricing/);
+    assert.match(html, /https:\/\/exa\.ai\/pricing\?tab=api/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("AI Search pricing reflects upstream billing instead of marking every BYOK API free", () => {
+  const catalog = getExternalApiCatalog();
+  const bySource = Object.fromEntries(catalog.map((item) => [item.source, item]));
+
+  assert.equal(bySource.brave_search.price_label, "$0.005/call");
+  assert.equal(bySource.tavily.price_label, "$0.008/call");
+  assert.equal(bySource.serper.price_label, "$0.001/call");
+  assert.equal(bySource.exa.price_label, "$0.007/call");
+  assert.equal(bySource.firecrawl.price_label, "2 credits/10 results");
+  assert.equal(bySource.jina.price_label, "From 10k tokens/call");
+  assert.equal(bySource.openalex.price_label, "$0.001/call");
+  assert.equal(bySource.perplexity.price_label, "From $0.005 + tokens");
+
+  for (const source of ["github", "gdelt", "sec_edgar"]) {
+    assert.equal(bySource[source].price_label, "FREE");
+    assert.equal(bySource[source].price_scope, "upstream_api");
+  }
 });
 
 test("agentrouter_fetch dispatches connected Exa for natural and structured requests", async () => {
@@ -199,6 +281,12 @@ test("Brave API credentials stay secret and query results are normalized", async
   assert.equal(result.ok, true);
   assert.deepEqual(result.result.items, [{ title: "Example", url: "https://example.com", snippet: "Evidence", published_at: null }]);
   assert.equal(JSON.stringify(result).includes("brave-secret"), false);
+  assert.equal(store.feedbackEvents.length, 1);
+  assert.equal(store.feedbackEvents[0].service_id, "external_api_brave_search");
+  assert.equal(store.feedbackEvents[0].status, "success");
+  const brave = getExternalApiCatalog(store, "github:user-a").find((item) => item.source === "brave_search");
+  assert.equal(brave.total_calls, 1);
+  assert.equal(brave.success_rate, 1);
 });
 
 test("external API query fails clearly when the user has not connected the source", async () => {

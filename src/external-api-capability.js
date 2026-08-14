@@ -1,9 +1,67 @@
 import { readProviderSecret } from "./provider-secrets.js";
+import { writePersistentServiceEvent } from "./persistence.js";
+import { summarizeTrust } from "./store.js";
 
-const AI_RESEARCH_SOURCES = new Set([
+const AI_SEARCH_SOURCES = new Set([
   "brave_search", "tavily", "serper", "exa", "firecrawl", "jina",
   "github", "gdelt", "sec_edgar", "openalex", "perplexity"
 ]);
+
+// Reviewed upstream prices for the exact read-only operations used below.
+// These are provider costs paid through the user's connected account, not an
+// AgentRouter surcharge. Keep the source URL and review date visible so a
+// variable/token/credit price is never presented as a made-up flat fee.
+const AI_SEARCH_PRICING = Object.freeze({
+  brave_search: upstreamPrice("$0.005/call", 0.005, "per_request", "https://api-dashboard.search.brave.com/documentation/pricing", {
+    note: "Search API base rate; monthly credits may offset usage."
+  }),
+  tavily: upstreamPrice("$0.008/call", 0.008, "per_request", "https://help.tavily.com/articles/8816424538-pricing", {
+    note: "PAYG price for one basic-search credit; plan credits may offset usage."
+  }),
+  serper: upstreamPrice("$0.001/call", 0.001, "per_request", "https://serper.dev/", {
+    note: "Starter top-up rate; larger credit packs have lower unit prices."
+  }),
+  exa: upstreamPrice("$0.007/call", 0.007, "per_request", "https://exa.ai/pricing?tab=api", {
+    note: "Base search with up to 10 results; additional contents or results may cost more."
+  }),
+  firecrawl: upstreamPrice("2 credits/10 results", null, "credits", "https://www.firecrawl.dev/pricing", {
+    unit_amount: 2,
+    unit: "credits_per_10_results",
+    note: "Search usage; the USD value of a credit depends on the connected plan."
+  }),
+  jina: upstreamPrice("From 10k tokens/call", null, "tokens", "https://jina.ai/reader/", {
+    unit_amount: 10000,
+    unit: "tokens_per_search",
+    note: "Jina Search charges a fixed token amount starting at 10,000 tokens per request."
+  }),
+  github: upstreamPrice("FREE", 0, "free", "https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api", {
+    note: "No per-request fee; GitHub rate limits apply."
+  }),
+  gdelt: upstreamPrice("FREE", 0, "free", "https://www.gdeltproject.org/", {
+    note: "Public GDELT API; usage and availability limits apply."
+  }),
+  sec_edgar: upstreamPrice("FREE", 0, "free", "https://www.sec.gov/search-filings/edgar-application-programming-interfaces", {
+    note: "Public SEC EDGAR API; fair-access limits apply."
+  }),
+  openalex: upstreamPrice("$0.001/call", 0.001, "per_request", "https://developers.openalex.org/api-reference/authentication", {
+    note: "Search endpoint price; every API key currently receives a daily free allowance."
+  }),
+  perplexity: upstreamPrice("From $0.005 + tokens", 0.005, "request_plus_tokens", "https://docs.perplexity.ai/docs/getting-started/pricing", {
+    note: "Sonar request fee at low context plus input and output token charges."
+  })
+});
+
+function upstreamPrice(label, amount, model, sourceUrl, extra = {}) {
+  return Object.freeze({
+    label,
+    amount,
+    currency: amount == null ? null : "USD",
+    model,
+    source_url: sourceUrl,
+    checked_at: "2026-08-15",
+    ...extra
+  });
+}
 
 const SOURCE_CATALOG = [
   source("brave_search", "搜索", "Brave Search", "available", "brave_api", ["search"]),
@@ -46,12 +104,14 @@ export function getExternalApiCatalog(store, ownerKey) {
     .filter((item) => item.owner_key === ownerKey)
     .map((item) => item.platform));
   return SOURCE_CATALOG.map((item) => {
+    const service = externalApiService(item, store);
     const availableToAgents = item.implementation_status === "available";
     const connected = item.connection_required
       ? (accountStateKnown ? connections.has(item.source) : null)
       : availableToAgents;
     return {
       ...item,
+      ...service,
       available_to_agents: availableToAgents,
       connected,
       connection_state: !item.connection_required
@@ -63,6 +123,79 @@ export function getExternalApiCatalog(store, ownerKey) {
             : "not_connected"
     };
   });
+}
+
+export function getExternalApiServiceDetail(store, serviceId, ownerKey) {
+  const sourceItem = getExternalApiCatalog(store, ownerKey)
+    .find((item) => item.service_id === serviceId);
+  if (!sourceItem || sourceItem.implementation_status !== "available") return null;
+  const feedbackEvents = externalApiEvents(store, serviceId);
+  const manifest = {
+    manifest_type: "agentrouter_external_api_source",
+    service_id: sourceItem.service_id,
+    version: "1.0.0",
+    title: sourceItem.title,
+    description_for_agent: sourceItem.description_for_agent,
+    provider: { provider_id: sourceItem.provider_id },
+    capabilities: sourceItem.capabilities,
+    endpoint: { method: "POST", url: "/agent-router/request" },
+    sample_request: {
+      capability: "external_api_query",
+      params: { source: sourceItem.source, operation: sourceItem.operations[0] || "search", query: "<query>", limit: 10 }
+    },
+    input_schema: {
+      type: "object",
+      required: ["source", "operation", "query"],
+      properties: {
+        source: { const: sourceItem.source },
+        operation: { enum: sourceItem.operations },
+        query: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: 25 }
+      }
+    },
+    output_schema: {
+      type: "object",
+      required: ["items", "count"],
+      properties: { items: { type: "array" }, count: { type: "integer" } }
+    },
+    pricing: { amount: "0", currency: "USDC", model: "agentrouter_no_surcharge" },
+    upstream_pricing: sourceItem.upstream_pricing,
+    pre_call_context: {
+      buyer_requirements: {
+        payment_required: false,
+        needs_buyer_api_key: sourceItem.connection_required,
+        credential_setup: sourceItem.connection_required ? "Connect the source once in AgentRouter." : "none"
+      },
+      limitations: ["Read-only connector", "Results depend on the upstream provider and current account quota."]
+    }
+  };
+  return {
+    service_detail_version: "agent_router_service_detail_v1",
+    data_context: {
+      page_role: "service_capability_detail",
+      result_preview_role: "none",
+      result_preview_is_live_user_query: false,
+      explanation: "Metrics are calculated from real AgentRouter calls to this source; no sample result is presented as live data."
+    },
+    service: {
+      ...sourceItem,
+      display_title: sourceItem.title,
+      verification_status: "verified",
+      pricing: manifest.pricing,
+      trust: sourceItem.trust,
+      health: sourceItem.health,
+      pre_call_context: manifest.pre_call_context,
+      request_data: manifest.input_schema,
+      response_data: manifest.output_schema,
+      source_provenance: { source_provenance_level: "connected_upstream_api", upstream_source: sourceItem.source }
+    },
+    manifest,
+    latest_validation: null,
+    recent_evidence_events: [],
+    recent_quality_events: [],
+    recent_feedback_events: feedbackEvents.slice(-20),
+    recent_health_checks: []
+  };
 }
 
 export function inferExternalApiRequest(task) {
@@ -124,6 +257,7 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     if (!secret) return { ...failure("auth_required", "The connected credential is unavailable."), action_required: "reconnect_api_source" };
   }
 
+  const startedAt = Date.now();
   const response = await invokeSource(sourceId, {
     operation,
     query,
@@ -132,6 +266,7 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     secret,
     fetchImpl: options.fetchImpl || globalThis.fetch
   });
+  recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, options);
   if (!response.ok) {
     return {
       ok: false,
@@ -163,6 +298,90 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
       provider_response_normalized: true
     }
   };
+}
+
+function externalApiService(definition, store) {
+  const serviceId = `external_api_${definition.source}`;
+  const providerId = `provider_${definition.provider_type || definition.source}`;
+  const feedbackEvents = externalApiEvents(store, serviceId);
+  const trust = summarizeTrust({
+    manifest: { provider: { provider_id: providerId } },
+    verification_status: definition.implementation_status === "available" ? "verified" : "unverified",
+    feedback_events: feedbackEvents
+  });
+  const measuredTrust = trust.operational_feedback_count > 0
+    ? trust
+    : { ...trust, trust_score: null };
+  const observedCalls = trust.operational_feedback_count > 0;
+  const upstreamPricing = AI_SEARCH_PRICING[definition.source]
+    || upstreamPrice(definition.connection_required ? "BYOK" : "FREE", definition.connection_required ? null : 0, definition.connection_required ? "provider_defined" : "free", definition.connection_required ? null : definition.docs_url || null);
+  return {
+    service_id: serviceId,
+    provider_id: providerId,
+    display_title: definition.title,
+    description_for_agent: `Use ${definition.title} as a read-only ${(definition.hub_category || "data").toLowerCase()} source through AgentRouter.`,
+    price: 0,
+    price_label: upstreamPricing.label,
+    price_scope: "upstream_api",
+    agentrouter_price: 0,
+    upstream_pricing: upstreamPricing,
+    pricing_model: upstreamPricing.model === "free" ? "public_free" : "bring_your_own_key_upstream_billed",
+    currency: "USDC",
+    total_calls: observedCalls ? trust.operational_feedback_count : null,
+    success_rate: trust.success_rate,
+    trust_score: measuredTrust.trust_score,
+    trust: measuredTrust,
+    metrics_available: observedCalls,
+    health: {
+      status: definition.implementation_status !== "available"
+        ? "unavailable"
+        : trust.recent_failure_rate != null && trust.recent_failure_rate >= 0.5
+          ? "degraded"
+          : "healthy",
+      last_validation_at: feedbackEvents.at(-1)?.created_at || null
+    },
+    capabilities: [definition.source, "ai_search", ...definition.operations, ...(definition.connection_required ? ["byok"] : [])],
+    detail_href: `/agent-router/service?service_id=${encodeURIComponent(serviceId)}`
+  };
+}
+
+function externalApiEvents(store, serviceId) {
+  return (store?.feedbackEvents || []).filter((event) => event.service_id === serviceId);
+}
+
+function recordExternalApiInvocation(store, definition, response, latencyMs, options) {
+  const serviceId = `external_api_${definition.source}`;
+  const requestId = `external_${definition.source}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const successful = response.ok === true;
+  const event = {
+    event_version: "agent_external_api_feedback_v1",
+    request_id: requestId,
+    service_id: serviceId,
+    provider_id: `provider_${definition.provider_type || definition.source}`,
+    source: definition.source,
+    status: successful ? "success" : "error",
+    http_status: Number.isFinite(Number(response.http_status)) ? Number(response.http_status) : null,
+    provider_status: response.status || null,
+    schema_valid: successful,
+    verification: successful ? {
+      coverage_valid: Array.isArray(response.items),
+      freshness_valid: null,
+      agent_friendly_score: 1
+    } : null,
+    latency_ms: latencyMs,
+    created_at: new Date().toISOString()
+  };
+  if (store?.feedbackEvents) store.feedbackEvents.push(event);
+  if (store?.invocationLogs) store.invocationLogs.push({
+    request_id: requestId,
+    service_id: serviceId,
+    provider_id: event.provider_id,
+    status: event.status,
+    latency_ms: latencyMs,
+    created_at: event.created_at
+  });
+  const writer = options.writeServiceEvent || writePersistentServiceEvent;
+  Promise.resolve(writer({ eventType: "operational_feedback", serviceId, requestId, event })).catch(() => {});
 }
 
 function validateSourceParams(sourceId, operation, params) {
@@ -577,7 +796,7 @@ function source(id, category, title, implementationStatus, providerType, operati
   return {
     source: id,
     category,
-    hub_category: AI_RESEARCH_SOURCES.has(id) ? "AI Research" : null,
+    hub_category: AI_SEARCH_SOURCES.has(id) ? "AI Search" : null,
     title,
     implementation_status: implementationStatus,
     provider_type: providerType,
