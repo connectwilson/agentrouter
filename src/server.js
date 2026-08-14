@@ -284,7 +284,7 @@ async function routeRequest(req, res, store, baseUrl, {
     sendJson(res, 200, {
       catalog_version: "agent_router_external_sources_v1",
       sources: getExternalApiCatalog(store, authUserKey(auth.user))
-    });
+    }, { "cache-control": "private, no-store" });
     return;
   }
 

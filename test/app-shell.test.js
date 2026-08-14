@@ -63,4 +63,14 @@ test("agent hub exposes callable AI Research API sources as one category", () =>
   assert.match(hub, /fetch\("\/agent-router\/api-sources"\)/);
   assert.match(hub, /hub_category === aiResearchCategory/);
   assert.match(hub, /externalApiSourceCard/);
+  assert.match(hub, /available_to_agents/);
+  assert.doesNotMatch(hub, /Connection required/);
+  assert.doesNotMatch(hub, /Connect API to use/);
+});
+
+test("agent hub browser capability cards keep compact content height", () => {
+  const hub = agentHtml({});
+
+  assert.match(hub, /\.builtin-capability-card \.api-main\{flex:0 0 auto\}/);
+  assert.match(hub, /\.builtin-capability-card \.detail-link\{[^}]*display:inline-block/);
 });

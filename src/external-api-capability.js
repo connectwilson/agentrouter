@@ -41,13 +41,28 @@ const SOURCE_CATALOG = [
 ];
 
 export function getExternalApiCatalog(store, ownerKey) {
+  const accountStateKnown = Boolean(ownerKey);
   const connections = new Set([...(store?.socialConnections || new Map()).values()]
     .filter((item) => item.owner_key === ownerKey)
     .map((item) => item.platform));
-  return SOURCE_CATALOG.map((item) => ({
-    ...item,
-    connected: item.connection_required ? connections.has(item.source) : item.implementation_status === "available"
-  }));
+  return SOURCE_CATALOG.map((item) => {
+    const availableToAgents = item.implementation_status === "available";
+    const connected = item.connection_required
+      ? (accountStateKnown ? connections.has(item.source) : null)
+      : availableToAgents;
+    return {
+      ...item,
+      available_to_agents: availableToAgents,
+      connected,
+      connection_state: !item.connection_required
+        ? "not_required"
+        : !accountStateKnown
+          ? "unknown"
+          : connected
+            ? "connected"
+            : "not_connected"
+    };
+  });
 }
 
 export function inferExternalApiRequest(task) {

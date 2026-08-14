@@ -693,16 +693,27 @@ export function agentHtml({ auth = {} } = {}) {
         }
         function externalApiSourceCard(source) {
           const operations = (source.operations || []).map((operation) => '<span class="pill">' + escapeHtml(operation) + '</span>').join("");
-          const access = source.connection_required
-            ? (source.connected ? "Connected" : "Connection required")
-            : "Ready to call";
+          const available = source.available_to_agents !== false && source.implementation_status === "available";
+          const access = available ? "Available" : "Unavailable";
+          const connectionDetail = source.connection_state === "connected"
+            ? "Connected to this account"
+            : source.connection_state === "not_connected"
+              ? "Not connected to this account"
+              : source.connection_state === "unknown"
+                ? "Account status not checked"
+                : "No account connection needed";
+          const action = source.connection_state === "not_connected"
+            ? "Manage account connection"
+            : available
+              ? "Available to agents"
+              : "Unavailable";
           return '<article class="api-card external-api-source-card">' +
             '<div class="api-top"><span class="type-badge">API</span><span class="heart">◌</span></div>' +
             '<div class="api-main"><div class="logo">⌁</div><div><h3>' + escapeHtml(source.title) + '</h3><p>Read-only research source routed through AgentRouter.</p></div></div>' +
             '<div class="pill-row"><span class="pill">AI Research</span>' + operations + '</div>' +
             '<div class="stat-row"><span class="stat-pill"><b>Access</b> ' + escapeHtml(access) + '</span></div>' +
-            '<div class="byline"><span>' + escapeHtml(source.category || "Research") + '</span><span>Credentials stay encrypted</span></div>' +
-            '<a class="detail-link" href="/research">' + escapeHtml(source.connected || !source.connection_required ? "Available to agents" : "Connect API to use") + '</a>' +
+            '<div class="byline"><span>' + escapeHtml(source.category || "Research") + '</span><span>' + escapeHtml(connectionDetail) + '</span></div>' +
+            '<a class="detail-link" href="/research">' + escapeHtml(action) + '</a>' +
           '</article>';
         }
         function renderPager() {

@@ -37,6 +37,20 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(catalog.find((item) => item.source === "exa").hub_category, "AI Research");
   assert.equal(catalog.find((item) => item.source === "openalex").hub_category, "AI Research");
   assert.equal(catalog.find((item) => item.source === "open_meteo").hub_category, null);
+  const exa = catalog.find((item) => item.source === "exa");
+  assert.equal(exa.available_to_agents, true);
+  assert.equal(exa.connection_state, "unknown");
+  assert.equal(exa.connected, null);
+});
+
+test("external API catalog separates service availability from account connection state", () => {
+  const store = createMemoryStore();
+  const exa = getExternalApiCatalog(store, "github:user-without-exa")
+    .find((item) => item.source === "exa");
+
+  assert.equal(exa.available_to_agents, true);
+  assert.equal(exa.connection_state, "not_connected");
+  assert.equal(exa.connected, false);
 });
 
 test("agentrouter_fetch dispatches connected Exa for natural and structured requests", async () => {
@@ -476,6 +490,8 @@ test("AgentRouter exposes and invokes external_api_query for the signed-in conne
     const catalogResponse = await fetch(`${baseUrl}/agent-router/api-sources`, { headers: { cookie } });
     const catalog = await catalogResponse.json();
     assert.equal(catalog.sources.find((item) => item.source === "brave_search").connected, true);
+    assert.equal(catalog.sources.find((item) => item.source === "brave_search").connection_state, "connected");
+    assert.equal(catalogResponse.headers.get("cache-control"), "private, no-store");
 
     const response = await fetch(`${baseUrl}/agent-router/request`, {
       method: "POST",
