@@ -841,3 +841,34 @@ test("newly implemented finance and answer sources are callable and normalized",
   assert.equal(tushare.result.items[0].metadata.name, "平安银行");
   assert.equal(JSON.stringify(tushare).includes("tushare-secret"), false);
 });
+
+test("result limits are per-source, not one pessimistic cap", async () => {
+  const { resolveResultLimit } = await import("../src/external-api-capability.js");
+
+  // 10 was only ever a default; callers who ask for more now get more.
+  assert.equal(resolveResultLimit("exa", undefined), 10);
+  assert.equal(resolveResultLimit("exa", 50), 50);
+  assert.equal(resolveResultLimit("exa", 500), 100);
+  // Sources whose upstream refuses large pages stay clamped to what it accepts.
+  assert.equal(resolveResultLimit("brave_search", 50), 20);
+  assert.equal(resolveResultLimit("tavily", 50), 20);
+  assert.equal(resolveResultLimit("youtube", 100), 50);
+  // Sources that allow deep pages are not held back by the global ceiling.
+  assert.equal(resolveResultLimit("gdelt", 250), 250);
+  assert.equal(resolveResultLimit("openalex", 200), 200);
+  // Junk input falls back to something valid rather than 0 or a negative page.
+  assert.equal(resolveResultLimit("exa", 0), 10);
+  assert.equal(resolveResultLimit("exa", -3), 1);
+
+  // The clamp must reach the actual upstream request, not just the return value.
+  const requests = [];
+  await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "gdelt", operation: "search", query: "crypto", limit: 60
+  }, {
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+    }
+  });
+  assert.match(requests[0], /maxrecords=60/);
+});

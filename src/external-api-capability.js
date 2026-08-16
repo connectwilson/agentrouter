@@ -217,11 +217,32 @@ export function inferExternalApiRequest(task) {
   };
 }
 
+// Callers asking for more results should get them; 10 was only ever a default.
+// Each upstream has its own ceiling, so clamp per source instead of applying one
+// pessimistic cap to every provider.
+const DEFAULT_RESULT_LIMIT = 10;
+const MAX_RESULT_LIMIT = 100;
+const SOURCE_MAX_LIMIT = {
+  brave_search: 20,
+  tavily: 20,
+  google_places: 20,
+  amadeus: 20,
+  youtube: 50,
+  gdelt: 250,
+  openalex: 200
+};
+
+export function resolveResultLimit(sourceId, requested) {
+  const ceiling = SOURCE_MAX_LIMIT[sourceId] ?? MAX_RESULT_LIMIT;
+  const value = Number(requested) || DEFAULT_RESULT_LIMIT;
+  return Math.min(Math.max(Math.trunc(value), 1), ceiling);
+}
+
 export async function runExternalApiQuery(store, ownerKey, params = {}, options = {}) {
   const sourceId = clean(params.source, 64).toLowerCase();
   const query = clean(params.query, 500);
   const operation = clean(params.operation || "search", 32).toLowerCase();
-  const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 25);
+  const limit = resolveResultLimit(sourceId, params.limit);
   const definition = SOURCE_CATALOG.find((item) => item.source === sourceId);
   if (!definition) return failure("unsupported_source", `Unknown source: ${sourceId || "(missing)"}`);
   if (definition.implementation_status !== "available") {
@@ -427,7 +448,7 @@ function buildRequest(sourceId, context) {
   if (sourceId === "brave_search") {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
     url.searchParams.set("q", query);
-    url.searchParams.set("count", String(Math.min(limit, 20)));
+    url.searchParams.set("count", String(limit));
     return get(url, { accept: "application/json", "x-subscription-token": secret });
   }
   if (sourceId === "tavily") return post("https://api.tavily.com/search", { query, max_results: limit }, { authorization: `Bearer ${secret}` });
@@ -467,7 +488,7 @@ function buildRequest(sourceId, context) {
     return get(`https://www.virustotal.com/api/v3/${target.type}/${encodeURIComponent(target.id)}`, { accept: "application/json", "x-apikey": secret });
   }
   if (sourceId === "google_places") {
-    return post("https://places.googleapis.com/v1/places:searchText", { textQuery: query, maxResultCount: Math.min(limit, 20) }, {
+    return post("https://places.googleapis.com/v1/places:searchText", { textQuery: query, maxResultCount: limit }, {
       "x-goog-api-key": secret,
       "x-goog-fieldmask": "places.id,places.displayName,places.formattedAddress,places.googleMapsUri,places.websiteUri,places.rating,places.userRatingCount,places.currentOpeningHours"
     });
