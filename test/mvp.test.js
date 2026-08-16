@@ -5653,3 +5653,40 @@ test("seed Apify actors register end to end with the token kept out of the confi
   });
   delete process.env.ADN_APIFY_API_BASE;
 });
+
+test("an unknown capability names what exists instead of a bare no-match", async () => {
+  const { routeCapabilityRequest, getCapabilityCatalog } = await import("../src/router.js");
+  const store = createMemoryStore();
+  const known = getCapabilityCatalog().map((entry) => entry.capability);
+
+  const diagnose = async (capability) => {
+    const result = await routeCapabilityRequest(store, { capability, params: { query: "x" } }, {});
+    return result.error || result.diagnostics || result;
+  };
+
+  // Guessed names are reported as unknown, not as "no service matched", and the
+  // caller is handed the real list so the next call can succeed.
+  const webSearch = await diagnose("web_search");
+  assert.equal(webSearch.code, "UNKNOWN_CAPABILITY");
+  assert.deepEqual(webSearch.available_capabilities, known);
+  assert.deepEqual(webSearch.did_you_mean, ["external_api_query"]);
+  assert.match(webSearch.next_actions[0], /external_api_query/);
+
+  // Token overlap covers names no hint list anticipated.
+  assert.deepEqual((await diagnose("liquidation_stuff")).did_you_mean, ["perp_liquidation_max_pain"]);
+
+  // Browser-backed capabilities explain that the hosted API cannot serve them.
+  const socialSearch = await diagnose("social_search");
+  assert.match(socialSearch.runs_locally, /on your device/);
+  assert.ok(socialSearch.did_you_mean.includes("social_user_voice_research"));
+
+  // A name with nothing close still returns the catalog rather than guessing.
+  const nonsense = await diagnose("totally_made_up_thing");
+  assert.equal(nonsense.code, "UNKNOWN_CAPABILITY");
+  assert.equal(nonsense.did_you_mean, undefined);
+  assert.deepEqual(nonsense.available_capabilities, known);
+
+  // A real capability with no matching service keeps the original diagnosis.
+  const registered = await diagnose(known[0]);
+  assert.notEqual(registered.code, "UNKNOWN_CAPABILITY");
+});

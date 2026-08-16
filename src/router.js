@@ -1816,6 +1816,44 @@ function dynamicInputParams(intent, sampleRequest = {}) {
   );
 }
 
+// These never run on the hosted server: they need the user's own browser, so a
+// hosted no-match is expected and the caller should be told where they do run.
+const LOCAL_ONLY_CAPABILITIES = {
+  social_search: "Keyword search runs on your device through the AgentRouter MCP bridge, which drives your logged-in browser. The hosted API cannot serve it.",
+  social_post_read: "Single-post reads run on your device through the AgentRouter MCP bridge. The hosted API cannot serve it."
+};
+
+// Names agents reach for that share no tokens with the real capability.
+const CAPABILITY_HINTS = {
+  web_search: ["external_api_query"],
+  search: ["external_api_query", "social_user_voice_research"],
+  web_fetch: ["external_api_query"],
+  news_search: ["external_api_query"],
+  social_search: ["social_user_voice_research", "social_post_read"],
+  tweet_search: ["social_user_voice_research"],
+  price: ["token_price"],
+  quote: ["token_price"]
+};
+
+// Cheap similarity: shared tokens first, then substring overlap. Good enough to
+// turn "web_search" into a pointer at "external_api_query".
+function nearestCapabilities(capability, known) {
+  const hinted = (CAPABILITY_HINTS[capability] || []).filter((name) => known.includes(name));
+  if (hinted.length) return hinted;
+  const terms = new Set(dynamicCapabilityTerms(capability));
+  return known
+    .map((name) => {
+      const nameTerms = dynamicCapabilityTerms(name);
+      const shared = nameTerms.filter((term) => terms.has(term)).length;
+      const substring = name.includes(capability) || capability.includes(name) ? 1 : 0;
+      return { name, score: shared * 2 + substring };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 3)
+    .map((entry) => entry.name);
+}
+
 function diagnoseNoMatch(store, { capability, params, constraints }) {
   const registered = [...store.services.values()].map((record) => record.manifest);
   const capabilityTerms = dynamicCapabilityTerms(capability);
@@ -1839,20 +1877,39 @@ function diagnoseNoMatch(store, { capability, params, constraints }) {
     .filter((item) => item.hits > 0)
     .sort((a, b) => b.hits - a.hits)
     .slice(0, 5);
+  // Callers guess capability names ("social_search", "web_search") and get a
+  // bare no-match, with nothing to correct against. Say what exists and which
+  // known name is closest so the next call can succeed.
+  const known = getCapabilityCatalog().map((entry) => entry.capability);
+  const unknownCapability = Boolean(capability) && !known.includes(capability);
+  const suggestions = unknownCapability ? nearestCapabilities(capability, known) : [];
+  const localOnly = LOCAL_ONLY_CAPABILITIES[capability];
   return {
-    code: "NO_REGISTERED_SERVICE_MATCHED",
-    message: related.length
-      ? "Registered services exist with related terms, but none satisfied capability, price, and coverage constraints."
-      : "No registered service exposes this capability yet.",
+    code: unknownCapability ? "UNKNOWN_CAPABILITY" : "NO_REGISTERED_SERVICE_MATCHED",
+    message: unknownCapability
+      ? `No capability named "${capability}" exists.${suggestions.length ? ` Closest available: ${suggestions.join(", ")}.` : ""}`
+      : related.length
+        ? "Registered services exist with related terms, but none satisfied capability, price, and coverage constraints."
+        : "No registered service exposes this capability yet.",
     requested_capability: capability,
     requested_params: params,
     constraints,
+    available_capabilities: known,
+    ...(suggestions.length ? { did_you_mean: suggestions } : {}),
+    ...(localOnly ? { runs_locally: localOnly } : {}),
     related_services: related,
-    next_actions: [
-      "Check that the provider service was published to the same remote registry the client is using.",
-      "Search /services/search for the expected service id or capability tag.",
-      "If Provider Studio showed validation errors, fix the upstream API/auth/request body and publish again."
-    ]
+    next_actions: unknownCapability
+      ? [
+        suggestions.length
+          ? `Retry with capability "${suggestions[0]}".`
+          : "Pass a capability from available_capabilities.",
+        "Or drop the capability field and send the natural-language task instead, and let AgentRouter route it."
+      ]
+      : [
+        "Check that the provider service was published to the same remote registry the client is using.",
+        "Search /services/search for the expected service id or capability tag.",
+        "If Provider Studio showed validation errors, fix the upstream API/auth/request body and publish again."
+      ]
   };
 }
 
