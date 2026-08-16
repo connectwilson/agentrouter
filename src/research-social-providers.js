@@ -1,6 +1,12 @@
 import { spawn } from "node:child_process";
+
 import os from "node:os";
 import path from "node:path";
+
+// Stated everywhere a browser connector is mentioned: the Keychain prompt users
+// sometimes see comes from cookie-decrypting tools, never from AgentRouter.
+export const BROWSER_CONNECTOR_SECURITY_NOTE =
+  'AgentRouter reads through the connected browser extension in your existing session, so it never asks for a system or Keychain password. If macOS asks to use "Chrome Safe Storage", another tool is decrypting your saved cookie file — approving that exposes cookies for every site you are signed in to, not just this one.';
 
 const BACKENDS = {
   x: [
@@ -68,8 +74,9 @@ export async function searchLocalSocialPlatform(platform, query, limit = 10, opt
       action_required: {
         code: "BROWSER_CONNECTOR_OFFLINE",
         connector_id: "opencli-twitter",
-        message: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying.",
+        message: "Open Chrome and reconnect the OpenCLI browser extension, then retry.",
         requires_system_password: false,
+        security_note: BROWSER_CONNECTOR_SECURITY_NOTE,
         credential_access: "browser_managed"
       }
     };

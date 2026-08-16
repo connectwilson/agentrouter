@@ -314,7 +314,7 @@ function buildActionRequired(searches) {
           ? "inspect_local_browser_session"
           : "install_local_social_connector",
     recommendation: item.local_status === "browser_connector_offline"
-      ? "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying"
+      ? "Open Chrome and reconnect the OpenCLI browser extension, then retry"
       : item.platform === "x" ? "Connect the AgentRouter X connector or sign in through the browser bridge" : item.platform === "reddit" ? "Sign in to Reddit in the dedicated AgentRouter browser profile" : item.platform === "xiaohongshu" ? "Open the local browser profile, confirm Xiaohongshu is signed in, then retry" : item.platform === "bilibili" ? "Install or inspect the local Bilibili read-only connector" : item.platform === "youtube" ? "Inspect the local YouTube browser session or install yt-dlp" : item.platform === "facebook" ? "Sign in to Facebook in the dedicated AgentRouter browser profile" : "Configure an AgentRouter platform connector"
   }));
   return missing.length ? missing : [];

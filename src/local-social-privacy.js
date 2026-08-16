@@ -1,3 +1,8 @@
+// The Keychain prompt users occasionally see comes from tools that decrypt the
+// browser's saved cookie file. Declare plainly that this path does not.
+export const BROWSER_CONNECTOR_SECURITY_NOTE =
+  'AgentRouter reads through the connected browser extension in your existing session, so it never asks for a system or Keychain password. If macOS asks to use "Chrome Safe Storage", another tool is decrypting your saved cookie file — approving that exposes cookies for every site you are signed in to, not just this one.';
+
 const PLATFORM_POLICIES = Object.freeze({
   x: policy(
     "keyword_user_voice",
@@ -8,6 +13,7 @@ const PLATFORM_POLICIES = Object.freeze({
     {
       default_auth: "browser_managed",
       requires_system_password: false,
+      security_note: BROWSER_CONNECTOR_SECURITY_NOTE,
       fallback_activation: "explicit_opt_in"
     }
   ),

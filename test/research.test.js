@@ -258,7 +258,7 @@ test("creator research preserves the browser-extension reconnect action", async 
   assert.deepEqual(result.action_required, [{
     platform: "x",
     action: "connect_opencli_browser_extension",
-    recommendation: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying"
+    recommendation: "Open Chrome and reconnect the OpenCLI browser extension, then retry"
   }]);
 });
 

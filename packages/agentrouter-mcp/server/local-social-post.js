@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
+
 import path from "node:path";
+
+// Users see a macOS Keychain prompt when a cookie-decrypting tool runs, and it is
+// easy to blame whichever tool asked for data. Say plainly that it is not us.
+export const BROWSER_CONNECTOR_SECURITY_NOTE =
+  'AgentRouter reads through the connected browser extension in your existing session, so it never asks for a system or Keychain password. If macOS asks to use "Chrome Safe Storage", another tool is decrypting your saved cookie file — approving that exposes cookies for every site you are signed in to, not just this one.';
 
 export async function runLocalSocialPostRead(value, options = {}) {
   const parsed = parseSocialUrl(value);
@@ -60,8 +66,9 @@ function browserConnectorOffline(parsed, attempts) {
     action_required: {
       code: "BROWSER_CONNECTOR_OFFLINE",
       connector_id: connectorId(parsed.platform),
-      message: "Open Chrome, enable the OpenCLI browser extension, and reconnect it before retrying.",
+      message: "Open Chrome and reconnect the OpenCLI browser extension, then retry.",
       requires_system_password: false,
+      security_note: BROWSER_CONNECTOR_SECURITY_NOTE,
       credential_access: "browser_managed",
       permissions: {
         access: "read_only",
@@ -626,8 +633,9 @@ function authRequired(parsed, attempts) {
     action_required: {
       code: "AUTH_REQUIRED",
       connector_id: connectorId(parsed.platform),
-      message: `Open Chrome and sign in to ${platformLabel(parsed.platform)}, then retry. Reads use your own logged-in browser session.`,
+      message: `Sign in to ${platformLabel(parsed.platform)} in Chrome, then retry. AgentRouter reads through that logged-in session and never stores your credentials.`,
       requires_system_password: false,
+      security_note: BROWSER_CONNECTOR_SECURITY_NOTE,
       credential_access: "browser_managed",
       permissions: { access: "read_only", write_actions: "denied" }
     },

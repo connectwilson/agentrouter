@@ -157,7 +157,11 @@ test("public MCP bridge does not request keychain access when the browser connec
   assert.equal(result.action_required.requires_system_password, false);
   assert.equal(result.action_required.credential_access, "browser_managed");
   assert.match(result.action_required.message, /OpenCLI browser extension/i);
-  assert.doesNotMatch(JSON.stringify(result.action_required), /auth_token|ct0|keychain/i);
+  // Cookie material must never be echoed back to the caller.
+  assert.doesNotMatch(JSON.stringify(result.action_required), /auth_token|ct0/i);
+  // Keychain may only be named to disclaim it, never to ask for it.
+  assert.match(result.action_required.security_note, /never asks for a system or Keychain password/);
+  assert.doesNotMatch(result.action_required.message, /keychain|password/i);
 });
 
 test("Twitter CLI credential fallback requires explicit opt-in", async () => {
@@ -469,4 +473,30 @@ test("Xiaohongshu share links resolve, and the signed-out login wall is not retu
     runCommand: async () => assert.fail("must not call OpenCLI with an unresolved short link")
   });
   assert.equal(unresolved.action_required.code, "SHORT_LINK_UNRESOLVED");
+});
+
+test("connector guidance states that AgentRouter never asks for a Keychain password", async () => {
+  const { runLocalSocialPostRead, BROWSER_CONNECTOR_SECURITY_NOTE } =
+    await import("../packages/agentrouter-mcp/server/local-social-post.js");
+
+  // The note has to name the actual macOS prompt, or a user cannot tell which
+  // tool asked for it.
+  assert.match(BROWSER_CONNECTOR_SECURITY_NOTE, /never asks for a system or Keychain password/);
+  assert.match(BROWSER_CONNECTOR_SECURITY_NOTE, /Chrome Safe Storage/);
+  assert.match(BROWSER_CONNECTOR_SECURITY_NOTE, /every site you are signed in to/);
+
+  const offline = await runLocalSocialPostRead("https://x.com/a/status/123", {
+    runCommand: async () => ({ status: "missing", error: "opencli is not installed" })
+  });
+  assert.equal(offline.action_required.code, "BROWSER_CONNECTOR_OFFLINE");
+  assert.equal(offline.action_required.requires_system_password, false);
+  assert.equal(offline.action_required.security_note, BROWSER_CONNECTOR_SECURITY_NOTE);
+
+  const signedOut = await runLocalSocialPostRead("https://weibo.com/detail/5000000000000000", {
+    runCommand: async () => ({ status: "auth_required", error: "not logged in" })
+  });
+  assert.equal(signedOut.action_required.code, "AUTH_REQUIRED");
+  assert.equal(signedOut.action_required.requires_system_password, false);
+  assert.equal(signedOut.action_required.security_note, BROWSER_CONNECTOR_SECURITY_NOTE);
+  assert.match(signedOut.action_required.message, /never stores your credentials/);
 });
