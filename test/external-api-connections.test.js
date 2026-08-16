@@ -872,3 +872,46 @@ test("result limits are per-source, not one pessimistic cap", async () => {
   });
   assert.match(requests[0], /maxrecords=60/);
 });
+
+test("sources with a key-free browser path steer agents there instead of a dead end", async () => {
+  const { freeLocalAlternative } = await import("../src/external-api-capability.js");
+
+  // Without a key the API source is a dead end, so the failure has to carry the
+  // call that actually works rather than only "connect this source".
+  const blocked = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "x", operation: "search", query: "crypto product manager", limit: 30
+  });
+  assert.equal(blocked.status, "connection_required");
+  assert.equal(blocked.action_required, "use_free_local_alternative");
+  assert.equal(blocked.free_alternative.requires_api_key, false);
+  assert.deepEqual(blocked.free_alternative.call, {
+    capability: "social_search",
+    params: { platform: "x", query: "crypto product manager", limit: 30 }
+  });
+  assert.match(blocked.error.message, /social_search/);
+
+  // Sources with no local path keep the plain connect instruction.
+  const noAlternative = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "exa", operation: "search", query: "x"
+  });
+  assert.equal(noAlternative.action_required, "connect_api_source");
+  assert.equal(noAlternative.free_alternative, undefined);
+  assert.equal(freeLocalAlternative("exa"), null);
+
+  // The catalog steers before the agent even tries, so the API path is not the
+  // default for data readable through the user's own browser.
+  const catalog = getExternalApiCatalog(createMemoryStore(), "github:user-a");
+  const steered = catalog.filter((item) => item.preferred_path === "local_browser").map((item) => item.source);
+  assert.deepEqual(steered.sort(), ["bilibili", "reddit", "weibo", "x", "xiaohongshu", "youtube", "zhihu"]);
+  assert.equal(catalog.find((item) => item.source === "exa").preferred_path, undefined);
+
+  // Once connected, the API path is legitimate again and must not be second-guessed.
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "x", provider_type: "x_api", credentials: { bearer_token: "x-secret" }
+  }, secretStore);
+  const connected = getExternalApiCatalog(store, "github:user-a").find((item) => item.source === "x");
+  assert.equal(connected.connected, true);
+  assert.equal(connected.preferred_path, undefined);
+});

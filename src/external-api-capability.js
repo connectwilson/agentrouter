@@ -120,7 +120,15 @@ export function getExternalApiCatalog(store, ownerKey) {
           ? "unknown"
           : connected
             ? "connected"
-            : "not_connected"
+            : "not_connected",
+      // Steer agents to the key-free path before they try the API and stall on
+      // a credential the user does not have.
+      ...(connected === true || !FREE_LOCAL_ALTERNATIVES[item.source]
+        ? {}
+        : {
+          preferred_path: "local_browser",
+          free_alternative: freeLocalAlternative(item.source)
+        })
     };
   });
 }
@@ -238,6 +246,36 @@ export function resolveResultLimit(sourceId, requested) {
   return Math.min(Math.max(Math.trunc(value), 1), ceiling);
 }
 
+// Several sources have a free path that needs no API key at all: the MCP bridge
+// drives the user's own logged-in browser. Without this, an agent that reaches
+// for the API source hits connection_required and stops, even though the data
+// is available to it for free one capability over.
+const FREE_LOCAL_ALTERNATIVES = {
+  x: "x",
+  reddit: "reddit",
+  xiaohongshu: "xiaohongshu",
+  bilibili: "bilibili",
+  youtube: "youtube",
+  zhihu: "zhihu",
+  weibo: "weibo"
+};
+
+export function freeLocalAlternative(sourceId, params = {}) {
+  const platform = FREE_LOCAL_ALTERNATIVES[sourceId];
+  if (!platform) return null;
+  return {
+    reason: "This source needs a paid platform API key, but the same data is readable for free through your own signed-in browser.",
+    capability: "social_search",
+    execution_location: "user_device",
+    requires_api_key: false,
+    call: {
+      capability: "social_search",
+      params: { platform, query: params.query || "", ...(params.limit ? { limit: params.limit } : {}) }
+    },
+    requires: "The AgentRouter MCP bridge (local stdio), with the OpenCLI browser extension connected."
+  };
+}
+
 export async function runExternalApiQuery(store, ownerKey, params = {}, options = {}) {
   const sourceId = clean(params.source, 64).toLowerCase();
   const query = clean(params.query, 500);
@@ -267,9 +305,16 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     const connection = [...(store?.socialConnections || new Map()).values()].find((item) =>
       item.owner_key === ownerKey && item.platform === sourceId && item.provider_type === definition.provider_type);
     if (!connection) {
+      const alternative = freeLocalAlternative(sourceId, { query, limit: params.limit });
       return {
-        ...failure("connection_required", `Connect ${definition.title} before invoking this source.`),
-        action_required: "connect_api_source",
+        ...failure(
+          "connection_required",
+          alternative
+            ? `${definition.title} needs a paid platform API key. Use the free local browser path instead: call social_search with platform "${alternative.call.params.platform}".`
+            : `Connect ${definition.title} before invoking this source.`
+        ),
+        action_required: alternative ? "use_free_local_alternative" : "connect_api_source",
+        ...(alternative ? { free_alternative: alternative } : {}),
         source: publicSource(definition)
       };
     }
