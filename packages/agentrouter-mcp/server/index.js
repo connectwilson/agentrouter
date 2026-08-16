@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { localSocialPostRequest, runLocalSocialPostRead } from "./local-social-post.js";
+import { localSocialSearchRequest, runLocalSocialSearch } from "./local-social-search.js";
 import { readStoredCredential, writeStoredCredential } from "./credential-store.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
@@ -69,6 +70,20 @@ async function forwardRequest(message) {
   try {
     if (isConnectRequest(message)) {
       send({ jsonrpc: "2.0", id: message.id, result: await handleConnectRequest(message) });
+      return;
+    }
+    // Keyword search only works where a browser is: the hosted server has none.
+    const localSearch = localSocialSearchRequest(message);
+    if (localSearch) {
+      const result = await runLocalSocialSearch(localSearch);
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          isError: result.status === "invalid_request"
+        }
+      });
       return;
     }
     const localSocialPost = localSocialPostRequest(message);

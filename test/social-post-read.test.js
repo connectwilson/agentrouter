@@ -500,3 +500,69 @@ test("connector guidance states that AgentRouter never asks for a Keychain passw
   assert.equal(signedOut.action_required.security_note, BROWSER_CONNECTOR_SECURITY_NOTE);
   assert.match(signedOut.action_required.message, /never stores your credentials/);
 });
+
+test("keyword search runs locally so it works without a platform API token", async () => {
+  const { localSocialSearchRequest, runLocalSocialSearch, normalizeSearchPlatform } =
+    await import("../packages/agentrouter-mcp/server/local-social-search.js");
+
+  // Structured search calls are intercepted; natural language is not, because
+  // the hosted router knows about paid services the bridge cannot see.
+  const intercepted = localSocialSearchRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_request", arguments: { capability: "social_search", params: { platform: "x", query: "crypto pm jobs", limit: 5 } } }
+  });
+  assert.equal(intercepted.platform, "x");
+  assert.equal(intercepted.query, "crypto pm jobs");
+  assert.equal(localSocialSearchRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: "search X for crypto pm jobs" } }
+  }), null);
+
+  assert.equal(normalizeSearchPlatform("twitter"), "x");
+  assert.equal(normalizeSearchPlatform("小红书"), "xiaohongshu");
+  assert.equal(normalizeSearchPlatform("mastodon"), null);
+
+  const calls = [];
+  const hit = await runLocalSocialSearch({ platform: "x", query: "crypto pm", limit: 2 }, {
+    runCommand: async (command, args) => {
+      calls.push([command, ...args]);
+      return { status: "completed", data: [
+        { id: "1", text: "hiring a crypto PM", author: "someone", url: "https://x.com/i/status/1", likes: 77 },
+        { id: "2", text: "another role", author: "other", url: "https://x.com/i/status/2" },
+        { id: "3", text: "should be trimmed by limit", author: "third", url: "https://x.com/i/status/3" }
+      ] };
+    }
+  });
+  assert.deepEqual(calls[0], ["opencli", "twitter", "search", "crypto pm", "--limit", "2", "-f", "json"]);
+  assert.equal(hit.status, "completed");
+  assert.equal(hit.result.item_count, 2, "the requested limit is enforced on the way out too");
+  assert.equal(hit.result.items[0].engagement.likes, 77);
+
+  // Signed out, an empty result must not be reported as "nothing matched".
+  const signedOut = await runLocalSocialSearch({ platform: "x", query: "crypto pm" }, {
+    runCommand: async (_command, args) => args.includes("whoami")
+      ? { status: "auth_required", error: "not logged in" }
+      : { status: "completed", data: [] }
+  });
+  assert.equal(signedOut.status, "auth_required");
+  assert.equal(signedOut.action_required.requires_system_password, false);
+
+  // Signed in and genuinely empty is a real answer.
+  const empty = await runLocalSocialSearch({ platform: "x", query: "zzzz" }, {
+    runCommand: async (_command, args) => args.includes("whoami")
+      ? { status: "completed", data: { logged_in: true } }
+      : { status: "completed", data: [] }
+  });
+  assert.equal(empty.status, "no_results");
+  assert.equal(empty.ok, true);
+
+  const missing = await runLocalSocialSearch({ platform: "x", query: "x" }, {
+    runCommand: async () => ({ status: "missing", error: "opencli is not installed" })
+  });
+  assert.equal(missing.status, "browser_connector_offline");
+
+  const unsupported = await runLocalSocialSearch({ platform: "mastodon", query: "x" }, {
+    runCommand: async () => assert.fail("must not spawn for an unsupported platform")
+  });
+  assert.equal(unsupported.error.code, "PLATFORM_NOT_SUPPORTED");
+});
