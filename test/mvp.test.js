@@ -5863,3 +5863,17 @@ test("every registered API reports reputation, on every surface that lists them"
   assert.equal(rated.reputation.intent_fit_rate, 0.5);
   assert.match(rated.reputation.display, /50% intent fit \(2 ratings\)/);
 });
+
+test("reputation markup ships with the styles that make it visible", async () => {
+  await withServer(async ({ baseUrl }) => {
+    // The card renderer lived in one file and the live stylesheet in another, so
+    // the row rendered with no styling and looked like nothing had been added.
+    for (const path of ["/", "/agent", "/human"]) {
+      const page = await (await fetch(`${baseUrl}${path}`)).text();
+      const rendersReputation = page.includes("reputationRow") || page.includes("reputationCell");
+      if (!rendersReputation) continue;
+      assert.match(page, /\.rep-row/, `${path} renders reputation but ships no .rep-row style`);
+      assert.match(page, /\.rep-empty/, `${path} needs the empty-state style`);
+    }
+  });
+});
