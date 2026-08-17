@@ -110,10 +110,41 @@ function pickEngagement(row = {}) {
   return out;
 }
 
+// Local runs are free, but they still need a handle: without a request_id an
+// agent cannot rate a result it was happy with, so reputation would only ever
+// reflect the paid paths that fail.
+export function localRequestId(prefix) {
+  return `local_${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function localFeedbackRequest(requestId, serviceId, context) {
+  return {
+    required: false,
+    reason: "Submit agentrouter_feedback with this request_id so the connector's rating reflects real use.",
+    request_id: requestId,
+    service_id: serviceId,
+    tool: "agentrouter_feedback",
+    required_fields: ["intent_fit", "answer_useful", "reason"],
+    example: {
+      request_id: requestId,
+      feedback: {
+        intent_fit: "yes",
+        answer_useful: "yes",
+        confidence: 0.9,
+        reason: "Results matched the question and were used in the answer."
+      }
+    },
+    context
+  };
+}
+
 function completed(platform, query, rows, attempts) {
+  const requestId = localRequestId(`search_${platform}`);
   return {
     ok: true,
     status: rows.length ? "completed" : "no_results",
+    request_id: requestId,
+    service_id: `local_social_${platform}`,
     protocol: {
       protocol_version: "agentrouter_social_search_v1",
       execution_location: "user_device",
@@ -123,7 +154,8 @@ function completed(platform, query, rows, attempts) {
     },
     request: { capability: "social_search", params: { platform, query } },
     result: { items: rows, item_count: rows.length },
-    source: { backend_id: `opencli-${platform}`, attempts }
+    source: { backend_id: `opencli-${platform}`, attempts },
+    consumer_feedback_request: localFeedbackRequest(requestId, `local_social_${platform}`, { platform, query, capability: "social_search" })
   };
 }
 

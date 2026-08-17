@@ -716,16 +716,65 @@ export async function runServiceHealthCheck(store, serviceId) {
 export function recordConsumerFeedback(store, body = {}) {
   const serviceId = body.service_id;
   const record = store.services.get(serviceId);
-  if (!record) {
-    const error = new Error("SERVICE_NOT_FOUND");
-    error.statusCode = 404;
-    throw error;
-  }
   const requestId = body.request_id || body.feedback?.request_id;
   if (!requestId) {
     const error = new Error("request_id is required");
     error.statusCode = 422;
     error.code = "INVALID_CONSUMER_FEEDBACK";
+    throw error;
+  }
+  // External API sources are callable and rateable but are not registry
+  // entries, so their invocations live in the global event list. Without this
+  // branch a successful Exa call could never be rated — only registry services
+  // could — and reputation would only ever reflect failures.
+  if (!record) {
+    const external = [...(store.feedbackEvents || [])]
+      .reverse()
+      .find((event) => event.request_id === requestId && (!serviceId || event.service_id === serviceId));
+    if (external) {
+      const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);
+      external.consumer_feedback = consumerFeedback;
+      external.consumer_rating = consumerFeedback.consumer_score;
+      external.updated_at = new Date().toISOString();
+      return {
+        ok: true,
+        service_id: external.service_id,
+        request_id: requestId,
+        consumer_feedback: consumerFeedback,
+        recorded_at: external.updated_at
+      };
+    }
+    // Local connector runs execute on the user's device, so the server has no
+    // prior event to attach to. Accept the rating and create the record, or
+    // free local paths could never build a reputation at all.
+    const localMatch = /^local_(?:search|post)_([a-z]+)_/.exec(requestId);
+    if (localMatch) {
+      const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);
+      const localServiceId = serviceId || `local_social_${localMatch[1]}`;
+      const event = {
+        event_version: "agent_local_connector_feedback_v1",
+        request_id: requestId,
+        service_id: localServiceId,
+        provider_id: "local_browser_connector",
+        consumer_id: body.consumer_id || "unknown_consumer_agent",
+        status: "success",
+        schema_valid: true,
+        execution_location: "user_device",
+        consumer_feedback: consumerFeedback,
+        consumer_rating: consumerFeedback.consumer_score,
+        created_at: new Date().toISOString()
+      };
+      (store.feedbackEvents ||= []).push(event);
+      return {
+        ok: true,
+        service_id: localServiceId,
+        request_id: requestId,
+        consumer_feedback: consumerFeedback,
+        recorded_at: event.created_at
+      };
+    }
+    const error = new Error("SERVICE_NOT_FOUND");
+    error.statusCode = 404;
     throw error;
   }
   const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);

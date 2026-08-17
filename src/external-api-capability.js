@@ -392,13 +392,16 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     secret,
     fetchImpl: options.fetchImpl || globalThis.fetch
   });
-  recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, options);
+  const invocation = recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, options);
   if (!response.ok) {
     return {
       ok: false,
       status: response.status,
+      request_id: invocation.requestId,
+      service_id: invocation.serviceId,
       source: publicSource(definition),
-      error: { code: response.status.toUpperCase(), message: response.error }
+      error: { code: response.status.toUpperCase(), message: response.error },
+      consumer_feedback_request: consumerFeedbackRequest(invocation, { source: sourceId, operation, query })
     };
   }
   const noResults = response.items.length === 0;
@@ -406,9 +409,14 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     ok: true,
     status: noResults ? "no_results" : "completed",
     protocol: { protocol_version: "agent_router_external_api_v1", write_access: false },
+    // The call is already recorded under this id; returning it is what lets an
+    // agent rate a result it was happy with, not only one that failed.
+    request_id: invocation.requestId,
+    service_id: invocation.serviceId,
     request: { capability: "external_api_query", params: { source: sourceId, operation, query, limit } },
     source: publicSource(definition),
     result: { items: response.items, count: response.items.length },
+    consumer_feedback_request: consumerFeedbackRequest(invocation, { source: sourceId, operation, query }),
     ...(noResults ? {
       diagnostics: {
         code: "PROVIDER_RETURNED_NO_RESULTS",
@@ -482,6 +490,31 @@ function externalApiEvents(store, serviceId) {
   return (store?.feedbackEvents || []).filter((event) => event.service_id === serviceId);
 }
 
+// Reputation only means something if good results can be rated too, so every
+// outcome carries the handle needed to rate it.
+function consumerFeedbackRequest(invocation, { source, operation, query }) {
+  return {
+    required: false,
+    reason: "Submit agentrouter_feedback with this request_id so the source's rating reflects real use.",
+    request_id: invocation.requestId,
+    service_id: invocation.serviceId,
+    tool: "agentrouter_feedback",
+    // Copyable as-is: reason is required, so an example without it would be
+    // rejected the moment an agent followed it.
+    example: {
+      request_id: invocation.requestId,
+      feedback: {
+        intent_fit: "yes",
+        answer_useful: "yes",
+        confidence: 0.9,
+        reason: "Results matched the question and were used in the answer."
+      }
+    },
+    required_fields: ["intent_fit", "answer_useful", "reason"],
+    context: { source, operation, query }
+  };
+}
+
 function recordExternalApiInvocation(store, definition, response, latencyMs, options) {
   const serviceId = `external_api_${definition.source}`;
   const requestId = `external_${definition.source}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -515,6 +548,7 @@ function recordExternalApiInvocation(store, definition, response, latencyMs, opt
   });
   const writer = options.writeServiceEvent || writePersistentServiceEvent;
   Promise.resolve(writer({ eventType: "operational_feedback", serviceId, requestId, event })).catch(() => {});
+  return { requestId, serviceId };
 }
 
 function validateSourceParams(sourceId, operation, params) {

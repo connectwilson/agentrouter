@@ -950,3 +950,57 @@ test("ordinary questions reach the right API without naming the source", async (
   assert.equal(route("latest developments in AI agents", ["tavily"]).params.source, "tavily");
   assert.equal(route("search Exa for crypto pm jobs").params.source, "exa", "a named source still wins");
 });
+
+test("successful calls can be rated, not only failed ones", async () => {
+  const { recordConsumerFeedback } = await import("../src/registry.js");
+  const store = createMemoryStore();
+
+  const ok = await runExternalApiQuery(store, "github:user-a", {
+    source: "gdelt", operation: "search", query: "crypto jobs"
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      articles: [{ title: "t", url: "https://example.com/a", domain: "example.com", seendate: "20260101T000000Z" }]
+    }) })
+  });
+
+  // Without a handle an agent cannot rate a result it was happy with, so
+  // reputation would only ever record the calls that went wrong.
+  assert.equal(ok.status, "completed");
+  assert.ok(ok.request_id, "a successful call must return its request_id");
+  assert.equal(ok.service_id, "external_api_gdelt");
+  assert.ok(ok.consumer_feedback_request, "and the means to rate it");
+
+  // The example must be copyable as-is: reason is required by the validator.
+  assert.deepEqual(ok.consumer_feedback_request.required_fields, ["intent_fit", "answer_useful", "reason"]);
+  const recorded = recordConsumerFeedback(store, ok.consumer_feedback_request.example);
+  assert.equal(recorded.ok, true);
+  assert.equal(recorded.service_id, "external_api_gdelt");
+
+  // The rating reaches reputation, which is the whole point of the loop.
+  const rated = getExternalApiCatalog(store, "github:user-a").find((item) => item.source === "gdelt");
+  assert.equal(rated.reputation.has_agent_ratings, true);
+  assert.equal(rated.reputation.sample_size, 1);
+  assert.match(rated.reputation.display, /100% intent fit \(1 rating\)/);
+
+  // Failures stay rateable too.
+  const failed = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "gdelt", operation: "search", query: "x"
+  }, { fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }) });
+  assert.ok(failed.request_id, "a failed call keeps its handle as well");
+  assert.ok(failed.consumer_feedback_request);
+
+  // Local connector runs execute on the device, so the server has no prior
+  // event; the rating must still be accepted and create one.
+  const local = recordConsumerFeedback(store, {
+    request_id: "local_search_x_1786955108056_xsfutf3w",
+    feedback: { intent_fit: "yes", answer_useful: "yes", reason: "used in the answer" }
+  });
+  assert.equal(local.ok, true);
+  assert.equal(local.service_id, "local_social_x");
+
+  // An id matching no known shape is still rejected rather than inventing a service.
+  assert.throws(
+    () => recordConsumerFeedback(store, { request_id: "bogus_id", feedback: { intent_fit: "yes", answer_useful: "yes", reason: "x" } }),
+    (error) => error.statusCode === 404
+  );
+});

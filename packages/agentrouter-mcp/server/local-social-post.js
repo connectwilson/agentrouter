@@ -708,9 +708,13 @@ function extractTweet(payload, parsed) {
 }
 
 function completed(parsed, row, backendId, attempts) {
+  const requestId = `local_post_${parsed.platform}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const serviceId = `local_social_${parsed.platform}`;
   return {
     ok: true,
     status: "completed",
+    request_id: requestId,
+    service_id: serviceId,
     protocol: {
       protocol_version: "agentrouter_social_post_read_v1",
       execution_location: "user_device",
@@ -737,6 +741,26 @@ function completed(parsed, row, backendId, attempts) {
     verification: {
       source_url_preserved: true,
       post_id_matches_url: String(row.id || parsed.post_id) === parsed.post_id
+    },
+    // Successful free reads must be rateable too, or reputation only ever
+    // records the calls that went wrong.
+    consumer_feedback_request: {
+      required: false,
+      reason: "Submit agentrouter_feedback with this request_id so the connector's rating reflects real use.",
+      request_id: requestId,
+      service_id: serviceId,
+      tool: "agentrouter_feedback",
+      required_fields: ["intent_fit", "answer_useful", "reason"],
+      example: {
+        request_id: requestId,
+        feedback: {
+          intent_fit: "yes",
+          answer_useful: "yes",
+          confidence: 0.9,
+          reason: "The post content answered the question and was used in the answer."
+        }
+      },
+      context: { platform: parsed.platform, url: parsed.canonical_url, capability: "social_post_read" }
     }
   };
 }
