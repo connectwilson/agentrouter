@@ -5793,3 +5793,46 @@ test("the public page shows per-service ratings and an honest empty state", asyn
     }
   });
 });
+
+test("every registered API reports reputation, on every surface that lists them", async () => {
+  const { getExternalApiCatalog } = await import("../src/external-api-capability.js");
+
+  await withServer(async ({ baseUrl }) => {
+    // Services are assembled independently in three places; a service missing
+    // reputation on any one of them shows blank metrics to buyers.
+    const surfaces = [
+      ["/agent-router/stats", "services"],
+      ["/agent-router/home-stats", "services"],
+      ["/agent-router/home-stats", "featured_services"],
+      ["/agent-router/services?limit=200", "services"]
+    ];
+    for (const [path, key] of surfaces) {
+      const payload = await (await fetch(`${baseUrl}${path}`)).json();
+      const list = payload[key];
+      assert.ok(Array.isArray(list), `${path} should expose ${key}`);
+      const missing = list.filter((item) => !item.reputation).map((item) => item.service_id);
+      assert.deepEqual(missing, [], `${path} .${key} left these without reputation`);
+      // Unrated services must say so rather than render as blank metrics.
+      for (const item of list.filter((entry) => !entry.reputation.has_feedback)) {
+        assert.equal(item.reputation.display, "No feedback yet");
+        assert.equal(item.reputation.intent_fit_rate, null);
+      }
+    }
+  });
+
+  // External API sources are callable and rateable too, so they report the same
+  // shape as registered services rather than a separate set of blank fields.
+  const store = createMemoryStore();
+  const unrated = getExternalApiCatalog(store, "").find((item) => item.source === "exa");
+  assert.equal(unrated.reputation.has_feedback, false);
+  assert.equal(unrated.reputation.display, "No feedback yet");
+
+  store.feedbackEvents = [
+    { service_id: "external_api_exa", status: "success", schema_valid: true, consumer_feedback: { intent_fit: "yes", answer_useful: "yes", consumer_score: 0.9 } },
+    { service_id: "external_api_exa", status: "success", schema_valid: true, consumer_feedback: { intent_fit: "no", answer_useful: "no", consumer_score: 0.2 } }
+  ];
+  const rated = getExternalApiCatalog(store, "").find((item) => item.source === "exa");
+  assert.equal(rated.reputation.sample_size, 2);
+  assert.equal(rated.reputation.intent_fit_rate, 0.5);
+  assert.match(rated.reputation.display, /50% intent fit \(2 ratings\)/);
+});

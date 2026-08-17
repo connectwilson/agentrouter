@@ -1,6 +1,6 @@
 import { readProviderSecret } from "./provider-secrets.js";
 import { writePersistentServiceEvent } from "./persistence.js";
-import { summarizeTrust } from "./store.js";
+import { publicReputation, summarizeTrust } from "./store.js";
 
 const AI_SEARCH_SOURCES = new Set([
   "brave_search", "tavily", "serper", "exa", "firecrawl", "jina",
@@ -457,6 +457,13 @@ function externalApiService(definition, store) {
     success_rate: trust.success_rate,
     trust_score: measuredTrust.trust_score,
     trust: measuredTrust,
+    // Registered services and external API sources are both things an agent can
+    // call and rate, so they must report reputation the same way.
+    reputation: publicReputation(
+      { updated_at: null, created_at: null, feedback_events: feedbackEvents },
+      trust,
+      { status: definition.implementation_status === "available" ? "healthy" : "unavailable", circuit_breaker: null }
+    ),
     metrics_available: observedCalls,
     health: {
       status: definition.implementation_status !== "available"

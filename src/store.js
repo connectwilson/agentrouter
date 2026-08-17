@@ -430,6 +430,7 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
       updated_at: record.updated_at || null,
       source_provenance_level: summarizeProvenance(record).source_provenance_level,
       health_status: summarizeHealth(record).status,
+      reputation: publicReputation(record, trust),
       badges: publicRecord.badges
     };
   });
