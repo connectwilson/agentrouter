@@ -1598,7 +1598,11 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
       return runSocialPostReadCapability({ url: socialPost.canonical_url, platform: socialPost.platform }, { providers });
     }
-    const externalApiRequest = inferExternalApiRequest(args.task || args.query || "");
+    // Prefer a source the caller has actually connected over a default one.
+    const connectedSources = getExternalApiCatalog(store, ownerKey)
+      .filter((item) => item.connected === true)
+      .map((item) => item.source);
+    const externalApiRequest = inferExternalApiRequest(args.task || args.query || "", { connectedSources });
     if (externalApiRequest) requirements = [externalApiRequest];
   }
 

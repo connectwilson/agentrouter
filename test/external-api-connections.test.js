@@ -915,3 +915,38 @@ test("sources with a key-free browser path steer agents there instead of a dead 
   assert.equal(connected.connected, true);
   assert.equal(connected.preferred_path, undefined);
 });
+
+test("ordinary questions reach the right API without naming the source", async () => {
+  const { inferExternalApiRequest } = await import("../src/external-api-capability.js");
+  const route = (task, connected = []) => inferExternalApiRequest(task, { connectedSources: connected });
+
+  // Each vertical reaches its own source, using that source's own operation —
+  // requiring "search" everywhere previously hid weather, filings and tracking.
+  const expectations = [
+    ["find senior crypto product manager jobs remote", "exa", "search"],
+    ["有哪些远程的区块链产品经理岗位", "exa", "search"],
+    ["最近关于稳定币监管的新闻", "gdelt", "search"],
+    ["papers about retrieval augmented generation", "openalex", "search"],
+    ["weather forecast in Tokyo tomorrow", "open_meteo", "forecast"],
+    ["东京明天天气", "open_meteo", "forecast"],
+    ["SEC filings for Coinbase", "sec_edgar", "filings"],
+    ["flights from HKG to SIN next Monday", "amadeus", "flight_search"],
+    ["track my package 1Z999AA10123456784", "easy_post", "track"],
+    ["is this domain malicious example.com", "virus_total", "inspect"],
+    ["AAPL stock price today", "yahoo_finance", "search"],
+    ["best coffee shops near Central Hong Kong", "google_places", "search"]
+  ];
+  for (const [task, source, operation] of expectations) {
+    const routed = route(task, ["exa"]);
+    assert.equal(routed?.params.source, source, `${task} should reach ${source}`);
+    assert.equal(routed.params.operation, operation, `${task} should use ${operation}`);
+  }
+
+  // Questions that belong elsewhere must not be dragged into an API call.
+  assert.equal(route("BTC 最大爆仓痛点"), null, "crypto intents keep their own routing");
+  assert.equal(route("hello how are you"), null, "chatter must not route anywhere");
+
+  // Web search picks a connected source, and falls back to a key-free one.
+  assert.equal(route("latest developments in AI agents", ["tavily"]).params.source, "tavily");
+  assert.equal(route("search Exa for crypto pm jobs").params.source, "exa", "a named source still wins");
+});

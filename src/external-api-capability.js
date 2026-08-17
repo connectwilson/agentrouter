@@ -206,19 +206,79 @@ export function getExternalApiServiceDetail(store, serviceId, ownerKey) {
   };
 }
 
-export function inferExternalApiRequest(task) {
+// Naming the source was the only way to reach these APIs, so an ordinary
+// question ("find remote crypto PM jobs") routed nowhere while the same question
+// written as "search Exa for ..." worked. Match on what the question is about
+// instead, and let a named source still win when the caller specifies one.
+// \b does not work against CJK, so keep Latin terms (which need boundaries to
+// avoid matching inside words) separate from CJK terms (which do not).
+function intentPattern(latin, cjk = "") {
+  const parts = [];
+  if (latin) parts.push(`(^|[^a-z0-9])(?:${latin})([^a-z0-9]|$)`);
+  if (cjk) parts.push(`(?:${cjk})`);
+  return new RegExp(parts.join("|"), "i");
+}
+
+// Each source answers a different operation; requiring "search" everywhere hid
+// weather, filings, flights, tracking and reputation lookups entirely.
+const SOURCE_INTENTS = [
+  { sources: ["gdelt"], operation: "search", pattern: intentPattern("news|headlines?|press", "新闻|新聞|报道|報道|舆情|輿情") },
+  { sources: ["sec_edgar"], operation: "filings", pattern: intentPattern("sec|edgar|10-k|10k|8-k|filings?|prospectus", "财报|財報|备案|備案|招股") },
+  { sources: ["open_meteo"], operation: "forecast", pattern: intentPattern("weather|forecast|temperature|rain|snow", "天气|天氣|气温|氣溫|预报|預報") },
+  { sources: ["yahoo_finance", "finnhub"], operation: "search", pattern: intentPattern("stock|share price|ticker|nasdaq|nyse|earnings", "股价|股價|股票|行情") },
+  { sources: ["github"], operation: "search", pattern: intentPattern("github|repo|repository|pull request|issues?|source code", "开源|開源|仓库|倉庫") },
+  { sources: ["openalex"], operation: "search", pattern: intentPattern("papers?|publications?|citations?|doi|arxiv", "论文|論文|文献|文獻") },
+  { sources: ["google_places"], operation: "search", pattern: intentPattern("near|nearby|restaurants?|cafes?|coffee shops?|hotels?", "附近|餐厅|餐廳|咖啡") },
+  { sources: ["amadeus"], operation: "flight_search", pattern: intentPattern("flights?|airfare|airline", "机票|機票|航班") },
+  { sources: ["easy_post"], operation: "track", pattern: intentPattern("track|tracking|parcel|package|shipment", "快递|快遞|物流|包裹") },
+  { sources: ["virus_total"], operation: "inspect", pattern: intentPattern("malicious|malware|virus|phishing", "恶意|惡意|病毒|钓鱼|釣魚") },
+  { sources: ["youtube"], operation: "search", pattern: intentPattern("youtube|video|vlog", "视频|視頻") }
+];
+
+// Anything else that is plainly a lookup goes to whichever web search is usable.
+const WEB_SEARCH_SOURCES = ["exa", "tavily", "brave_search", "serper", "perplexity", "firecrawl", "jina"];
+const WEB_SEARCH_PATTERN = intentPattern(
+  "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?",
+  "招聘|岗位|崗位|职位|職位|最新|查一下|搜一下|了解|怎么|怎樣"
+);
+
+function pickAvailableSource(sourceIds, connectedSources, operation) {
+  const usable = sourceIds
+    .map((id) => SOURCE_CATALOG.find((item) => item.source === id))
+    .filter((item) => item && item.implementation_status === "available" && item.operations.includes(operation));
+  // Prefer a source the user has actually connected, then one needing no key.
+  return usable.find((item) => connectedSources.has(item.source))
+    || usable.find((item) => !item.connection_required)
+    || usable[0]
+    || null;
+}
+
+export function inferExternalApiRequest(task, { connectedSources = [] } = {}) {
   const text = clean(task, 1000);
   if (!text) return null;
-  const definition = SOURCE_CATALOG.find((item) =>
+  const connected = new Set(connectedSources);
+  let definition = SOURCE_CATALOG.find((item) =>
     item.implementation_status === "available"
       && item.operations.includes("search")
       && sourceMentioned(text, item));
+  let operation = "search";
+  if (!definition) {
+    const intentMatch = SOURCE_INTENTS.find((entry) => entry.pattern.test(text));
+    if (intentMatch) {
+      definition = pickAvailableSource(intentMatch.sources, connected, intentMatch.operation);
+      if (definition) operation = intentMatch.operation;
+    }
+  }
+  if (!definition && WEB_SEARCH_PATTERN.test(text)) {
+    definition = pickAvailableSource(WEB_SEARCH_SOURCES, connected, "search");
+  }
   if (!definition) return null;
+  if (!definition.operations.includes(operation)) operation = definition.operations[0] || "search";
   return {
     capability: "external_api_query",
     params: {
       source: definition.source,
-      operation: "search",
+      operation,
       query: extractSearchQuery(text),
       limit: 10
     }
