@@ -33,7 +33,8 @@ import { buildCreatorResearchReport } from "./research-synthesis.js";
 import { runSocialResearchCapability } from "./research-capability.js";
 import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
-import { getExternalApiCatalog, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
+import { getExternalApiCatalog,
+  freeLocalAlternative, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import {
@@ -1096,7 +1097,15 @@ async function routeRequest(req, res, store, baseUrl, {
       const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(body.params?.source || "").toLowerCase());
       if (!ownerKey && sourceDefinition?.connection_required !== false) {
-        return sendJson(res, 401, agentRouterConnectionRequired());
+        // This source genuinely needs a credential, so the 401 stands. But
+        // telling the agent only to connect an account is a dead end when the
+        // same data is readable for free through the local browser — attach the
+        // call that works instead of leaving it to guess.
+        const alternative = freeLocalAlternative(String(body.params?.source || "").toLowerCase(), body.params || {});
+        return sendJson(res, 401, {
+          ...agentRouterConnectionRequired(),
+          ...(alternative ? { free_alternative: alternative, recommended_action: "use_free_local_alternative" } : {})
+        });
       }
       const result = await runExternalApiQuery(store, ownerKey, body.params || {}, socialConnectionOptions);
       sendJson(res, result.status === "invalid_request" ? 422 : 200, result);

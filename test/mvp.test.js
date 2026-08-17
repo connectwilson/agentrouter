@@ -5877,3 +5877,53 @@ test("reputation markup ships with the styles that make it visible", async () =>
     }
   });
 });
+
+test("a question with no matching service gets a route it can actually take", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const ask = async (task) => (await fetch(`${baseUrl}/agent-router/ask`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task, invoke: false })
+    })).json();
+
+    // The registry holds crypto services, so most questions have no match. A
+    // bare "no_service_found" leaves the agent guessing; it now gets the call
+    // that works, on the same entry point the MCP fetch route already used.
+    const jobs = await ask("find senior crypto product manager jobs remote");
+    assert.equal(jobs.status, "no_service_found");
+    assert.equal(jobs.suggested_route.call.capability, "external_api_query");
+    assert.equal(jobs.suggested_route.call.params.source, "exa");
+    assert.match(jobs.next_actions[0], /Retry as a structured call/);
+
+    // Naming a platform should route to the free browser read, not a paid
+    // search source — the user already has that session open.
+    for (const [task, platform] of [
+      ["看看 twitter 上大家怎么评价 x402", "x"],
+      ["reddit 上关于 MCP 的讨论", "reddit"],
+      ["小红书上 AI 工具推荐", "xiaohongshu"]
+    ]) {
+      const routed = await ask(task);
+      assert.equal(routed.suggested_route.call.capability, "social_search", task);
+      assert.equal(routed.suggested_route.call.params.platform, platform, task);
+    }
+
+    // Verticals still reach their own source when no platform is named.
+    assert.equal((await ask("东京明天天气")).suggested_route.call.params.source, "open_meteo");
+
+    // A key-gated source must offer the free path instead of demanding an
+    // account connection, which the agent has no tool to satisfy here.
+    const gated = await (await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "external_api_query", params: { source: "x", operation: "search", query: "crypto jobs", limit: 20 } })
+    })).json();
+    // The 401 stands — the source really does need a credential — but the
+    // response also carries the call that needs none.
+    assert.equal(gated.recommended_action, "use_free_local_alternative");
+    assert.equal(gated.action_required.preferred_tool, "agentrouter_connect");
+    assert.deepEqual(gated.free_alternative.call, {
+      capability: "social_search",
+      params: { platform: "x", query: "crypto jobs", limit: 20 }
+    });
+  });
+});

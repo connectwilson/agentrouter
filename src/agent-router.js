@@ -1,7 +1,50 @@
 import { invokePaidService, searchServices } from "./registry.js";
 import { quoteCapabilityRequest, routeCapabilityRequest } from "./router.js";
 import { createPaymentQuote } from "./payment-adapter.js";
+import { inferExternalApiRequest } from "./external-api-capability.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
+
+// The natural-language paths must agree on where a question goes: the MCP fetch
+// route already infers an API source, so the HTTP ask route has to as well or
+// the same question succeeds on one entry point and dead-ends on the other.
+function suggestAlternativeRoute(task) {
+  // A question that names a platform is best answered by reading that platform
+  // through the user's own browser: free, and no API key to obtain. Only fall
+  // back to a paid web-search source when no platform is named.
+  const platform = inferLocalSocialPlatform(task);
+  if (platform) {
+    return {
+      reason: "This question is answered by reading the platform through your own signed-in browser, at no cost.",
+      capability: "social_search",
+      requires: "The AgentRouter MCP bridge (local stdio) with the OpenCLI browser extension connected.",
+      call: { capability: "social_search", params: { platform, query: task } }
+    };
+  }
+  const external = inferExternalApiRequest(task);
+  if (external) {
+    return {
+      reason: "This question is answered by an external API source rather than a registered service.",
+      capability: "external_api_query",
+      call: { capability: "external_api_query", params: external.params }
+    };
+  }
+  return null;
+}
+
+const LOCAL_SOCIAL_HINTS = [
+  [/\b(x\.com|twitter|tweets?)\b/i, "x"],
+  [/\breddit\b/i, "reddit"],
+  [/小红书|xiaohongshu|rednote/i, "xiaohongshu"],
+  [/\bbilibili\b|哔哩哔哩/i, "bilibili"],
+  [/\byoutube\b/i, "youtube"],
+  [/知乎|zhihu/i, "zhihu"],
+  [/微博|weibo/i, "weibo"]
+];
+
+function inferLocalSocialPlatform(task) {
+  const text = String(task || "");
+  return LOCAL_SOCIAL_HINTS.find(([pattern]) => pattern.test(text))?.[1] || null;
+}
 
 export async function askAgentRouter(store, {
   task = "",
@@ -46,11 +89,25 @@ export async function askAgentRouter(store, {
   }
   const candidates = searchCandidates(store, intent, maxPrice);
   if (!candidates.length) {
+    // "Nothing matched" with no next step leaves the agent guessing, and a
+    // registry that only holds crypto services has no answer for most questions.
+    // Point at the API or local connector that does.
+    const suggestion = suggestAlternativeRoute(task);
     return {
       ok: false,
       status: "no_service_found",
       task,
-      tried: intent.search_queries
+      tried: intent.search_queries,
+      ...(suggestion ? { suggested_route: suggestion } : {}),
+      next_actions: suggestion
+        ? [
+          `Retry as a structured call: ${JSON.stringify(suggestion.call)}`,
+          "No registered service covers this question, but that capability does."
+        ]
+        : [
+          "No registered service covers this question.",
+          "Call agentrouter_capabilities to see what AgentRouter can answer."
+        ]
     };
   }
   const selected = selectService(candidates, intent);
