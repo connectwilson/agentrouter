@@ -981,12 +981,29 @@ function filterDynamicCandidates(candidates, intent) {
     });
   }
   if (intent.has_known_intent) return candidates;
-  const terms = intent.dynamic_terms || [];
-  if (terms.length < 2) return candidates;
-  return candidates.filter((service) => {
-    const haystack = serviceSearchHaystack(service);
-    return terms.every((term) => haystack.includes(term));
-  });
+  return candidates.filter((service) => meetsRelevanceFloor(service, intent));
+}
+
+// A query whose intent we could not identify is only allowed to spend money when
+// the text evidence is strong. Previously a query that reduced to fewer than two
+// terms skipped this check entirely, so a single generic word like "crypto" was
+// enough to select — and charge for — an unrelated service.
+export const DEFAULT_RELEVANCE_FLOOR = 0.6;
+const MIN_RELEVANCE_TERM_HITS = 2;
+
+export function meetsRelevanceFloor(service, intent, options = {}) {
+  if (intent?.has_known_intent) return true;
+  const terms = intent?.dynamic_terms || [];
+  if (!terms.length) return false;
+  const floor = Number(
+    options.floor ?? process.env.ADN_ROUTING_RELEVANCE_FLOOR ?? DEFAULT_RELEVANCE_FLOOR
+  );
+  const haystack = serviceSearchHaystack(service);
+  const hits = terms.filter((term) => haystack.includes(term)).length;
+  // One matching word is never evidence of relevance, however short the query.
+  if (hits < Math.min(MIN_RELEVANCE_TERM_HITS, terms.length)) return false;
+  if (terms.length === 1) return false;
+  return hits / terms.length >= floor;
 }
 
 export function selectService(candidates, intent) {

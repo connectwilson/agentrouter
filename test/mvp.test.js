@@ -5690,3 +5690,46 @@ test("an unknown capability names what exists instead of a bare no-match", async
   const registered = await diagnose(known[0]);
   assert.notEqual(registered.code, "UNKNOWN_CAPABILITY");
 });
+
+test("an unidentified query cannot buy a service on one shared word", async () => {
+  const { askAgentRouter, meetsRelevanceFloor, inferIntent } = await import("../src/agent-router.js");
+  const store = createMemoryStore();
+  const schema = { type: "object", properties: {} };
+  // The service that was actually mis-sold: a crypto points leaderboard.
+  const record = registerService(store, {
+    manifest_version: "agent_data_service_manifest_v1",
+    service_id: "points_leaderboard",
+    title: "GET api points leaderboard api",
+    description_for_agent: "Retrieve the points leaderboard",
+    capabilities: ["data_service", "wallet_profile"],
+    pricing: { amount: "0.01", currency: "USDC", network: "base" },
+    provider: { provider_id: "nansen" },
+    endpoint: { url: "http://example.test/leaderboard", method: "POST" },
+    input_schema: schema, output_schema: schema, sample_request: {}, sample_response: {}
+  }, "http://127.0.0.1:8787");
+  record.verification_status = "verified";
+
+  // A jobs question shares only the word "crypto" with this service. It must not
+  // reach a payment quote, in any of the shapes that previously slipped through.
+  for (const task of [
+    "crypto",
+    "找相似岗位",
+    "crypto jobs",
+    "find similar job openings crypto product manager"
+  ]) {
+    const result = await askAgentRouter(store, { task, invoke: false });
+    assert.equal(result.status, "no_service_found", `${task} must not select a service`);
+    assert.equal(result.selected_service, undefined);
+  }
+
+  // A genuinely relevant query still routes, so the floor is not just "refuse".
+  const relevant = await askAgentRouter(store, { task: "points leaderboard", invoke: false });
+  assert.equal(relevant.selected_service.service_id, "points_leaderboard");
+
+  // A single term is never enough evidence, however high its hit ratio.
+  const service = { service_id: "points_leaderboard", title: "GET api points leaderboard api", capabilities: [] };
+  assert.equal(meetsRelevanceFloor(service, inferIntent("crypto")), false);
+  assert.equal(meetsRelevanceFloor(service, inferIntent("points leaderboard")), true);
+  // Identified crypto intents keep their existing path untouched.
+  assert.equal(meetsRelevanceFloor(service, inferIntent("BTC 最大爆仓痛点")), true);
+});
