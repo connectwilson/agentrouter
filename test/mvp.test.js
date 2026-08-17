@@ -5733,3 +5733,63 @@ test("an unidentified query cannot buy a service on one shared word", async () =
   // Identified crypto intents keep their existing path untouched.
   assert.equal(meetsRelevanceFloor(service, inferIntent("BTC 最大爆仓痛点")), true);
 });
+
+test("public reputation reports rates with their sample size and stays aggregate", async () => {
+  const { publicReputation, summarizeHomeStats } = await import("../src/store.js");
+  const store = createMemoryStore();
+  const schema = { type: "object", properties: {} };
+  const record = registerService(store, {
+    manifest_version: "agent_data_service_manifest_v1",
+    service_id: "rated_service",
+    title: "Rated service",
+    description_for_agent: "d",
+    capabilities: ["data_service"],
+    pricing: { amount: "0.01", currency: "USDC", network: "base" },
+    provider: { provider_id: "p" },
+    endpoint: { url: "http://example.test/x", method: "POST" },
+    input_schema: schema, output_schema: schema, sample_request: {}, sample_response: {}
+  }, "http://127.0.0.1:8787");
+
+  // No feedback must read as "none", never as a flattering default.
+  const empty = publicReputation(record);
+  assert.equal(empty.has_feedback, false);
+  assert.equal(empty.sample_size, 0);
+  assert.equal(empty.intent_fit_rate, null);
+  assert.equal(empty.usefulness_rate, null);
+  assert.equal(empty.display, "No feedback yet");
+
+  record.feedback_events = [
+    { status: "success", schema_valid: true, consumer_feedback: { intent_fit: "yes", answer_useful: "yes", consumer_score: 0.9, buyer_id: "user-a", query: "secret query" } },
+    { status: "success", schema_valid: true, consumer_feedback: { intent_fit: "no", answer_useful: "no", consumer_score: 0.1, buyer_id: "user-b", query: "another secret" } }
+  ];
+  const rated = publicReputation(record);
+  assert.equal(rated.has_feedback, true);
+  assert.equal(rated.sample_size, 2, "the sample must travel with the rate");
+  assert.equal(rated.intent_fit_rate, 0.5);
+  assert.equal(rated.usefulness_rate, 0.5);
+  assert.match(rated.display, /50% intent fit \(2 ratings\)/);
+
+  // Aggregates only: buyer identity and raw queries must not be published.
+  const serialized = JSON.stringify(rated);
+  assert.equal(serialized.includes("user-a"), false);
+  assert.equal(serialized.includes("secret query"), false);
+
+  // The home payload carries it per service, not as one global counter.
+  const home = summarizeHomeStats(store);
+  const summary = home.services.find((item) => item.service_id === "rated_service");
+  assert.equal(summary.reputation.sample_size, 2);
+  assert.equal(JSON.stringify(home).includes("another secret"), false);
+});
+
+test("the public page shows per-service ratings and an honest empty state", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const page = await (await fetch(`${baseUrl}/`)).text();
+    assert.match(page, /Agent rating/, "the listing has a rating column");
+    assert.match(page, /No feedback yet/, "unrated services say so");
+    assert.match(page, /Quarantined/, "quarantined services are labelled");
+    // Inline scripts must still parse after the markup change.
+    for (const [, script] of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+      assert.doesNotThrow(() => new Function(script));
+    }
+  });
+});

@@ -562,8 +562,37 @@ export function publicServiceSummary(record) {
     estimated_revenue: Number((Number(record.manifest.pricing?.amount || 0) * trust.operational_feedback_count).toFixed(8)),
     health_status: health.status,
     source_provenance_level: summarizeProvenance(record).source_provenance_level,
+    reputation: publicReputation(record, trust, health),
     created_at: record.created_at || null,
     updated_at: record.updated_at || null
+  };
+}
+
+// Buyer-facing reputation. Rates are meaningless without the sample they came
+// from — one happy call is not a 100% service — so the count travels with them,
+// and a service with no feedback says so instead of showing a flattering
+// default. Aggregates only: never buyer identity or the queries they ran.
+export function publicReputation(record, trust = summarizeTrust(record), health = summarizeHealth(record)) {
+  const sampleSize = trust.consumer_feedback_count || 0;
+  const quarantine = health.circuit_breaker?.active
+    ? { active: true, reason: health.circuit_breaker.reason || null }
+    : { active: false, reason: null };
+  return {
+    has_feedback: sampleSize > 0,
+    sample_size: sampleSize,
+    intent_fit_rate: sampleSize ? trust.intent_fit_rate : null,
+    usefulness_rate: sampleSize ? trust.usefulness_rate : null,
+    average_consumer_score: sampleSize ? trust.average_consumer_score : null,
+    call_count: trust.operational_feedback_count || 0,
+    success_rate: trust.success_rate,
+    recent_failure_rate: trust.recent_failure_rate,
+    health_status: health.status,
+    quarantined: quarantine.active,
+    quarantine_reason: quarantine.reason,
+    last_updated: record.updated_at || record.created_at || null,
+    display: sampleSize
+      ? `${Math.round((trust.intent_fit_rate ?? 0) * 100)}% intent fit (${sampleSize} rating${sampleSize === 1 ? "" : "s"})`
+      : "No feedback yet"
   };
 }
 

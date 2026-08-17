@@ -110,7 +110,7 @@ export function homeHtml({ auth = {} } = {}) {
               <div class="spark" id="spark-calls"></div>
             </div>
             <div class="stat-block">
-              <span>Feedback events</span>
+              <span>Rated services</span>
               <strong id="home-feedback">--</strong>
               <small>Past 30 Days</small>
               <div class="spark" id="spark-feedback"></div>
@@ -157,7 +157,8 @@ export function homeHtml({ auth = {} } = {}) {
           setText("home-services", stats.registered_services || 0);
           setText("home-verified", stats.verified_services || 0);
           setText("home-calls", stats.total_calls || 0);
-          setText("home-feedback", stats.total_feedback_events || 0);
+          const ratedServices = (stats.services || []).filter((item) => item.reputation?.has_feedback).length;
+          setText("home-feedback", ratedServices + " / " + (stats.registered_services || 0));
           renderSparks(stats);
           renderHomeTables(stats);
         }
@@ -197,15 +198,27 @@ export function homeHtml({ auth = {} } = {}) {
           document.getElementById("featured-services").innerHTML = renderRows(sorted.slice(0, 8), "score");
           document.getElementById("recent-services").innerHTML = renderRows(recent.slice(0, 8), "when");
         }
+        // A rate without its sample is misleading: one happy call is not a
+        // 100% service. Show the count with it, and say plainly when there is
+        // no feedback rather than implying a good default.
+        function reputationCell(reputation) {
+          if (!reputation) return '<small class="rep-empty">--</small>';
+          if (reputation.quarantined) return '<small class="rep-quarantined">Quarantined</small>';
+          if (!reputation.has_feedback) return '<small class="rep-empty">No feedback yet</small>';
+          const pct = reputation.intent_fit_rate == null ? "--" : Math.round(reputation.intent_fit_rate * 100) + "%";
+          const size = reputation.sample_size;
+          return '<b>' + pct + '</b><small>' + size + ' agent rating' + (size === 1 ? "" : "s") + '</small>';
+        }
         function renderRows(services, mode) {
           if (!services.length) return '<div class="empty-row">No registered services yet.</div>';
           return [
-            '<div class="service-row table-labels"><span>Service</span><span>Provider</span><span>' + (mode === "score" ? "Score" : "Calls") + '</span></div>',
+            '<div class="service-row table-labels"><span>Service</span><span>Provider</span><span>Agent rating</span><span>' + (mode === "score" ? "Score" : "Calls") + '</span></div>',
             ...services.map((service) => {
               const score = service.trust_score == null ? "--" : Math.round(Number(service.trust_score) * 100);
               return '<div class="service-row">' +
                 '<span><b>' + escapeHtml(service.service_id || service.title || "service") + '</b><small>' + escapeHtml(service.title || "Untitled service") + '</small></span>' +
                 '<span><mark>' + escapeHtml(service.provider_id || "provider") + '</mark></span>' +
+                '<span>' + reputationCell(service.reputation) + '</span>' +
                 '<span>' + (mode === "score" ? score : Number(service.total_calls || 0)) + '</span>' +
               '</div>';
             })
@@ -1328,10 +1341,12 @@ function legacyStyles() {
     .table-head h3 { margin:0; font-size:22px; font-weight:650; letter-spacing:0; }
     .table-head a { color:var(--color-muted); font-family:var(--font-mono); font-size:12px; text-transform:uppercase; text-decoration:underline; text-underline-offset:3px; }
     .service-table { border-top:1px solid var(--color-line); }
-    .service-row { display:grid; grid-template-columns:minmax(0, 1.35fr) minmax(140px, .8fr) 82px; gap:22px; align-items:center; min-height:52px; border-bottom:1px solid var(--color-line); color:var(--color-muted); font-size:16px; }
+    .service-row { display:grid; grid-template-columns:minmax(0, 1.2fr) minmax(120px, .7fr) minmax(110px, .6fr) 82px; gap:22px; align-items:center; min-height:52px; border-bottom:1px solid var(--color-line); color:var(--color-muted); font-size:16px; }
     .service-row span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .service-row b { color:var(--color-ink); font-weight:520; margin-right:8px; }
     .service-row small { color:var(--color-muted); font-size:15px; }
+    .service-row .rep-empty { font-style:italic; opacity:0.65; }
+    .service-row .rep-quarantined { color:#b3402f; font-weight:520; }
     .service-row mark { border:1px solid var(--color-line); background:#fff; color:var(--color-ink); padding:4px 8px; font-family:var(--font-mono); font-size:11px; text-transform:uppercase; }
     .service-row span:last-child { color:var(--color-ink); font-weight:780; text-align:left; }
     .table-labels { min-height:36px; color:var(--color-faint); font-size:11px; font-family:var(--font-mono); text-transform:uppercase; }
@@ -1486,6 +1501,12 @@ function legacyStyles() {
     .api-card p { margin:0; color:var(--color-muted); line-height:1.45; font-size:15px; }
     .byline { display:flex; justify-content:space-between; gap:12px; margin-top:18px; color:var(--color-muted); font-size:14px; }
     .stat-row { display:flex; flex-wrap:wrap; gap:9px; margin-top:14px; }
+    .rep-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:9px; font-size:12px; }
+    .rep-pill { background:rgba(120,170,255,0.10); border:1px solid rgba(120,170,255,0.22); border-radius:999px; padding:3px 9px; }
+    .rep-pill b { font-weight:600; opacity:0.75; margin-right:4px; }
+    .rep-sample { opacity:0.6; }
+    .rep-empty { opacity:0.55; font-style:italic; }
+    .rep-quarantined { color:#ffb4a8; background:rgba(255,120,100,0.10); border:1px solid rgba(255,120,100,0.3); border-radius:8px; padding:5px 9px; }
     .stat-pill { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--color-line); border-radius:8px; background:#fff; color:#667085; padding:8px 11px; font-weight:730; }
     .stat-pill b { color:var(--color-ink); font-weight:800; }
     .pill-row { display:flex; flex-wrap:wrap; gap:5px; margin-top:10px; }
@@ -1550,7 +1571,7 @@ function legacyStyles() {
       .hero-cta { min-height:44px; margin-top:22px; padding:0 18px; font-size:12px; }
       .app-title h1 { font-size:38px; }
       .stat-block strong { font-size:46px; }
-      .service-row { grid-template-columns:minmax(0, 1fr) 74px; }
+      .service-row { grid-template-columns:minmax(0, 1fr) minmax(96px, .5fr) 74px; }
       .service-row span:nth-child(2) { display:none; }
       .ops-row { grid-template-columns:minmax(0,1fr) 80px; gap:8px; padding:10px 0; }
       .ops-row span:nth-child(3), .ops-row span:nth-child(4), .ops-row span:nth-child(5) { display:none; }
@@ -1569,6 +1590,26 @@ function serviceClientScript() {
       try { return await fetch("/agent-router/stats").then((res) => res.json()); }
       catch { return { registered_services: 0, verified_services: 0, total_calls: 0, services: [] }; }
     }
+    // A rate without its sample is misleading: one happy call is not a 100%
+    // service. Show the count alongside, and say plainly when there is nothing.
+    function reputationRow(reputation) {
+      if (!reputation) return "";
+      if (reputation.quarantined) {
+        return '<div class="rep-row rep-quarantined">Quarantined' +
+          (reputation.quarantine_reason ? ": " + escapeHtml(reputation.quarantine_reason) : "") + '</div>';
+      }
+      if (!reputation.has_feedback) {
+        return '<div class="rep-row rep-empty">No agent feedback yet</div>';
+      }
+      const size = reputation.sample_size;
+      const pct = (value) => value == null ? "--" : Math.round(value * 100) + "%";
+      return '<div class="rep-row">' +
+        '<span class="rep-pill"><b>Intent fit</b> ' + pct(reputation.intent_fit_rate) + '</span>' +
+        '<span class="rep-pill"><b>Useful</b> ' + pct(reputation.usefulness_rate) + '</span>' +
+        '<span class="rep-sample">from ' + size + ' agent rating' + (size === 1 ? "" : "s") + '</span>' +
+        '</div>';
+    }
+
     function apiCard(service, options = {}) {
       const title = service.display_title || service.title || service.service_id;
       const description = service.description_for_agent || "Agent-callable data API with verified response envelope.";
@@ -1592,6 +1633,7 @@ function serviceClientScript() {
                 <span class="stat-pill"><b>Success</b> \${formatSuccessRate(service.success_rate)}</span>
                 <span class="stat-pill"><b>Trust</b> \${formatRating(service.trust_score)}</span>
               </div>
+              \${reputationRow(service.reputation)}
               <div class="pill-row">\${renderPills(service.capabilities || [])}</div>
               \${options.human ? '<div class="actions"><a class="button ghost" href="/studio?service_id=' + encodeURIComponent(service.service_id) + '">Edit</a><a class="button" href="/agent-router/service?service_id=' + encodeURIComponent(service.service_id) + '">Details</a></div>' : '<span class="detail-link">View service details</span>'}
             </div>
