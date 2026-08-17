@@ -204,7 +204,11 @@ export function homeHtml({ auth = {} } = {}) {
         function reputationCell(reputation) {
           if (!reputation) return '<small class="rep-empty">--</small>';
           if (reputation.quarantined) return '<small class="rep-quarantined">Quarantined</small>';
-          if (!reputation.has_feedback) return '<small class="rep-empty">No feedback yet</small>';
+          if (!reputation.has_agent_ratings) {
+            if (!reputation.call_count) return '<small class="rep-empty">No calls yet</small>';
+            const sr = reputation.success_rate == null ? "--" : Math.round(reputation.success_rate * 100) + "%";
+            return '<b>' + sr + '</b><small>' + reputation.call_count + ' call' + (reputation.call_count === 1 ? "" : "s") + ', unrated</small>';
+          }
           const pct = reputation.intent_fit_rate == null ? "--" : Math.round(reputation.intent_fit_rate * 100) + "%";
           const size = reputation.sample_size;
           return '<b>' + pct + '</b><small>' + size + ' agent rating' + (size === 1 ? "" : "s") + '</small>';
@@ -1598,11 +1602,16 @@ function serviceClientScript() {
         return '<div class="rep-row rep-quarantined">Quarantined' +
           (reputation.quarantine_reason ? ": " + escapeHtml(reputation.quarantine_reason) : "") + '</div>';
       }
-      if (!reputation.has_feedback) {
-        return '<div class="rep-row rep-empty">No agent feedback yet</div>';
+      const pct = (value) => value == null ? "--" : Math.round(value * 100) + "%";
+      if (!reputation.has_agent_ratings) {
+        // Calls without ratings are still a track record; do not claim silence.
+        if (!reputation.call_count) return '<div class="rep-row rep-empty">No calls yet</div>';
+        return '<div class="rep-row">' +
+          '<span class="rep-pill"><b>Success</b> ' + pct(reputation.success_rate) + '</span>' +
+          '<span class="rep-sample">' + reputation.call_count + ' call' + (reputation.call_count === 1 ? "" : "s") + ' · no agent ratings yet</span>' +
+          '</div>';
       }
       const size = reputation.sample_size;
-      const pct = (value) => value == null ? "--" : Math.round(value * 100) + "%";
       return '<div class="rep-row">' +
         '<span class="rep-pill"><b>Intent fit</b> ' + pct(reputation.intent_fit_rate) + '</span>' +
         '<span class="rep-pill"><b>Useful</b> ' + pct(reputation.usefulness_rate) + '</span>' +

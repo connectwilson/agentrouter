@@ -5753,10 +5753,26 @@ test("public reputation reports rates with their sample size and stays aggregate
   // No feedback must read as "none", never as a flattering default.
   const empty = publicReputation(record);
   assert.equal(empty.has_feedback, false);
+  assert.equal(empty.has_agent_ratings, false);
   assert.equal(empty.sample_size, 0);
   assert.equal(empty.intent_fit_rate, null);
   assert.equal(empty.usefulness_rate, null);
-  assert.equal(empty.display, "No feedback yet");
+  assert.equal(empty.display, "No calls yet");
+
+  // Calls without ratings are still a track record and must be reported as one,
+  // not hidden behind "nothing is known about this service".
+  record.feedback_events = [
+    { status: "success", schema_valid: true },
+    { status: "success", schema_valid: true },
+    { status: "success", schema_valid: true },
+    { status: "error", schema_valid: false }
+  ];
+  const unrated = publicReputation(record);
+  assert.equal(unrated.has_feedback, true);
+  assert.equal(unrated.has_agent_ratings, false, "no agent submitted a rating");
+  assert.equal(unrated.call_count, 4);
+  assert.equal(unrated.intent_fit_rate, null, "success rate is not an intent-fit rate");
+  assert.match(unrated.display, /75% success \(4 calls\) · no agent ratings yet/);
 
   record.feedback_events = [
     { status: "success", schema_valid: true, consumer_feedback: { intent_fit: "yes", answer_useful: "yes", consumer_score: 0.9, buyer_id: "user-a", query: "secret query" } },
@@ -5785,7 +5801,7 @@ test("the public page shows per-service ratings and an honest empty state", asyn
   await withServer(async ({ baseUrl }) => {
     const page = await (await fetch(`${baseUrl}/`)).text();
     assert.match(page, /Agent rating/, "the listing has a rating column");
-    assert.match(page, /No feedback yet/, "unrated services say so");
+    assert.match(page, /No calls yet/, "unused services say so");
     assert.match(page, /Quarantined/, "quarantined services are labelled");
     // Inline scripts must still parse after the markup change.
     for (const [, script] of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
@@ -5813,9 +5829,9 @@ test("every registered API reports reputation, on every surface that lists them"
       const missing = list.filter((item) => !item.reputation).map((item) => item.service_id);
       assert.deepEqual(missing, [], `${path} .${key} left these without reputation`);
       // Unrated services must say so rather than render as blank metrics.
-      for (const item of list.filter((entry) => !entry.reputation.has_feedback)) {
-        assert.equal(item.reputation.display, "No feedback yet");
-        assert.equal(item.reputation.intent_fit_rate, null);
+      for (const item of list.filter((entry) => !entry.reputation.has_agent_ratings)) {
+        assert.equal(item.reputation.intent_fit_rate, null, "unrated services claim no intent fit");
+        assert.match(item.reputation.display, /No calls yet|no agent ratings yet/);
       }
     }
   });
@@ -5823,9 +5839,20 @@ test("every registered API reports reputation, on every surface that lists them"
   // External API sources are callable and rateable too, so they report the same
   // shape as registered services rather than a separate set of blank fields.
   const store = createMemoryStore();
-  const unrated = getExternalApiCatalog(store, "").find((item) => item.source === "exa");
-  assert.equal(unrated.reputation.has_feedback, false);
-  assert.equal(unrated.reputation.display, "No feedback yet");
+  const untouched = getExternalApiCatalog(store, "").find((item) => item.source === "exa");
+  assert.equal(untouched.reputation.has_feedback, false);
+  assert.equal(untouched.reputation.display, "No calls yet");
+
+  // A source that has been called but never rated reports its call record —
+  // this is the case that previously rendered as a blank card.
+  store.feedbackEvents = [
+    { service_id: "external_api_exa", status: "success", schema_valid: true },
+    { service_id: "external_api_exa", status: "success", schema_valid: true }
+  ];
+  const called = getExternalApiCatalog(store, "").find((item) => item.source === "exa");
+  assert.equal(called.reputation.has_feedback, true);
+  assert.equal(called.reputation.call_count, 2);
+  assert.match(called.reputation.display, /no agent ratings yet/);
 
   store.feedbackEvents = [
     { service_id: "external_api_exa", status: "success", schema_valid: true, consumer_feedback: { intent_fit: "yes", answer_useful: "yes", consumer_score: 0.9 } },

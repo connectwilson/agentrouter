@@ -573,29 +573,41 @@ export function publicServiceSummary(record) {
 // from — one happy call is not a 100% service — so the count travels with them,
 // and a service with no feedback says so instead of showing a flattering
 // default. Aggregates only: never buyer identity or the queries they ran.
-export function publicReputation(record, trust = summarizeTrust(record), health = summarizeHealth(record)) {
-  const sampleSize = trust.consumer_feedback_count || 0;
-  const quarantine = health.circuit_breaker?.active
-    ? { active: true, reason: health.circuit_breaker.reason || null }
+export function publicReputation(record, trust = null, health = null) {
+  const resolvedTrust = trust || summarizeTrust(record);
+  const resolvedHealth = health || (record?.manifest ? summarizeHealth(record) : { status: "unknown", circuit_breaker: null });
+  const sampleSize = resolvedTrust.consumer_feedback_count || 0;
+  const callCount = resolvedTrust.operational_feedback_count || 0;
+  const quarantine = resolvedHealth.circuit_breaker?.active
+    ? { active: true, reason: resolvedHealth.circuit_breaker.reason || null }
     : { active: false, reason: null };
+  const successPct = resolvedTrust.success_rate == null ? null : Math.round(resolvedTrust.success_rate * 100);
+  // Two different things get called "feedback": agents rating a result, and the
+  // calls themselves succeeding or failing. A service with calls but no ratings
+  // has a real track record, so report it rather than claiming nothing is known.
+  const display = sampleSize
+    ? `${Math.round((resolvedTrust.intent_fit_rate ?? 0) * 100)}% intent fit (${sampleSize} rating${sampleSize === 1 ? "" : "s"})`
+    : callCount
+      ? `${successPct == null ? "--" : `${successPct}%`} success (${callCount} call${callCount === 1 ? "" : "s"}) · no agent ratings yet`
+      : "No calls yet";
   return {
-    has_feedback: sampleSize > 0,
+    has_feedback: sampleSize > 0 || callCount > 0,
+    has_agent_ratings: sampleSize > 0,
     sample_size: sampleSize,
-    intent_fit_rate: sampleSize ? trust.intent_fit_rate : null,
-    usefulness_rate: sampleSize ? trust.usefulness_rate : null,
-    average_consumer_score: sampleSize ? trust.average_consumer_score : null,
-    call_count: trust.operational_feedback_count || 0,
-    success_rate: trust.success_rate,
-    recent_failure_rate: trust.recent_failure_rate,
-    health_status: health.status,
+    intent_fit_rate: sampleSize ? resolvedTrust.intent_fit_rate : null,
+    usefulness_rate: sampleSize ? resolvedTrust.usefulness_rate : null,
+    average_consumer_score: sampleSize ? resolvedTrust.average_consumer_score : null,
+    call_count: callCount,
+    success_rate: resolvedTrust.success_rate,
+    recent_failure_rate: resolvedTrust.recent_failure_rate,
+    health_status: resolvedHealth.status,
     quarantined: quarantine.active,
     quarantine_reason: quarantine.reason,
-    last_updated: record.updated_at || record.created_at || null,
-    display: sampleSize
-      ? `${Math.round((trust.intent_fit_rate ?? 0) * 100)}% intent fit (${sampleSize} rating${sampleSize === 1 ? "" : "s"})`
-      : "No feedback yet"
+    last_updated: record?.updated_at || record?.created_at || null,
+    display
   };
 }
+
 
 function displayTitleForRecord(record) {
   const manifest = record.manifest || {};
