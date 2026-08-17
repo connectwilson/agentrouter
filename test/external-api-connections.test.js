@@ -1004,3 +1004,86 @@ test("successful calls can be rated, not only failed ones", async () => {
     (error) => error.statusCode === 404
   );
 });
+
+test("negative intent-fit ratings demote a service instead of being averaged away", async () => {
+  const { intentMismatchPenalty, rankCandidates } = await import("../src/router.js");
+  const { summarizeTrust } = await import("../src/store.js");
+  const { registerService } = await import("../src/registry.js");
+
+  const rated = (fit) => ({
+    status: "success", schema_valid: true, created_at: new Date().toISOString(),
+    verification: { coverage_valid: true, agent_friendly_score: 1 },
+    consumer_feedback: { intent_fit: fit, answer_useful: fit, reason: "r", consumer_score: fit === "yes" ? 1 : 0 }
+  });
+  const trustOf = (events) => summarizeTrust({
+    manifest: { provider: { provider_id: "p" } }, verification_status: "verified", feedback_events: events
+  });
+
+  // The penalty scales with how many agents said it, so one report nudges and a
+  // repeated pattern bites; mixed feedback stays close to neutral.
+  assert.equal(intentMismatchPenalty(trustOf([])), 0);
+  assert.ok(intentMismatchPenalty(trustOf([rated("no")])) > 0);
+  assert.ok(intentMismatchPenalty(trustOf([rated("no"), rated("no")])) > intentMismatchPenalty(trustOf([rated("no")])));
+  assert.equal(intentMismatchPenalty(trustOf(Array(3).fill(rated("no")))), 0.35);
+  assert.equal(intentMismatchPenalty(trustOf(Array(9).fill(rated("no")))), 0.35, "the penalty is capped");
+  assert.ok(intentMismatchPenalty(trustOf([rated("no"), ...Array(5).fill(rated("yes"))])) < 0.05,
+    "one complaint among many successes must not sink a service");
+
+  // End to end: a service rated as mismatching loses to an equivalent one.
+  const store = createMemoryStore();
+  const schema = { type: "object", properties: {} };
+  const register = (id) => registerService(store, {
+    manifest_version: "agent_data_service_manifest_v1",
+    service_id: id, title: id,
+    description_for_agent: "btc liquidation max pain data",
+    capabilities: ["data_service", "perp_liquidation_max_pain", "liquidation_heatmap", "perp_liquidation", "crypto_derivatives"],
+    pricing: { amount: "0.01", currency: "USDC", network: "base" },
+    provider: { provider_id: `p_${id}` }, endpoint: { url: `http://example.test/${id}`, method: "POST" },
+    input_schema: schema, output_schema: schema,
+    sample_request: { asset: "BTC" }, sample_response: { asset: "BTC", max_pain: 1 }
+  }, "http://example.test");
+
+  const misrouting = register("misrouting_service");
+  const accurate = register("accurate_service");
+  for (const record of [misrouting, accurate]) {
+    record.verification_status = "verified";
+    record.feedback_events = [rated("yes"), rated("yes"), rated("yes")];
+  }
+  const intent = { capability: "perp_liquidation_max_pain", asset: "BTC" };
+  const before = rankCandidates(store, intent, {});
+  assert.equal(before[0].routing_score, before[1].routing_score, "equal services start tied");
+
+  misrouting.feedback_events.push(rated("no"), rated("no"), rated("no"));
+  const after = rankCandidates(store, intent, {});
+  assert.equal(after[0].service_id, "accurate_service", "the mismatching service must lose the tie");
+  const demoted = after.find((item) => item.service_id === "misrouting_service");
+  // Three mismatch reports against three good ones is a 0.5 mismatch rate, and
+  // the gap must be wide enough that any adequate alternative wins outright.
+  assert.ok(after[0].routing_score - demoted.routing_score > 0.2,
+    `expected a decisive gap, got ${(after[0].routing_score - demoted.routing_score).toFixed(4)}`);
+});
+
+test("every path asks for feedback on success with the same contract", async () => {
+  const { runLocalSocialSearch } = await import("../packages/agentrouter-mcp/server/local-social-search.js");
+
+  const external = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "gdelt", operation: "search", query: "x"
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+      articles: [{ title: "t", url: "https://example.com/a", domain: "example.com", seendate: "20260101T000000Z" }]
+    }) })
+  });
+  const local = await runLocalSocialSearch({ platform: "x", query: "q", limit: 1 }, {
+    runCommand: async () => ({ status: "completed", data: [{ id: "1", text: "t", url: "https://x.com/1" }] })
+  });
+
+  for (const [label, request] of [["external", external.consumer_feedback_request], ["local", local.consumer_feedback_request]]) {
+    // A request that says feedback is optional gets skipped, and reputation ends
+    // up built only from the calls that failed.
+    assert.equal(request.must_submit, true, `${label} must ask for the rating`);
+    assert.equal(request.feedback_request_version, "agent_consumer_feedback_request_v1", `${label} shares the paid contract`);
+    assert.ok(request.instructions.length >= 3, `${label} explains how to judge`);
+    assert.deepEqual(request.required_fields, ["intent_fit", "answer_useful", "reason"]);
+    assert.ok(request.example.feedback.reason, `${label} example must include the required reason`);
+  }
+});

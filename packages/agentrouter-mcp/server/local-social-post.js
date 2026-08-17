@@ -745,8 +745,11 @@ function completed(parsed, row, backendId, attempts) {
     // Successful free reads must be rateable too, or reputation only ever
     // records the calls that went wrong.
     consumer_feedback_request: {
-      required: false,
-      reason: "Submit agentrouter_feedback with this request_id so the connector's rating reflects real use.",
+      feedback_request_version: "agent_consumer_feedback_request_v1",
+      must_submit: true,
+      timing: "after_final_answer_or_after_deciding_result_usability",
+      endpoint: "/agent-router/feedback",
+      method: "POST",
       request_id: requestId,
       service_id: serviceId,
       tool: "agentrouter_feedback",

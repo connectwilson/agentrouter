@@ -1023,6 +1023,17 @@ function buildSearchQuery(intent) {
   ].filter(Boolean).join(" ");
 }
 
+// Scales with both the share and the number of mismatch reports, so one unhappy
+// agent nudges the ranking while a repeated pattern pushes the service down hard
+// enough that any adequate alternative outranks it.
+export function intentMismatchPenalty(trust, { weight = 0.35, cap = 0.45 } = {}) {
+  const rate = trust?.intent_mismatch_rate;
+  const count = Number(trust?.intent_mismatch_count || 0);
+  if (!rate || !count) return 0;
+  const confidence = Math.min(1, count / 3);
+  return Number(Math.min(cap, rate * confidence * weight).toFixed(4));
+}
+
 function scoreCandidate(record, intent, requiredCapabilities, constraints, matchScore) {
   const manifest = record.manifest;
   const capabilityHits = requiredCapabilities.filter((capability) => manifest.capabilities.includes(capability)).length;
@@ -1066,18 +1077,24 @@ function scoreCandidate(record, intent, requiredCapabilities, constraints, match
   const priceFit = !maxPrice ? 1 : Math.max(0, 1 - price / Math.max(maxPrice, price));
   const consumerSignal = trust.average_consumer_score ?? trust.usefulness_rate ?? trust.intent_fit_rate ?? 0.5;
   const recentFailurePenalty = trust.recent_failure_rate == null ? 0 : trust.recent_failure_rate * 0.18;
+  // Agents reporting "this did not answer my question" is the only signal that
+  // catches a service which answers every call successfully with the wrong data.
+  // Averaged into consumerSignal it barely registered, so it is subtracted
+  // directly and scales with how many agents said it.
+  const mismatchPenalty = intentMismatchPenalty(trust);
   const healthFit = health.status === "healthy" ? 1 : health.status === "degraded" ? 0.35 : 0.7;
   const provenanceFit = provenanceScore(provenance.source_provenance_level);
   const score =
     (capabilityHits / requiredCapabilities.length) * 0.28 +
     assetFit * 0.12 +
-    trustScore * 0.16 +
-    consumerSignal * 0.12 +
+    trustScore * 0.14 +
+    consumerSignal * 0.16 +
     freshnessFit * 0.11 +
     priceFit * 0.08 +
-    matchScore * 0.05 +
+    matchScore * 0.03 +
     healthFit * 0.05 +
     provenanceFit * 0.03 -
+    mismatchPenalty -
     recentFailurePenalty;
 
   return {

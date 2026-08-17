@@ -245,6 +245,13 @@ export function summarizeTrust(record) {
   const intentFitRate = intentFitScores.length
     ? intentFitScores.reduce((sum, score) => sum + score, 0) / intentFitScores.length
     : null;
+  // "This did not match my question" is the verdict a misrouted call earns. It
+  // needs to be visible on its own: averaged into a single score, three
+  // mismatches barely move the ranking of an otherwise healthy service.
+  const intentMismatchCount = consumerFeedbackEvents.filter((feedback) => feedback.intent_fit === "no").length;
+  const intentMismatchRate = consumerFeedbackEvents.length
+    ? intentMismatchCount / consumerFeedbackEvents.length
+    : null;
   const usefulnessRate = usefulScores.length
     ? usefulScores.reduce((sum, score) => sum + score, 0) / usefulScores.length
     : null;
@@ -283,6 +290,8 @@ export function summarizeTrust(record) {
     freshness_valid_rate: freshnessValidRate,
     coverage_valid_rate: coverageValidRate,
     intent_fit_rate: intentFitRate == null ? null : Number(intentFitRate.toFixed(2)),
+    intent_mismatch_count: intentMismatchCount,
+    intent_mismatch_rate: intentMismatchRate == null ? null : Number(intentMismatchRate.toFixed(2)),
     usefulness_rate: usefulnessRate == null ? null : Number(usefulnessRate.toFixed(2)),
     average_consumer_score: averageConsumerScore == null ? null : Number(averageConsumerScore.toFixed(2)),
     average_agent_friendly_score: averageAgentFriendlyScore == null ? null : Number(averageAgentFriendlyScore.toFixed(2)),

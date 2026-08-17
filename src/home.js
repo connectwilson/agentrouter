@@ -207,7 +207,7 @@ export function homeHtml({ auth = {} } = {}) {
           if (!reputation.has_agent_ratings) {
             if (!reputation.call_count) return '<small class="rep-empty">No calls yet</small>';
             const sr = reputation.success_rate == null ? "--" : Math.round(reputation.success_rate * 100) + "%";
-            return '<b>' + sr + '</b><small>' + reputation.call_count + ' call' + (reputation.call_count === 1 ? "" : "s") + ', unrated</small>';
+            return '<b>' + sr + '</b><small>' + reputation.call_count + ' call' + (reputation.call_count === 1 ? "" : "s") + ' · 0 ratings</small>';
           }
           const pct = reputation.intent_fit_rate == null ? "--" : Math.round(reputation.intent_fit_rate * 100) + "%";
           const size = reputation.sample_size;
@@ -1284,6 +1284,7 @@ function serviceClientScript() {
                 <span class="stat-pill"><b>Calls</b> \${formatCount(service.total_calls)}</span>
                 <span class="stat-pill"><b>Success</b> \${formatSuccessRate(service.success_rate)}</span>
                 <span class="stat-pill"><b>Trust</b> \${formatRating(service.trust_score)}</span>
+                <span class="stat-pill"><b>Ratings</b> \${service.reputation ? service.reputation.sample_size : 0}</span>
               </div>
               \${reputationRow(service.reputation)}
               <div class="pill-row">\${renderPills(service.capabilities || [])}</div>

@@ -492,13 +492,25 @@ function externalApiEvents(store, serviceId) {
 
 // Reputation only means something if good results can be rated too, so every
 // outcome carries the handle needed to rate it.
+  // Matches the paid path's contract: an agent that only rates failures leaves a
+  // service's reputation made of complaints. Successful calls are exactly the
+  // ones that need rating, so the request says so in the same shape.
 function consumerFeedbackRequest(invocation, { source, operation, query }) {
   return {
-    required: false,
-    reason: "Submit agentrouter_feedback with this request_id so the source's rating reflects real use.",
+    feedback_request_version: "agent_consumer_feedback_request_v1",
+    must_submit: true,
+    timing: "after_final_answer_or_after_deciding_result_usability",
+    endpoint: "/agent-router/feedback",
+    method: "POST",
     request_id: invocation.requestId,
     service_id: invocation.serviceId,
     tool: "agentrouter_feedback",
+    instructions: [
+      "Submit after deciding whether these results helped answer the user's task.",
+      "Judge intent fit and usefulness for this call only; do not infer domain truth beyond the returned data.",
+      "If another source was needed, set answer_useful to partial or no and list missing_fields.",
+      "Do not skip this for successful calls — reputation built only from failures is misleading."
+    ],
     // Copyable as-is: reason is required, so an example without it would be
     // rejected the moment an agent followed it.
     example: {

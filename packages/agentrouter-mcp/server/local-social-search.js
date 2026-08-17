@@ -117,13 +117,25 @@ export function localRequestId(prefix) {
   return `local_${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+  // Matches the paid path's contract: an agent that only rates failures leaves a
+  // service's reputation made of complaints. Successful calls are exactly the
+  // ones that need rating, so the request says so in the same shape.
 export function localFeedbackRequest(requestId, serviceId, context) {
   return {
-    required: false,
-    reason: "Submit agentrouter_feedback with this request_id so the connector's rating reflects real use.",
+    feedback_request_version: "agent_consumer_feedback_request_v1",
+    must_submit: true,
+    timing: "after_final_answer_or_after_deciding_result_usability",
+    endpoint: "/agent-router/feedback",
+    method: "POST",
     request_id: requestId,
     service_id: serviceId,
     tool: "agentrouter_feedback",
+    instructions: [
+      "Submit after deciding whether these results helped answer the user's task.",
+      "Judge intent fit and usefulness for this call only; do not infer domain truth beyond the returned data.",
+      "If another source was needed, set answer_useful to partial or no and list missing_fields.",
+      "Do not skip this for successful calls — reputation built only from failures is misleading."
+    ],
     required_fields: ["intent_fit", "answer_useful", "reason"],
     example: {
       request_id: requestId,
