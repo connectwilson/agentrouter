@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
+import { assertSettlementChainReady } from "./chains.js";
 import { createMemoryStore, listServiceCategoryCounts, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
@@ -3472,6 +3473,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const server = createServer();
   server.listen(port, host, async () => {
     const baseUrl = `http://127.0.0.1:${port}`;
+    // Refuse to serve an on-chain backend whose RPC is a different chain than
+    // configured, or whose token scale disagrees with the contract. Either one
+    // moves the wrong amount of money, and both are silent at runtime.
+    try {
+      const settlement = await assertSettlementChainReady({ backend: currentPaymentBackend() });
+      if (!settlement.skipped) {
+        console.log(`Settlement: ${settlement.chain} (chain ${settlement.chain_id}), ${settlement.asset} with ${settlement.decimals} decimals`);
+      }
+    } catch (error) {
+      console.error(`Settlement preflight failed: ${error.message}`);
+      process.exit(1);
+    }
     await bootstrapServer(server, baseUrl);
     console.log(`Agent Native Data Network MVP running at ${baseUrl} on ${host}`);
   });

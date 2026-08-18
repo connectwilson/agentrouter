@@ -1,14 +1,14 @@
 import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
+import { erc8004Registries } from "./chains.js";
 import { hashJson } from "./evidence.js";
 import { keccak256Hex } from "./keccak.js";
 
-export const ERC8004_ARC_TESTNET = {
-  identityRegistry: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-  reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
-  validationRegistry: "0x8004Cb1BF31DAf7788923b405b754f57acEB4272"
-};
+// Kept for existing importers. The 0x8004… registries are deployed
+// deterministically at the same addresses on Arc, BSC and BSC testnet, so this
+// resolves from the chain registry rather than pinning one network's copy.
+export const ERC8004_ARC_TESTNET = erc8004Registries();
 
 export const ERC8004_REPUTATION_ABI = [
   {
@@ -111,11 +111,11 @@ export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
     supported_trust: ["reputation", "validation"],
     registrations: [
       {
-        chain: "arc-testnet",
+        chain: ARC_TESTNET.network,
         caip2: ARC_TESTNET.caip2,
-        identity_registry: process.env.ADN_ERC8004_IDENTITY_REGISTRY || ERC8004_ARC_TESTNET.identityRegistry,
-        reputation_registry: process.env.ADN_ERC8004_REPUTATION_REGISTRY || ERC8004_ARC_TESTNET.reputationRegistry,
-        validation_registry: process.env.ADN_ERC8004_VALIDATION_REGISTRY || ERC8004_ARC_TESTNET.validationRegistry
+        identity_registry: erc8004Registries().identityRegistry,
+        reputation_registry: erc8004Registries().reputationRegistry,
+        validation_registry: erc8004Registries().validationRegistry
       }
     ]
   };
@@ -141,12 +141,12 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
     standard: "ERC-8004",
     registry_type: "identity",
     event_type: "AgentRouterProviderIdentity",
-    network: "arc-testnet",
+    network: ARC_TESTNET.network,
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     registry_address: identityRegistry || null,
-    reputation_registry_address: process.env.ADN_ERC8004_REPUTATION_REGISTRY || ERC8004_ARC_TESTNET.reputationRegistry,
-    validation_registry_address: process.env.ADN_ERC8004_VALIDATION_REGISTRY || ERC8004_ARC_TESTNET.validationRegistry,
+    reputation_registry_address: erc8004Registries().reputationRegistry,
+    validation_registry_address: erc8004Registries().validationRegistry,
     service_id: serviceId || null,
     provider_id: manifest?.provider?.provider_id || null,
     metadata_uri: tokenUri || null,
@@ -262,12 +262,12 @@ export async function submitErc8004Feedback({
     standard: "ERC-8004",
     registry_type: "reputation",
     event_type: "AgentRouterConsumerFeedback",
-    network: "arc-testnet",
+    network: ARC_TESTNET.network,
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     registry_address: registry || null,
-    identity_registry_address: process.env.ADN_ERC8004_IDENTITY_REGISTRY || ERC8004_ARC_TESTNET.identityRegistry,
-    validation_registry_address: process.env.ADN_ERC8004_VALIDATION_REGISTRY || ERC8004_ARC_TESTNET.validationRegistry,
+    identity_registry_address: erc8004Registries().identityRegistry,
+    validation_registry_address: erc8004Registries().validationRegistry,
     agent_id: agentId || null,
     function_name: "giveFeedback",
     value,
@@ -370,11 +370,11 @@ export async function submitErc8004Feedback({
 }
 
 function reputationRegistryAddress() {
-  return process.env.ADN_ERC8004_REPUTATION_REGISTRY || ERC8004_ARC_TESTNET.reputationRegistry;
+  return erc8004Registries().reputationRegistry;
 }
 
 function identityRegistryAddress() {
-  return process.env.ADN_ERC8004_IDENTITY_REGISTRY || ERC8004_ARC_TESTNET.identityRegistry;
+  return erc8004Registries().identityRegistry;
 }
 
 function feedbackValue(feedback = {}) {

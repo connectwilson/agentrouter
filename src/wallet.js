@@ -4,6 +4,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { keccak256 } from "./keccak.js";
+import { settlementAsset, settlementChain } from "./chains.js";
+
+const activeChain = settlementChain();
 
 export const ADN_DIR = path.resolve(process.env.ADN_DIR || path.join(os.homedir(), ".agentrouter", "adn"));
 export const WALLET_PATH = path.join(ADN_DIR, "wallet.json");
@@ -14,8 +17,12 @@ export const USED_CHALLENGES_PATH = path.join(ADN_DIR, "used-challenges.json");
 
 export const DEFAULT_POLICY = {
   enabled: true,
-  network_allowlist: ["base", "base-sepolia", "arc-testnet", "eip155:5042002"],
-  asset_allowlist: ["USDC"],
+  // The active settlement chain is always permitted so a chain switch needs no
+  // policy edit. The pricing networks manifests already declare stay permitted
+  // too — narrowing to the settlement chain alone would reject every service
+  // that prices in one network and settles in another.
+  network_allowlist: [...new Set([activeChain.network, activeChain.caip2, "base", "base-sepolia", "agentrouter"])],
+  asset_allowlist: [settlementAsset().symbol],
   per_call_limit_usdc: "0.05",
   daily_limit_usdc: "2",
   service_allowlist: [],
@@ -25,7 +32,7 @@ export const DEFAULT_POLICY = {
   require_manifest_match: true,
   require_402_challenge: true,
   require_confirmation_above_usdc: "0.05",
-  chain_allowlist: [5042002]
+  chain_allowlist: [activeChain.id]
 };
 
 export async function ensureAdnDir() {

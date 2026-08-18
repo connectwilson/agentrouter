@@ -69,7 +69,7 @@ export function arcAnchorConfigured() {
 export function createUnconfiguredArcAnchor(evidence = {}) {
   return {
     anchor_version: "agent_router_arc_anchor_v1",
-    network: "arc-testnet",
+    network: ARC_TESTNET.network,
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     status: "not_configured",
@@ -163,7 +163,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
   const feedbackHashValue = hashJson(feedback || null);
   const base = {
     anchor_version: "agent_router_feedback_arc_anchor_v1",
-    network: "arc-testnet",
+    network: ARC_TESTNET.network,
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     event_type: "AgentRouterFeedback",
@@ -252,7 +252,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
 function baseAnchor(evidence) {
   return {
     anchor_version: "agent_router_arc_anchor_v1",
-    network: "arc-testnet",
+    network: ARC_TESTNET.network,
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     event_type: "AgentRouterEvidence",

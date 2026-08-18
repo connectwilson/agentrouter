@@ -1,25 +1,14 @@
 import crypto from "node:crypto";
 import { createPublicClient, createWalletClient, decodeFunctionData, formatUnits, http, parseUnits } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { settlementAsset, settlementChain } from "./chains.js";
 
-export const ARC_TESTNET = {
-  id: 5042002,
-  name: "Arc Testnet",
-  network: "arc-testnet",
-  caip2: "eip155:5042002",
-  nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
-  rpcUrls: {
-    default: { http: [process.env.ADN_ARC_RPC_URL || "https://rpc.testnet.arc.network"] },
-    public: { http: [process.env.ADN_ARC_RPC_URL || "https://rpc.testnet.arc.network"] }
-  },
-  blockExplorers: {
-    default: { name: "ArcScan", url: "https://testnet.arcscan.app" }
-  },
-  testnet: true
-};
-
-export const ARC_USDC_ADDRESS = "0x3600000000000000000000000000000000000000";
-export const ARC_USDC_DECIMALS = 6;
+// Chain identity, RPC and token scale now come from the chain registry so the
+// settlement chain is a deployment choice rather than a constant. The names are
+// kept for existing callers; they resolve to whichever chain is configured.
+export const ARC_TESTNET = settlementChain();
+export const ARC_USDC_ADDRESS = settlementAsset().address;
+export const ARC_USDC_DECIMALS = settlementAsset().decimals;
 
 const ERC20_ABI = [
   {

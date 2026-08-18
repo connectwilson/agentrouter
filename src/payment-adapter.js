@@ -1,3 +1,5 @@
+import { settlementChain } from "./chains.js";
+
 export const PAYMENT_BACKENDS = ["credits", "x402", "omniagentpay", "circle_arc"];
 
 export function currentPaymentBackend() {
@@ -125,11 +127,15 @@ export function effectivePricing(manifest = {}) {
     };
   }
   if (currentPaymentBackend() !== "circle_arc") return pricing;
+  // The network a quote advertises has to be the one it settles on: pricing
+  // previously claimed "base" from the manifest while settlement went to Arc,
+  // leaving an agent unable to tell where funds actually move.
+  const chain = settlementChain();
   return {
     ...pricing,
-    network: "arc-testnet",
-    caip2: "eip155:5042002",
-    chain_id: 5042002,
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
     protocol: pricing.protocol || "x402",
     settlement_model: pricing.settlement_model || "direct_provider_wallet",
     pay_to: pricing.pay_to || manifest.provider?.payout_address || process.env.ADN_PROVIDER_RECEIVE_ADDRESS || null
@@ -142,9 +148,9 @@ export function createSettlementReceipt({ manifest, challenge, txHash }) {
     receipt_version: "agent_router_settlement_receipt_v1",
     payment_backend: backend,
     mode: backend,
-    network: backend === "circle_arc" ? "arc-testnet" : manifest.pricing.network,
-    caip2: challenge.caip2 || (backend === "circle_arc" ? "eip155:5042002" : undefined),
-    chain_id: challenge.chain_id || (backend === "circle_arc" ? 5042002 : undefined),
+    network: backend === "circle_arc" ? settlementChain().network : manifest.pricing.network,
+    caip2: challenge.caip2 || (backend === "circle_arc" ? settlementChain().caip2 : undefined),
+    chain_id: challenge.chain_id || (backend === "circle_arc" ? settlementChain().id : undefined),
     protocol: manifest.pricing.protocol || "x402",
     asset: challenge.asset || manifest.pricing.currency,
     token_address: challenge.token_address || manifest.pricing.token_address || undefined,

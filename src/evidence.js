@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { settlementChain } from "./chains.js";
 
 export function createEvidenceEnvelope({
   request,
@@ -109,9 +110,9 @@ export function createEvidenceEnvelope({
     verification_report: verificationReport,
     arc_anchor: {
       anchor_version: "agent_router_arc_anchor_v1",
-      network: "arc-testnet",
-      caip2: "eip155:5042002",
-      chain_id: 5042002,
+      network: settlementChain().network,
+      caip2: settlementChain().caip2,
+      chain_id: settlementChain().id,
       status: "not_configured",
       event_type: "AgentRouterEvidence",
       storage_model: "full_evidence_offchain_hashes_on_arc",
