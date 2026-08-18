@@ -797,7 +797,16 @@ function detectTokenSymbol(task) {
   const text = String(task || "");
   const known = text.match(/\$?(ETH|BTC|USDC|USDT|HYPE|SOL|BNB)\b/i);
   if (known) return known[1].toUpperCase();
-  const stopwords = new Set(["API", "HTTP", "JSON", "USDC", "USD", "NFT", "TVL", "DEX", "CEX", "L1", "L2", "AI"]);
+  // Chain names are not tickers. "BSC" in "今天BSC链交易量最高的5个meme代币" was
+  // read as the token being asked about, even though detectChain had already
+  // correctly resolved it as the chain — so the request carried a token nobody
+  // asked for, which narrows candidate matching and is handed to providers as a
+  // filter. Spelled-out chain names are listed here; ETH, BNB, SOL and HYPE are
+  // deliberately absent because they are real assets and are resolved earlier.
+  const stopwords = new Set([
+    "API", "HTTP", "JSON", "USDC", "USD", "NFT", "TVL", "DEX", "CEX", "L1", "L2", "AI",
+    "BSC", "BASE", "SOLANA", "ARBITRUM", "OPTIMISM", "ETHEREUM", "HYPEREVM", "POLYGON", "AVALANCHE"
+  ]);
   const matches = text.match(/\$?[A-Z][A-Z0-9]{2,11}\b/g) || [];
   for (const raw of matches) {
     const token = raw.replace(/^\$/, "").toUpperCase();

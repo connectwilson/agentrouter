@@ -1170,3 +1170,34 @@ test("registered services get first refusal, web search is the last resort", asy
     assert.equal(source(task, "web"), "exa", `"${task}" should still get an answer if nothing is registered`);
   }
 });
+
+test("a chain name is not the token being asked about", async () => {
+  const { inferIntent } = await import("../src/agent-router.js");
+  const of = (task) => inferIntent(task);
+
+  // "今天BSC链交易量最高的5个meme代币" resolved chain=bsc correctly and then also
+  // read BSC as the token. A token nobody asked for narrows candidate matching
+  // and is passed to providers as a filter, so the request describes something
+  // other than what was asked.
+  for (const [task, chain] of [
+    ["今天BSC链交易量最高的5个meme代币", "bsc"],
+    ["BASE链上最活跃的NFT", "base"],
+    ["SOLANA链上新币", "solana"],
+    ["ARBITRUM 生态 TVL", "arbitrum"],
+    ["HYPEREVM 交易量", "hyperevm"]
+  ]) {
+    const intent = of(task);
+    assert.equal(intent.chain, chain, `${task} should resolve the chain`);
+    assert.ok(!intent.token, `${task} must not treat the chain name as a token, got ${intent.token}`);
+  }
+
+  // Assets that happen to name a chain stay assets — they are real tickers.
+  assert.equal(of("BNB 价格").token, "BNB");
+  assert.equal(of("SOL 价格").token, "SOL");
+  assert.equal(of("ETH 链上大额转账").token, "ETH");
+
+  // And a real token alongside a chain is still found.
+  const both = of("BSC 上 CAKE 的交易量");
+  assert.equal(both.chain, "bsc");
+  assert.equal(both.token, "CAKE");
+});
