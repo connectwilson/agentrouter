@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "AgentRouter": {
+      "command": "npx",
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
+      "env": {
+        "AGENT_ROUTER_URL": "https://agentrouter.network",
+        "AGENT_ROUTER_MAX_PRICE": "0.05"
+      }
+    }
+  }
+}

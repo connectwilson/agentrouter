@@ -1,0 +1,31 @@
+{
+  "name": "@agentrouternetwork/mcp",
+  "version": "0.11.0",
+  "description": "Public MCP bridge for AgentRouter with hosted routing and privacy-preserving local social reads.",
+  "type": "module",
+  "bin": {
+    "agentrouter-mcp": "bin/agentrouter-mcp.js"
+  },
+  "files": [
+    "bin",
+    "server",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "agent",
+    "api",
+    "data",
+    "routing",
+    "x402",
+    "usdc",
+    "arc"
+  ],
+  "author": "AgentRouter",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://agentrouter.network"
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "AgentRouter": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
+      "env": {
+        "AGENT_ROUTER_URL": "https://agentrouter.network"
+      }
+    }
+  }
+}

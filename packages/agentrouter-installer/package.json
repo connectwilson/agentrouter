@@ -1,0 +1,29 @@
+{
+  "name": "@agentrouternetwork/agentrouter",
+  "version": "0.10.0",
+  "description": "One-command AgentRouter Skill and verified MCP installer.",
+  "type": "module",
+  "bin": {
+    "agentrouter": "./bin/agentrouter.js"
+  },
+  "files": [
+    "bin",
+    "server",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "agent",
+    "api",
+    "data",
+    "routing",
+    "skill",
+    "mcp"
+  ],
+  "author": "AgentRouter",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://agentrouter.network"
+}

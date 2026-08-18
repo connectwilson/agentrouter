@@ -1,0 +1,94 @@
+{
+  "manifest_version": "0.3",
+  "name": "agentrouter",
+  "display_name": "AgentRouter",
+  "version": "0.2.0",
+  "description": "Connect Claude Desktop to AgentRouter's remotely updated API/data routing tools.",
+  "long_description": "AgentRouter is a thin Claude Desktop bridge to the hosted Agent Native Data Network. Tool definitions and execution come from the configured remote MCP server, so new AgentRouter capabilities become available after reconnecting without reinstalling the extension. API keys stay in the local extension configuration and are forwarded only to the configured AgentRouter origin.",
+  "author": {
+    "name": "AgentRouter"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/connectwilson/agentrouter.git"
+  },
+  "homepage": "https://agentrouter.network",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
+      "env": {
+        "AGENT_ROUTER_URL": "${user_config.agent_router_url}",
+        "AGENT_ROUTER_MAX_PRICE": "${user_config.max_price_usdc}",
+        "AGENT_ROUTER_API_KEY": "${user_config.agent_router_api_key}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "agentrouter_request",
+      "description": "Preferred structured request tool for specialized, real-time, paid, or verifiable external data/API needs: route, quote, invoke, verify, and return AgentRouter evidence."
+    },
+    {
+      "name": "agentrouter_quote",
+      "description": "Preview selected provider, request input, price, and budget guard without invoking the provider."
+    },
+    {
+      "name": "agentrouter_capabilities",
+      "description": "List AgentRouter capability schemas so the main agent can discover routable data/API capabilities and create structured requests."
+    },
+    {
+      "name": "agentrouter_ask",
+      "description": "Natural-language routing helper for data/API requests when the main agent cannot produce a structured request."
+    }
+  ],
+  "keywords": [
+    "agent",
+    "mcp",
+    "api",
+    "data",
+    "routing",
+    "x402",
+    "arc",
+    "usdc"
+  ],
+  "license": "MIT",
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "win32"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "user_config": {
+    "agent_router_url": {
+      "type": "string",
+      "title": "AgentRouter URL",
+      "description": "AgentRouter registry URL. Use the hosted demo URL or your local AgentRouter server URL.",
+      "default": "https://agentrouter.network",
+      "required": true
+    },
+    "max_price_usdc": {
+      "type": "string",
+      "title": "Default Max Price",
+      "description": "Default per-call USDC budget used by the natural-language fallback tool.",
+      "default": "0.05",
+      "required": true
+    },
+    "agent_router_api_key": {
+      "type": "string",
+      "title": "AgentRouter API key",
+      "description": "Create this key from your AgentRouter account. It authorizes paid calls against your prepaid credits balance.",
+      "default": "",
+      "required": false,
+      "sensitive": true
+    }
+  }
+}
