@@ -1201,3 +1201,53 @@ test("a chain name is not the token being asked about", async () => {
   assert.equal(both.chain, "bsc");
   assert.equal(both.token, "CAKE");
 });
+
+test("on-chain volume rankings come from the provider, not a scraped table", async () => {
+  const { inferExternalApiRequest, runExternalApiQuery } = await import("../src/external-api-capability.js");
+  const { createMemoryStore } = await import("../src/store.js");
+  const route = (task) => inferExternalApiRequest(task, { connectedSources: ["exa"], tier: "specialized" })?.params;
+
+  // Web search answered these with page snapshots whose scraped tables had lost
+  // the token name on exactly the highest-volume rows, so "top 5 by volume" was
+  // unanswerable without guessing.
+  for (const task of [
+    "今天BSC链交易量最高的5个meme代币",
+    "BSC on-chain DEX top 5 tokens by 24h trading volume",
+    "BASE链上交易量最高的池子"
+  ]) {
+    assert.equal(route(task)?.source, "geckoterminal", `${task} should reach the on-chain source`);
+  }
+
+  // Equities keep their own source; "volume" alone must not drag a stock
+  // question on-chain, nor a chain question into equities.
+  assert.equal(route("AAPL stock price today")?.source, "yahoo_finance");
+  assert.equal(route("hello how are you"), undefined);
+
+  const payload = {
+    data: [
+      { attributes: { name: "AAA / USDT", address: "0xpool1", volume_usd: { h24: "312016152.5" },
+        base_token_price_usd: "0.0018", market_cap_usd: "1000", reserve_in_usd: "500",
+        price_change_percentage: { h24: "12.5" }, transactions: { h24: { buys: 10, sells: 4 } } } },
+      { attributes: { name: "BBB / WBNB", address: "0xpool2", volume_usd: { h24: "246025461" },
+        base_token_price_usd: "0.009" } }
+    ]
+  };
+  const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
+    source: "geckoterminal", operation: "pools", query: "今天BSC链交易量最高的meme代币", limit: 5
+  }, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => payload }) });
+
+  assert.equal(result.status, "completed");
+  const [first, second] = result.result.items;
+  // Rank, name and a numeric volume all survive — the three things the scraped
+  // table lost.
+  assert.equal(first.metadata.rank, 1);
+  assert.equal(first.metadata.base_token, "AAA");
+  assert.equal(first.metadata.volume_24h_usd, 312016152.5);
+  assert.equal(first.metadata.network, "bsc");
+  assert.equal(second.metadata.rank, 2);
+  assert.equal(second.metadata.base_token, "BBB");
+  // A "meme" question cannot actually be filtered, so the envelope says what the
+  // ranking is really over instead of implying a category it does not have.
+  assert.match(first.metadata.ranked_among, /all pools on bsc by 24h volume/);
+  assert.ok(result.request_id, "a successful call must be rateable");
+});

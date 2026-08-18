@@ -74,6 +74,7 @@ const SOURCE_CATALOG = [
   source("gdelt", "新闻", "GDELT", "available", null, ["search"]),
   source("sec_edgar", "公司与监管", "SEC EDGAR", "available", null, ["filings"]),
   source("open_meteo", "天气与环境", "Open-Meteo", "available", null, ["forecast"]),
+  source("geckoterminal", "链上数据", "GeckoTerminal", "available", null, ["pools"]),
   source("youtube", "社交媒体", "YouTube Data API", "available", "youtube_api", ["search"]),
   source("virus_total", "安全", "VirusTotal", "available", "virustotal_api", ["inspect"]),
   source("google_places", "地点", "Google Places", "available", "google_places_api", ["search"]),
@@ -244,6 +245,14 @@ const SOURCE_INTENTS = [
   { sources: ["open_meteo"], operation: "forecast",
     strong: ["weather|temperature|rainfall|snowfall", "天气|天氣|气温|氣溫|预报|預報"],
     weak: "forecast|rain|snow|humidity|wind" },
+  // On-chain DEX rankings are their own domain. Routing them to web search
+  // returned page snapshots whose scraped tables had lost the token name on
+  // exactly the highest-volume rows, so a "top 5 by volume" could not be
+  // answered without guessing. Listed before the equities sources so that
+  // "volume" on a named chain does not read as a stock question.
+  { sources: ["geckoterminal"], operation: "pools",
+    strong: ["four\\.meme|pancakeswap|dexscreener|geckoterminal|dex pools?|liquidity pools?|on-?chain volume", "链上交易量|链上成交量|鏈上交易量|鏈上成交量"],
+    weak: ["dex|on-?chain|volume|pools?|meme|bsc|bnb chain|solana|arbitrum|optimism", "交易量|成交量|代币|代幣|链上|鏈上|币价|幣價"] },
   { sources: ["yahoo_finance", "finnhub"], operation: "search",
     strong: ["share price|stock price|nasdaq|nyse|ticker", "股价|股價|股票|行情"],
     weak: "stock|earnings|shares?|dividend" },
@@ -271,7 +280,12 @@ const SOURCE_INTENTS = [
 ].map((intent) => ({
   ...intent,
   strongPattern: termPattern(intent.strong[0], intent.strong[1]),
-  weakPattern: termPattern(intent.weak, "", "gi")
+  // weak accepts the same [latin, cjk] pair as strong. It used to be Latin-only,
+  // which left Chinese questions with no way to accumulate weak signal at all —
+  // they either hit a strong CJK term or fell through.
+  weakPattern: Array.isArray(intent.weak)
+    ? termPattern(intent.weak[0], intent.weak[1], "gi")
+    : termPattern(intent.weak, "", "gi")
 }));
 
 const INTENT_ROUTE_THRESHOLD = 2;
@@ -674,6 +688,7 @@ function validateSourceParams(sourceId, operation, params) {
 async function invokeSource(sourceId, context) {
   try {
     if (sourceId === "open_meteo") return invokeOpenMeteo(context);
+    if (sourceId === "geckoterminal") return invokeGeckoTerminal(context);
     if (sourceId === "sec_edgar") return invokeSecEdgar(context);
     const request = buildRequest(sourceId, context);
     if (!request) return { ok: false, status: "provider_error", error: "Connector is not implemented.", items: [] };
@@ -816,6 +831,76 @@ function buildRequest(sourceId, context) {
     return get(url, { "user-agent": "AgentRouter/0.1" });
   }
   return null;
+}
+
+// GeckoTerminal's network ids are not our chain names: Ethereum is "eth", and
+// Polygon is "polygon_pos". Unmapped chains fall back to BSC only when the
+// question named no chain at all.
+const GECKOTERMINAL_NETWORKS = {
+  ethereum: "eth", eth: "eth",
+  bsc: "bsc", bnb: "bsc",
+  base: "base",
+  solana: "solana",
+  arbitrum: "arbitrum",
+  optimism: "optimism",
+  polygon: "polygon_pos",
+  avalanche: "avax"
+};
+
+function geckoterminalNetwork(text) {
+  const lower = String(text || "").toLowerCase();
+  if (/bnb\s*chain|\bbsc\b|币安智能链|幣安智能鏈/.test(lower)) return "bsc";
+  for (const [name, id] of Object.entries(GECKOTERMINAL_NETWORKS)) {
+    if (lower.includes(name)) return id;
+  }
+  return "bsc";
+}
+
+// Ranked pools straight from the API, already sorted by 24h volume. The point of
+// this source is that the ordering and the numbers come from the provider rather
+// than from reading a rendered table, which is where the names went missing.
+async function invokeGeckoTerminal({ query, limit, fetchImpl }) {
+  const network = geckoterminalNetwork(query);
+  const url = new URL(`https://api.geckoterminal.com/api/v2/networks/${network}/pools`);
+  url.searchParams.set("sort", "h24_volume_usd_desc");
+  url.searchParams.set("page", "1");
+  const fetched = await fetchJson(fetchImpl, url, { headers: { accept: "application/json" } });
+  if (!fetched.ok) return fetched;
+  const rows = Array.isArray(fetched.payload?.data) ? fetched.payload.data : [];
+  const items = rows.map((row, index) => {
+    const a = row?.attributes || {};
+    const volume = Number((a.volume_usd || {}).h24 ?? 0);
+    const name = clean(a.name, 120);
+    const base = name.split("/")[0].trim();
+    const txns = (a.transactions || {}).h24 || {};
+    return {
+      title: `#${index + 1} ${name}`,
+      url: a.address ? `https://www.geckoterminal.com/${network}/pools/${a.address}` : `https://www.geckoterminal.com/${network}/pools`,
+      snippet: `${base}: 24h volume $${Math.round(volume).toLocaleString("en-US")}, price $${a.base_token_price_usd ?? "unknown"}.`,
+      published_at: validDate(a.pool_created_at),
+      metadata: {
+        rank: index + 1,
+        // The ranking is over every pool on the chain. GeckoTerminal has no
+        // category endpoint, so a question about "meme tokens" cannot actually
+        // be filtered — saying so beats letting the caller read a category into
+        // a list that does not have one.
+        ranked_among: `all pools on ${network} by 24h volume`,
+        pool: name,
+        base_token: base,
+        network,
+        volume_24h_usd: volume,
+        price_usd: a.base_token_price_usd ?? null,
+        market_cap_usd: a.market_cap_usd ?? null,
+        fdv_usd: a.fdv_usd ?? null,
+        liquidity_usd: a.reserve_in_usd ?? null,
+        price_change_24h_pct: (a.price_change_percentage || {}).h24 ?? null,
+        buys_24h: txns.buys ?? null,
+        sells_24h: txns.sells ?? null,
+        pool_address: a.address ?? null
+      }
+    };
+  }).slice(0, limit);
+  return { ok: true, status: "completed", items };
 }
 
 async function invokeOpenMeteo({ query, fetchImpl }) {
