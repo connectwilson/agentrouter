@@ -142,12 +142,23 @@ export function erc8004AgentRegistryId(chainId = activeSettlementChainId()) {
 // actually registered on — not whichever chain this process happens to settle
 // on now. Passing the ambient chain produced links pointing at BSC's registry
 // for agents minted on Arc.
+//
+// The path is /agents/{chainId}/{tokenId}. Including the registry address —
+// which the API's own composite id `{chainId}:{contract}:{tokenId}` suggests —
+// 404s. Verified against the live site.
 export function erc8004ExplorerUrl(agentId, chainId = activeSettlementChainId()) {
   if (!agentId) return null;
-  if (!CHAINS[chainId]) return null;
   const chain = CHAINS[chainId];
+  if (!chain) return null;
   if (chain.id !== 56 && chain.id !== 97) return null;
-  return `https://8004scan.io/agents/${chain.id}/${erc8004Registries(chainId).identityRegistry}/${agentId}`;
+  return `https://8004scan.io/agents/${chain.id}/${encodeURIComponent(agentId)}`;
+}
+
+// 8004scan's own identifier for an agent, as returned by its public API.
+export function erc8004ScanAgentId(agentId, chainId = activeSettlementChainId()) {
+  const chain = CHAINS[chainId];
+  if (!chain || !agentId) return null;
+  return `${chain.id}:${erc8004Registries(chainId).identityRegistry.toLowerCase()}:${agentId}`;
 }
 
 // The network a quote advertises must be the network it settles on. Pricing used

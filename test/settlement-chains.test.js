@@ -90,7 +90,8 @@ test("ERC-8004 registries resolve per chain and stay overridable", async () => {
   // pointed at the wrong place.
   assert.equal(registries.identityRegistry, "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432");
   assert.equal(erc8004AgentRegistryId(), "eip155:56:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432");
-  assert.equal(erc8004ExplorerUrl("7"), "https://8004scan.io/agents/56/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432/7");
+  // Verified against the live site: including the registry in the path 404s.
+  assert.equal(erc8004ExplorerUrl("7"), "https://8004scan.io/agents/56/7");
   process.env.ADN_ERC8004_IDENTITY_REGISTRY = "0x1111111111111111111111111111111111111111";
   assert.equal(erc8004Registries().identityRegistry, "0x1111111111111111111111111111111111111111");
   delete process.env.ADN_ERC8004_IDENTITY_REGISTRY;
@@ -156,7 +157,7 @@ test("an agent's explorer link follows the chain it was registered on", async ()
   assert.equal(onArc.registry, "0x8004A818BFB912233c491871b3d84c89A494BD9e");
 
   const onBsc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "7", network: "bsc", chain_id: 56 } } } });
-  assert.equal(onBsc.explorer_url, "https://8004scan.io/agents/56/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432/7");
+  assert.equal(onBsc.explorer_url, "https://8004scan.io/agents/56/7");
 
   // No identity until one is actually minted.
   assert.equal(publicErc8004({ manifest: { registration: { erc8004: {} } } }), null);

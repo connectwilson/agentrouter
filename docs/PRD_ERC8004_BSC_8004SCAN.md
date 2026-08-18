@@ -139,12 +139,52 @@ human, since neither is observable from BSC state.
      reputation registry is deployed, point `ADN_ERC8004_REPUTATION_REGISTRY` at
      it and the write path resumes with no code change.
 
-3. **8004scan indexing + reputation API** *(still open, owner: human)*: whether an
-   agent is picked up by event listener or manual "Create Agent", how long
-   indexing takes, and whether a public API exposes reputation for R6. Not
-   observable from chain state. Check `best-practices.8004scan.io`.
-4. **AltLayer/8004scan track submission rules** *(still open, owner: human)* — the
-   exact deliverable and judging criteria, from the track page.
+3. ~~**8004scan indexing + reputation API**~~ **Resolved — there is a public API,
+   and it independently confirms §7.1.**
+
+   `https://8004scan.io/api/v1/public/agents` — anonymous access, no key,
+   10 req/min, CORS enabled, OpenAPI 3.0. Verified live:
+
+   | Call | Result |
+   |---|---|
+   | `GET /api/v1/public/agents?chainId=56&limit=2` | BSC agents, all under `0x8004a169…` |
+   | `GET /api/v1/public/agents/56/1` | ClawNews — the same agent our `tokenURI(1)` decode returned |
+   | `GET /api/v1/public/agents/search?q=…` | hybrid vector + keyword search |
+
+   8004scan's own records key agents as `{chainId}:{contract}:{tokenId}` and the
+   contract is always `0x8004a169…` on chain 56 — so the registry correction in
+   §7.1 is confirmed by the indexer itself, not just by our probes. Indexing is
+   automatic from chain events; no manual "create agent" step is needed.
+
+   **Reputation is available per agent** — enough for R6 without writing to a
+   registry: `total_feedbacks`, `average_score`, `star_count`, `rank` /
+   `network_rank`, `total_validations`, `successful_validations`,
+   `supported_trust_models`, `x402_supported`, and a `scores` object
+   (`quality`, `popularity`, `activity`, `wallet`, `freshness`,
+   `metadata_completeness`, `health`).
+
+   **Explorer URL corrected**: the path is `/agents/{chainId}/{tokenId}`.
+   Including the registry address — which the API's composite id makes look
+   right — returns 404. Both forms were checked against the live site.
+
+   **Card format confirmed against `best-practices.8004scan.io`** (the profile
+   8004scan's own parser follows):
+   - Required fields are `type`, `name`, `description`, `image` — the four our
+     card was missing or getting wrong before R2.
+   - EIP-8004 renamed `endpoints` → `services` in Jan 2026; parsers emit a
+     `WA031` warning for the legacy name. We emit `services`.
+   - Feedback profile v2.0 replaced `score` (uint8 0–100) with `value` (int) +
+     `valueDecimals` (uint8 0–18), and supports negative values. Our reputation
+     ABI already uses `int128 value, uint8 valueDecimals`, so it targets v2.0.
+
+4. **AltLayer/8004scan track submission rules** *(still open, owner: human)* —
+   no verbatim track rules surfaced. The closest live, and directly relevant,
+   programme found is BNB Chain's **"Build the Era: Build the Official BNB Agent
+   Studio Marketplace"** (submissions Aug 5 – Sep 9 2026, $40,000+ prizes,
+   winner may become the officially adopted BNB Agent Studio marketplace). Its
+   stated premise — 200,000+ ERC-8004 agents on BSC with no way to find,
+   compare, or judge them — is the problem AgentRouter already solves. Worth a
+   human confirming whether that, rather than an AltLayer track, is the target.
 
 ## 8. Acceptance criteria
 
