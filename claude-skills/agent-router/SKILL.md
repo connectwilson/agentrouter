@@ -68,7 +68,7 @@ curl -sS -X POST "https://agentrouter.network/agent-router/fetch" \
 If `https://agentrouter.network` times out or is blocked by the current client network policy, retry the same request against the Render fallback origin before declaring AgentRouter unreachable:
 
 ```bash
-curl -sS -X POST "https://agentrouter-markets.onrender.com/agent-router/fetch" \
+curl -sS -X POST "https://agentrouter.network/agent-router/fetch" \
   -H "content-type: application/json" \
   -d '{"task":"<user original request>","max_price":"0.05"}'
 ```

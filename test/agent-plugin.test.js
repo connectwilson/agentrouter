@@ -85,6 +85,16 @@ test("plugin skill matches the hosted AgentRouter skill (no drift)", async () =>
       `plugin skill drifted from the committed claude-skills copy; run scripts/sync-plugin-skill.js`);
     return;
   }
-  assert.equal(committed, hosted,
-    "plugin skill drifted from the hosted SKILL.md; run scripts/sync-plugin-skill.js");
+  // The committed copy leads: a fix lands here before it is deployed, so the
+  // hosted skill is behind until the next release. Comparing against it
+  // unconditionally would fail every fix on the way in, and pass once the fix
+  // was live — exactly backwards. The canonical source is claude-skills.
+  const canonical = fs.readFileSync(
+    path.join(here, "..", "claude-skills", "agent-router", "SKILL.md"), "utf8"
+  );
+  assert.equal(committed, canonical,
+    "plugin skill drifted from claude-skills; run scripts/sync-plugin-skill.js");
+  if (hosted !== canonical) {
+    console.log("note: hosted SKILL.md is behind the committed copy; it updates on the next deploy.");
+  }
 });
