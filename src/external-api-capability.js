@@ -75,6 +75,8 @@ const SOURCE_CATALOG = [
   source("sec_edgar", "公司与监管", "SEC EDGAR", "available", null, ["filings"]),
   source("open_meteo", "天气与环境", "Open-Meteo", "available", null, ["forecast"]),
   source("geckoterminal", "链上数据", "GeckoTerminal", "available", null, ["pools"]),
+  source("dexscreener", "链上数据", "DexScreener", "available", null, ["search"]),
+  source("coinmarketcap", "加密行情", "CoinMarketCap", "available", "coinmarketcap_api", ["listings"]),
   source("youtube", "社交媒体", "YouTube Data API", "available", "youtube_api", ["search"]),
   source("virus_total", "安全", "VirusTotal", "available", "virustotal_api", ["inspect"]),
   source("google_places", "地点", "Google Places", "available", "google_places_api", ["search"]),
@@ -250,9 +252,20 @@ const SOURCE_INTENTS = [
   // exactly the highest-volume rows, so a "top 5 by volume" could not be
   // answered without guessing. Listed before the equities sources so that
   // "volume" on a named chain does not read as a stock question.
+  // DexScreener answers about one token's pairs; GeckoTerminal ranks a whole
+  // chain. Naming either provider, or asking about a pair, picks the per-token
+  // source; otherwise a chain-wide ranking question falls to the next intent.
+  { sources: ["dexscreener"], operation: "search",
+    strong: ["dexscreener|dex screener|trading pairs?|liquidity for", "交易对|交易對"],
+    weak: ["pair|liquidity|slippage|pool|price|dex", "流动性|流動性|价格|價格|滑点|滑點"] },
   { sources: ["geckoterminal"], operation: "pools",
     strong: ["four\\.meme|pancakeswap|dexscreener|geckoterminal|dex pools?|liquidity pools?|on-?chain volume", "链上交易量|链上成交量|鏈上交易量|鏈上成交量"],
     weak: ["dex|on-?chain|volume|pools?|meme|bsc|bnb chain|solana|arbitrum|optimism", "交易量|成交量|代币|代幣|链上|鏈上|币价|幣價"] },
+  // Market-wide crypto quotes. Distinct from the on-chain sources: this ranks
+  // listed assets across all venues, not pools on one chain.
+  { sources: ["coinmarketcap"], operation: "listings",
+    strong: ["coinmarketcap|cmc|market cap ranking|crypto market cap", "市值排名|加密货币市值|加密貨幣市值"],
+    weak: ["crypto|coin|market cap|ranking|top coins", "市值|加密货币|加密貨幣|排行"] },
   { sources: ["yahoo_finance", "finnhub"], operation: "search",
     strong: ["share price|stock price|nasdaq|nyse|ticker", "股价|股價|股票|行情"],
     weak: "stock|earnings|shares?|dividend" },
@@ -716,6 +729,24 @@ function buildRequest(sourceId, context) {
   }
   if (sourceId === "tavily") return post("https://api.tavily.com/search", { query, max_results: limit }, { authorization: `Bearer ${secret}` });
   if (sourceId === "serper") return post("https://google.serper.dev/search", { q: query, num: limit }, { "x-api-key": secret });
+  if (sourceId === "dexscreener") {
+    const url = new URL("https://api.dexscreener.com/latest/dex/search");
+    // DexScreener matches a ticker or a contract address, not prose. Handing it
+    // the whole question made "BSC 上 CAKE 的交易对和流动性" return BscCat, BSC
+    // and ASTER — everything except the token that was asked about.
+    url.searchParams.set("q", dexscreenerTerm(query));
+    return get(url, { accept: "application/json" });
+  }
+  if (sourceId === "coinmarketcap") {
+    // Sorted by 24h volume, not market cap: this source is reached by questions
+    // about what is trading, and the default listing order answers a different
+    // question.
+    const url = new URL("https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest");
+    url.searchParams.set("limit", String(Math.min(Math.max(limit, 1), 5000)));
+    url.searchParams.set("sort", "volume_24h");
+    url.searchParams.set("sort_dir", "desc");
+    return get(url, { accept: "application/json", "X-CMC_PRO_API_KEY": secret });
+  }
   if (sourceId === "exa") return post("https://api.exa.ai/search", { query, numResults: limit, contents: { text: { maxCharacters: 1200 } } }, { "x-api-key": secret });
   if (sourceId === "firecrawl") return post("https://api.firecrawl.dev/v2/search", { query, limit }, { authorization: `Bearer ${secret}` });
   if (sourceId === "jina") {
@@ -903,6 +934,108 @@ async function invokeGeckoTerminal({ query, limit, fetchImpl }) {
   return { ok: true, status: "completed", items };
 }
 
+
+// DexScreener answers "what is this token doing", not "what leads the chain":
+// search returns every pair matching a symbol across every chain. Ordering by
+// 24h volume puts the pair that actually trades first — the raw order buries it
+// behind dead pools with the same ticker.
+// The symbol or address the question is about. Chain names are excluded for the
+// same reason they are excluded from token detection elsewhere: "BSC" in
+// "BSC 上 CAKE" names where to look, not what to look for.
+const DEXSCREENER_NON_TOKENS = new Set([
+  "API", "HTTP", "JSON", "USD", "NFT", "TVL", "DEX", "CEX", "L1", "L2", "AI", "TOP",
+  "BSC", "BNB", "BASE", "SOLANA", "ETHEREUM", "ARBITRUM", "OPTIMISM", "POLYGON", "AVALANCHE"
+]);
+
+export function dexscreenerTerm(query) {
+  const text = String(query || "");
+  const address = text.match(/0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44}(?![\w])/);
+  if (address) return address[0];
+  for (const raw of text.match(/\$?[A-Za-z][A-Za-z0-9]{1,11}\b/g) || []) {
+    const token = raw.replace(/^\$/, "").toUpperCase();
+    if (raw.startsWith("$")) return token;
+    if (token.length >= 2 && raw === raw.toUpperCase() && !DEXSCREENER_NON_TOKENS.has(token)) return token;
+  }
+  // Nothing ticker-shaped: fall back to the text so the caller still gets a
+  // fuzzy match rather than an empty query.
+  return text.trim().slice(0, 60);
+}
+
+function normalizeDexscreener(payload, context = {}) {
+  const wanted = geckoterminalNetwork(context.query || "");
+  const chainFilter = /bsc|bnb|eth|base|solana|arbitrum|optimism|polygon|avax|链/i.test(context.query || "")
+    ? DEXSCREENER_CHAINS[wanted] || null
+    : null;
+  const pairs = (Array.isArray(payload?.pairs) ? payload.pairs : [])
+    .filter((pair) => !chainFilter || pair?.chainId === chainFilter)
+    .sort((a, b) => volumeOf(b) - volumeOf(a));
+  return pairs.map((pair, index) => {
+    const base = pair?.baseToken || {};
+    const quote = pair?.quoteToken || {};
+    const symbol = clean(base.symbol, 40);
+    return item(
+      `#${index + 1} ${symbol}/${clean(quote.symbol, 40)} on ${clean(pair?.dexId, 40)}`,
+      clean(pair?.url, 400),
+      `${symbol}: 24h volume $${Math.round(volumeOf(pair)).toLocaleString("en-US")}, price $${pair?.priceUsd ?? "unknown"}, liquidity $${Math.round(Number(pair?.liquidity?.usd || 0)).toLocaleString("en-US")}.`,
+      validDate(pair?.pairCreatedAt ? new Date(Number(pair.pairCreatedAt)).toISOString() : null),
+      {
+        rank: index + 1,
+        base_token: symbol,
+        base_token_address: clean(base.address, 80) || null,
+        quote_token: clean(quote.symbol, 40) || null,
+        chain: clean(pair?.chainId, 40) || null,
+        dex: clean(pair?.dexId, 40) || null,
+        price_usd: pair?.priceUsd ?? null,
+        volume_24h_usd: volumeOf(pair),
+        liquidity_usd: Number(pair?.liquidity?.usd || 0) || null,
+        market_cap_usd: pair?.marketCap ?? null,
+        fdv_usd: pair?.fdv ?? null,
+        price_change_24h_pct: pair?.priceChange?.h24 ?? null,
+        buys_24h: pair?.txns?.h24?.buys ?? null,
+        sells_24h: pair?.txns?.h24?.sells ?? null,
+        pair_address: clean(pair?.pairAddress, 80) || null
+      }
+    );
+  });
+}
+
+function volumeOf(pair) {
+  return Number(pair?.volume?.h24 || 0);
+}
+
+// DexScreener's chain ids are its own; they mostly agree with GeckoTerminal but
+// not for Ethereum, so the mapping is explicit rather than assumed.
+const DEXSCREENER_CHAINS = {
+  eth: "ethereum", bsc: "bsc", base: "base", solana: "solana",
+  arbitrum: "arbitrum", optimism: "optimism", polygon_pos: "polygon", avax: "avalanche"
+};
+
+function normalizeCoinmarketcap(payload) {
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  return rows.map((row, index) => {
+    const usd = row?.quote?.USD || {};
+    const symbol = clean(row?.symbol, 40);
+    return item(
+      `#${index + 1} ${clean(row?.name, 80)} (${symbol})`,
+      row?.slug ? `https://coinmarketcap.com/currencies/${encodeURIComponent(row.slug)}/` : "https://coinmarketcap.com/",
+      `${symbol}: price $${usd.price ?? "unknown"}, 24h volume $${Math.round(Number(usd.volume_24h || 0)).toLocaleString("en-US")}, market cap $${Math.round(Number(usd.market_cap || 0)).toLocaleString("en-US")}.`,
+      validDate(usd.last_updated || row?.last_updated),
+      {
+        rank: index + 1,
+        cmc_rank: row?.cmc_rank ?? null,
+        name: clean(row?.name, 80) || null,
+        symbol: symbol || null,
+        price_usd: usd.price ?? null,
+        volume_24h_usd: usd.volume_24h ?? null,
+        market_cap_usd: usd.market_cap ?? null,
+        percent_change_24h: usd.percent_change_24h ?? null,
+        percent_change_7d: usd.percent_change_7d ?? null,
+        circulating_supply: row?.circulating_supply ?? null
+      }
+    );
+  });
+}
+
 async function invokeOpenMeteo({ query, fetchImpl }) {
   const geocodeUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
   geocodeUrl.searchParams.set("name", query);
@@ -1004,6 +1137,8 @@ function normalizeItems(sourceId, payload, context = {}) {
   else if (sourceId === "tavily") rows = payload.results || [];
   else if (sourceId === "serper") rows = payload.organic || [];
   else if (sourceId === "exa") rows = payload.results || [];
+  else if (sourceId === "dexscreener") return normalizeDexscreener(payload, context);
+  else if (sourceId === "coinmarketcap") return normalizeCoinmarketcap(payload);
   else if (sourceId === "firecrawl") rows = payload.data?.web || payload.data || [];
   else if (sourceId === "jina") rows = payload.data || [];
   else if (sourceId === "github") return (payload.items || []).map((row) => item(row.title, row.html_url, row.body, row.created_at, { author: row.user?.login || null, comments: row.comments ?? null, score: row.score ?? null }));

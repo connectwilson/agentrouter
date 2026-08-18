@@ -1251,3 +1251,50 @@ test("on-chain volume rankings come from the provider, not a scraped table", asy
   assert.match(first.metadata.ranked_among, /all pools on bsc by 24h volume/);
   assert.ok(result.request_id, "a successful call must be rateable");
 });
+
+test("a token question reaches the token, not whatever the prose fuzzy-matched", async () => {
+  const { dexscreenerTerm, inferExternalApiRequest, runExternalApiQuery } =
+    await import("../src/external-api-capability.js");
+  const { createMemoryStore } = await import("../src/store.js");
+
+  // DexScreener matches a ticker or an address, not a sentence. Handing it the
+  // whole question returned BscCat, BSC and ASTER for a question about CAKE.
+  assert.equal(dexscreenerTerm("BSC 上 CAKE 的交易对和流动性"), "CAKE");
+  assert.equal(dexscreenerTerm("PEPE pairs liquidity"), "PEPE");
+  assert.equal(dexscreenerTerm("$WIF price"), "WIF");
+  assert.equal(
+    dexscreenerTerm("0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82 liquidity"),
+    "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"
+  );
+  // Nothing ticker-shaped still searches, rather than sending an empty query.
+  assert.equal(dexscreenerTerm("流动性最好的交易对"), "流动性最好的交易对");
+
+  const route = (task) => inferExternalApiRequest(task, { connectedSources: [], tier: "specialized" })?.params;
+  assert.equal(route("CAKE 的交易对和流动性")?.source, "dexscreener");
+  assert.equal(route("加密货币市值排名前10")?.source, "coinmarketcap");
+  // A chain-wide ranking is a different question from one token's pairs.
+  assert.equal(route("今天BSC链交易量最高的5个meme代币")?.source, "geckoterminal");
+
+  const payload = { pairs: [
+    { chainId: "bsc", dexId: "pancakeswap", url: "https://dexscreener.com/bsc/a",
+      baseToken: { symbol: "CAKE", address: "0xcake" }, quoteToken: { symbol: "WBNB" },
+      priceUsd: "1.45", volume: { h24: 1104505 }, liquidity: { usd: 900000 },
+      txns: { h24: { buys: 5, sells: 3 } } },
+    { chainId: "ethereum", dexId: "uniswap", url: "https://dexscreener.com/eth/b",
+      baseToken: { symbol: "CAKE" }, quoteToken: { symbol: "WETH" },
+      priceUsd: "1.44", volume: { h24: 9999999 } }
+  ] };
+  const result = await runExternalApiQuery(createMemoryStore(), "github:user-a",
+    { source: "dexscreener", operation: "search", query: "BSC 上 CAKE 的交易对", limit: 5 },
+    { fetchImpl: async () => ({ ok: true, status: 200, json: async () => payload }) });
+
+  assert.equal(result.status, "completed");
+  // Naming a chain filters to it, so the higher-volume Ethereum pair is excluded
+  // rather than answering a question about BSC with a different chain.
+  assert.equal(result.result.items.length, 1);
+  const [top] = result.result.items;
+  assert.equal(top.metadata.base_token, "CAKE");
+  assert.equal(top.metadata.chain, "bsc");
+  assert.equal(top.metadata.volume_24h_usd, 1104505);
+  assert.equal(top.metadata.liquidity_usd, 900000);
+});
