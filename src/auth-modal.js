@@ -88,8 +88,13 @@ export function authModalStyles() {
     .auth-modal h2 { margin:0; font-size:28px; letter-spacing:-.04em; line-height:1.1; }
     .auth-modal p { margin:0; color:var(--color-muted, #6c7177); font-size:14px; line-height:1.5; }
     .auth-modal-options { display:grid; gap:10px; margin-top:14px; }
-    .auth-modal-provider, .auth-modal-dev button { min-height:46px; width:100%; display:flex; align-items:center; justify-content:center; border:1px solid var(--color-line, #d9dcdf); border-radius:8px; padding:0 16px; color:var(--color-ink, #17191b); background:#fff; font:inherit; font-size:14px; font-weight:760; text-decoration:none; cursor:pointer; }
-    .auth-modal-provider:hover, .auth-modal-provider:focus-visible { border-color:var(--color-strong-line, #aeb4b8); background:#fafafa; outline:0; }
+    /* The surface has to follow the same theme the text does. This hardcoded
+       #fff while the label read from --color-ink, which the dark app shell sets
+       to white — so the sign-in button rendered white on white and was
+       invisible. Anything painting a background next to a themed colour needs a
+       token, not a literal. */
+    .auth-modal-provider, .auth-modal-dev button { min-height:46px; width:100%; display:flex; align-items:center; justify-content:center; border:1px solid var(--color-line, #d9dcdf); border-radius:8px; padding:0 16px; color:var(--color-ink, #17191b); background:var(--color-soft, #fff); font:inherit; font-size:14px; font-weight:760; text-decoration:none; cursor:pointer; }
+    .auth-modal-provider:hover, .auth-modal-provider:focus-visible { border-color:var(--color-strong-line, #aeb4b8); background:var(--color-hover, #fafafa); outline:0; }
     .auth-modal-provider.disabled { min-height:62px; justify-content:space-between; gap:14px; color:var(--color-muted, #6c7177); background:var(--color-soft, #f3f4f4); cursor:not-allowed; }
     .auth-modal-provider.disabled span { max-width:180px; font-size:11px; line-height:1.35; text-align:right; }
     .auth-modal-dev { display:grid; gap:7px; }
