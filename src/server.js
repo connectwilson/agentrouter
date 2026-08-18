@@ -1602,28 +1602,47 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
   const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
   const currency = args.currency || args.budget?.currency || "USDC";
 
+  // Prefer a source the caller has actually connected over a default one.
+  // Resolved once here because both routing passes need it: the specialized
+  // pass before the service router, and the web fallback after it.
+  const connectedSources = requirements.length ? [] : getExternalApiCatalog(store, ownerKey)
+    .filter((item) => item.connected === true)
+    .map((item) => item.source);
+
   if (!requirements.length) {
     const socialPost = findSocialPostUrl(args.task || args.query || "");
     if (socialPost) {
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
       return runSocialPostReadCapability({ url: socialPost.canonical_url, platform: socialPost.platform }, { providers });
     }
-    // Prefer a source the caller has actually connected over a default one.
-    const connectedSources = getExternalApiCatalog(store, ownerKey)
-      .filter((item) => item.connected === true)
-      .map((item) => item.source);
-    const externalApiRequest = inferExternalApiRequest(args.task || args.query || "", { connectedSources });
+    // Only the unambiguous domain sources run ahead of the registered-service
+    // router. A generic web search used to run first and preempt services that
+    // would have matched.
+    const externalApiRequest = inferExternalApiRequest(args.task || args.query || "", {
+      connectedSources,
+      tier: "specialized"
+    });
     if (externalApiRequest) requirements = [externalApiRequest];
   }
 
   if (!requirements.length) {
-    return askAgentRouter(store, {
+    const routed = await askAgentRouter(store, {
       task: args.task || args.query || "",
       max_price: maxPrice,
       currency,
       invoke,
       consumerApiKey
     });
+    // "No registered service covers this" is not an answer when a web search
+    // has one. The router used to only *suggest* the fallback and hand back a
+    // dead end, so the agent had to guess a rephrasing and ask again.
+    if (routed?.status !== "no_service_found") return routed;
+    const webSearch = inferExternalApiRequest(args.task || args.query || "", {
+      connectedSources,
+      tier: "web"
+    });
+    if (!webSearch) return routed;
+    requirements = [webSearch];
   }
 
   const results = [];

@@ -1087,3 +1087,86 @@ test("every path asks for feedback on success with the same contract", async () 
     assert.ok(request.example.feedback.reason, `${label} example must include the required reason`);
   }
 });
+
+test("one incidental keyword cannot hijack the route", async () => {
+  const { inferExternalApiRequest } = await import("../src/external-api-capability.js");
+  const route = (task, tier = "all") => inferExternalApiRequest(task, { connectedSources: ["exa"], tier });
+  const source = (task, tier) => route(task, tier)?.params.source ?? null;
+
+  // The reported failure: "track" and "deliverables" made a hackathon question a
+  // parcel lookup, because the first intent whose pattern matched won outright.
+  assert.notEqual(source("AltLayer 8004scan hackathon track submission rules judging criteria deliverables"), "easy_post");
+
+  // Every weak term is ordinary English somewhere. None of these route to the
+  // specialized source that owns the word.
+  const notSpecialized = [
+    "track leaderboards across the agent network",
+    "which npm package should I use for date parsing",
+    "open issues in the ERC-8004 spec discussion",
+    "near the end of the quarter what happens",
+    "video call software comparison",
+    "stock up on inventory before the holidays",
+    "press the button twice to reset",
+    "revenue forecast for next quarter",
+    "research on agent marketplaces"
+  ];
+  for (const task of notSpecialized) {
+    assert.equal(source(task, "specialized"), null, `"${task}" must not reach a specialized source`);
+  }
+
+  // ...while the same words with a second signal from the same domain still do.
+  const stillRouted = [
+    ["track my package 1Z999AA10123456784", "easy_post"],
+    ["where is my parcel", "easy_post"],
+    ["tracking number for this shipment", "easy_post"],
+    ["weather forecast in Tokyo tomorrow", "open_meteo"],
+    ["AAPL stock price today", "yahoo_finance"],
+    ["SEC filings for Coinbase", "sec_edgar"],
+    ["best coffee shops near Central Hong Kong", "google_places"],
+    ["github repository for viem", "github"],
+    ["papers about retrieval augmented generation", "openalex"],
+    ["flights from HKG to SIN next Monday", "amadeus"],
+    ["is this domain malicious example.com", "virus_total"],
+    ["帮我查一下这个快递到哪了", "easy_post"],
+    ["东京明天天气", "open_meteo"]
+  ];
+  for (const [task, expected] of stillRouted) {
+    assert.equal(source(task, "specialized"), expected, `"${task}" should still reach ${expected}`);
+  }
+});
+
+test("a question is a lookup even when it is not phrased as a command", async () => {
+  const { inferExternalApiRequest } = await import("../src/external-api-capability.js");
+  const source = (task, tier = "all") => inferExternalApiRequest(task, { connectedSources: ["exa"], tier })?.params.source ?? null;
+
+  // These reached no service at all: the fallback only recognised an explicit
+  // verb ("search for…"), so a plain question was a dead end.
+  for (const task of [
+    "How does 8004scan.io index ERC-8004 agents?",
+    "Does 8004scan have a public API to query agent reputation?",
+    "8004scan 是如何收录 agent 的？"
+  ]) {
+    assert.equal(source(task), "exa", `"${task}" should reach web search`);
+  }
+
+  // But a question still has to ask about something. Paying a search provider
+  // for a greeting is worse than answering it directly.
+  for (const task of ["hello how are you", "how are you?", "thanks!", "ok", "good morning"]) {
+    assert.equal(source(task), null, `"${task}" is chatter`);
+    assert.equal(source(task, "web"), null, `"${task}" is chatter even as a last resort`);
+  }
+});
+
+test("registered services get first refusal, web search is the last resort", async () => {
+  const { inferExternalApiRequest } = await import("../src/external-api-capability.js");
+  const source = (task, tier) => inferExternalApiRequest(task, { connectedSources: ["exa"], tier })?.params.source ?? null;
+
+  // The specialized pass runs before the service router, so it must stay silent
+  // on anything a registered service could answer — a generic web search
+  // running first preempted services that would have matched.
+  for (const task of ["BTC 最大爆仓痛点", "token smart money activity for PEPE", "aggregated liquidation history"]) {
+    assert.equal(source(task, "specialized"), null, `"${task}" must reach the service router first`);
+    // Once the router has found nothing, a web search is the only answer left.
+    assert.equal(source(task, "web"), "exa", `"${task}" should still get an answer if nothing is registered`);
+  }
+});

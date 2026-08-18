@@ -210,37 +210,106 @@ export function getExternalApiServiceDetail(store, serviceId, ownerKey) {
 // question ("find remote crypto PM jobs") routed nowhere while the same question
 // written as "search Exa for ..." worked. Match on what the question is about
 // instead, and let a named source still win when the caller specifies one.
-// \b does not work against CJK, so keep Latin terms (which need boundaries to
-// avoid matching inside words) separate from CJK terms (which do not).
-function intentPattern(latin, cjk = "") {
+//
+// Boundaries are lookarounds, not consumed characters: the old form ate the
+// separator, so in "track my package" a scan could match `track` and then miss
+// `package` because the space it needed had already been consumed. That matters
+// now that terms are counted rather than merely detected. Lookarounds also work
+// against CJK, which has no \b.
+function termPattern(latin, cjk = "", flags = "i") {
   const parts = [];
-  if (latin) parts.push(`(^|[^a-z0-9])(?:${latin})([^a-z0-9]|$)`);
+  if (latin) parts.push(`(?<![a-z0-9])(?:${latin})(?![a-z0-9])`);
   if (cjk) parts.push(`(?:${cjk})`);
-  return new RegExp(parts.join("|"), "i");
+  return new RegExp(parts.join("|"), flags);
 }
 
-// Each source answers a different operation; requiring "search" everywhere hid
-// weather, filings, flights, tracking and reputation lookups entirely.
+// Terms are split by how much they mean on their own.
+//
+// `strong` names the domain and nothing else: "parcel", "arxiv", "nasdaq". One
+// is enough to route.
+//
+// `weak` is ordinary English that only suggests the domain in company:
+// "track", "package", "near", "issues", "video". Routing on one of these is how
+// "AltLayer hackathon track submission rules" became a parcel lookup — the
+// first intent whose pattern matched won outright, with nothing comparing how
+// well it matched. A weak term now needs a second signal from the same domain,
+// and every intent is scored so the best one wins instead of the earliest.
 const SOURCE_INTENTS = [
-  { sources: ["gdelt"], operation: "search", pattern: intentPattern("news|headlines?|press", "新闻|新聞|报道|報道|舆情|輿情") },
-  { sources: ["sec_edgar"], operation: "filings", pattern: intentPattern("sec|edgar|10-k|10k|8-k|filings?|prospectus", "财报|財報|备案|備案|招股") },
-  { sources: ["open_meteo"], operation: "forecast", pattern: intentPattern("weather|forecast|temperature|rain|snow", "天气|天氣|气温|氣溫|预报|預報") },
-  { sources: ["yahoo_finance", "finnhub"], operation: "search", pattern: intentPattern("stock|share price|ticker|nasdaq|nyse|earnings", "股价|股價|股票|行情") },
-  { sources: ["github"], operation: "search", pattern: intentPattern("github|repo|repository|pull request|issues?|source code", "开源|開源|仓库|倉庫") },
-  { sources: ["openalex"], operation: "search", pattern: intentPattern("papers?|publications?|citations?|doi|arxiv", "论文|論文|文献|文獻") },
-  { sources: ["google_places"], operation: "search", pattern: intentPattern("near|nearby|restaurants?|cafes?|coffee shops?|hotels?", "附近|餐厅|餐廳|咖啡") },
-  { sources: ["amadeus"], operation: "flight_search", pattern: intentPattern("flights?|airfare|airline", "机票|機票|航班") },
-  { sources: ["easy_post"], operation: "track", pattern: intentPattern("track|tracking|parcel|package|shipment", "快递|快遞|物流|包裹") },
-  { sources: ["virus_total"], operation: "inspect", pattern: intentPattern("malicious|malware|virus|phishing", "恶意|惡意|病毒|钓鱼|釣魚") },
-  { sources: ["youtube"], operation: "search", pattern: intentPattern("youtube|video|vlog", "视频|視頻") }
-];
+  { sources: ["gdelt"], operation: "search",
+    strong: ["news|headlines?|news coverage", "新闻|新聞|报道|報道|舆情|輿情"],
+    weak: "press|coverage|media|reported" },
+  { sources: ["sec_edgar"], operation: "filings",
+    strong: ["edgar|10-k|10k|8-k|prospectus|sec filings?", "财报|財報|备案|備案|招股"],
+    weak: "sec|filings?|filed|disclosure" },
+  { sources: ["open_meteo"], operation: "forecast",
+    strong: ["weather|temperature|rainfall|snowfall", "天气|天氣|气温|氣溫|预报|預報"],
+    weak: "forecast|rain|snow|humidity|wind" },
+  { sources: ["yahoo_finance", "finnhub"], operation: "search",
+    strong: ["share price|stock price|nasdaq|nyse|ticker", "股价|股價|股票|行情"],
+    weak: "stock|earnings|shares?|dividend" },
+  { sources: ["github"], operation: "search",
+    strong: ["github|repository|pull request|source code", "开源|開源|仓库|倉庫"],
+    weak: "repo|issues?|commit|branch" },
+  { sources: ["openalex"], operation: "search",
+    strong: ["papers?|publications?|citations?|doi|arxiv|peer.reviewed", "论文|論文|文献|文獻"],
+    weak: "study|studies|research|journal|authors?" },
+  { sources: ["google_places"], operation: "search",
+    strong: ["restaurants?|cafes?|coffee shops?|hotels?|nearby", "附近|餐厅|餐廳|咖啡"],
+    weak: "near|around|places?|open now" },
+  { sources: ["amadeus"], operation: "flight_search",
+    strong: ["flights?|airfare|airline", "机票|機票|航班"],
+    weak: "fly|departure|arrival|layover" },
+  { sources: ["easy_post"], operation: "track",
+    strong: ["parcel|shipment|waybill|courier|easypost|tracking number", "快递|快遞|物流|包裹"],
+    weak: "track|tracking|package|delivery|shipping" },
+  { sources: ["virus_total"], operation: "inspect",
+    strong: ["malicious|malware|virus|phishing", "恶意|惡意|病毒|钓鱼|釣魚"],
+    weak: "suspicious|scam|infected|threat" },
+  { sources: ["youtube"], operation: "search",
+    strong: ["youtube|vlog", "视频|視頻"],
+    weak: "video|channel|watch|subscribers?" }
+].map((intent) => ({
+  ...intent,
+  strongPattern: termPattern(intent.strong[0], intent.strong[1]),
+  weakPattern: termPattern(intent.weak, "", "gi")
+}));
+
+const INTENT_ROUTE_THRESHOLD = 2;
+
+// A strong term is worth the threshold on its own; weak terms have to add up.
+// Counts distinct terms, so "tracking a tracking number" is still one signal.
+function intentScore(text, intent) {
+  let score = intent.strongPattern.test(text) ? INTENT_ROUTE_THRESHOLD : 0;
+  const seen = new Set((text.toLowerCase().match(intent.weakPattern) || []));
+  return score + seen.size;
+}
 
 // Anything else that is plainly a lookup goes to whichever web search is usable.
 const WEB_SEARCH_SOURCES = ["exa", "tavily", "brave_search", "serper", "perplexity", "firecrawl", "jina"];
-const WEB_SEARCH_PATTERN = intentPattern(
+const WEB_SEARCH_PATTERN = termPattern(
   "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?",
   "招聘|岗位|崗位|职位|職位|最新|查一下|搜一下|了解|怎么|怎樣"
 );
+
+// A question is a lookup even when it uses none of those verbs. "How does
+// 8004scan.io index ERC-8004 agents?" reached no service at all, because the
+// fallback only recognised a request phrased as a command.
+const QUESTION_PATTERN = /[?？]\s*$|^\s*(?:who|what|whats|when|where|which|why|how|is|are|was|were|does|do|did|can|could|should|would|will)(?![a-z0-9])|(?:吗|嗎|呢|如何|什么|什麼|哪些|为什么|為什麼)/i;
+
+// ...but only if it asks about something. "how are you" is a greeting, and
+// paying a search provider for it would be worse than answering directly.
+const CHATTER_WORDS = new Set([
+  "a", "an", "am", "and", "are", "as", "at", "be", "can", "could", "did", "do", "does", "doing",
+  "evening", "for", "good", "hello", "help", "hey", "hi", "how", "i", "in", "is", "it", "its",
+  "me", "morning", "my", "of", "ok", "okay", "on", "or", "please", "should", "so", "tell", "thank",
+  "thanks", "that", "the", "there", "this", "to", "today", "us", "was", "we", "were", "what",
+  "whats", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your", "yours"
+]);
+
+function asksAboutSomething(text) {
+  if (/[\u4e00-\u9fff]/.test(text)) return true;
+  return text.toLowerCase().split(/[^a-z0-9.\-_]+/i).some((word) => word && !CHATTER_WORDS.has(word));
+}
 
 function pickAvailableSource(sourceIds, connectedSources, operation) {
   const usable = sourceIds
@@ -253,23 +322,44 @@ function pickAvailableSource(sourceIds, connectedSources, operation) {
     || null;
 }
 
-export function inferExternalApiRequest(task, { connectedSources = [] } = {}) {
+// `tier` controls how hard this tries, because the answer depends on what has
+// already been ruled out:
+//   "specialized" — only the domain sources, for the pass that runs BEFORE the
+//                   registered-service router. Nothing generic, so a web search
+//                   cannot preempt a service that would have matched.
+//   "web"         — the pass that runs AFTER the router found nothing. At that
+//                   point a web search is the only remaining answer, so any
+//                   substantive question qualifies.
+//   default       — both, conservatively: for callers with no router around them.
+export function inferExternalApiRequest(task, { connectedSources = [], tier = "all" } = {}) {
   const text = clean(task, 1000);
   if (!text) return null;
   const connected = new Set(connectedSources);
+  if (tier === "web") {
+    if (!asksAboutSomething(text)) return null;
+    const source = pickAvailableSource(WEB_SEARCH_SOURCES, connected, "search");
+    return source
+      ? { capability: "external_api_query", params: { source: source.source, operation: "search", query: extractSearchQuery(text), limit: 10 } }
+      : null;
+  }
   let definition = SOURCE_CATALOG.find((item) =>
     item.implementation_status === "available"
       && item.operations.includes("search")
       && sourceMentioned(text, item));
   let operation = "search";
   if (!definition) {
-    const intentMatch = SOURCE_INTENTS.find((entry) => entry.pattern.test(text));
-    if (intentMatch) {
-      definition = pickAvailableSource(intentMatch.sources, connected, intentMatch.operation);
-      if (definition) operation = intentMatch.operation;
+    // Best score, not first match: one incidental keyword used to win outright.
+    const best = SOURCE_INTENTS
+      .map((entry) => ({ entry, score: intentScore(text, entry) }))
+      .filter((candidate) => candidate.score >= INTENT_ROUTE_THRESHOLD)
+      .sort((a, b) => b.score - a.score)[0];
+    if (best) {
+      definition = pickAvailableSource(best.entry.sources, connected, best.entry.operation);
+      if (definition) operation = best.entry.operation;
     }
   }
-  if (!definition && WEB_SEARCH_PATTERN.test(text)) {
+  if (!definition && tier !== "specialized"
+    && (WEB_SEARCH_PATTERN.test(text) || QUESTION_PATTERN.test(text)) && asksAboutSomething(text)) {
     definition = pickAvailableSource(WEB_SEARCH_SOURCES, connected, "search");
   }
   if (!definition) return null;
