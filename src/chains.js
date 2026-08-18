@@ -55,13 +55,33 @@ const CHAINS = {
   }
 };
 
-// ERC-8004 uses vanity 0x8004… registries deployed deterministically, so the
-// same addresses answer on Arc, BSC mainnet and BSC testnet. Verified on chain
-// for all three before switching. Still overridable per deployment.
-const ERC8004_REGISTRIES = {
-  identityRegistry: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-  reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
-  validationRegistry: "0x8004Cb1BF31DAf7788923b405b754f57acEB4272"
+// Registries are per chain. An earlier version assumed one deterministic set
+// everywhere because those addresses had bytecode on BSC — but bytecode is not
+// identity: 0x8004A818… answers on BSC yet is not the ERC-721 agent registry
+// (name() and symbol() are empty). Confirm what a contract *is*, not that it
+// exists.
+//
+// BSC's canonical registry is 0x8004A169…: an ERC-721 named "AgentIdentity"
+// whose tokenURI returns cards typed
+// https://eips.ethereum.org/EIPS/eip-8004#registration-v1 — the EIP's own
+// schema, and what 8004scan indexes. (0xfA09B339… is a separate "BRC8004"
+// deployment holding 26 mostly test agents; not the canonical one.)
+const ERC8004_REGISTRIES_BY_CHAIN = {
+  "arc-testnet": {
+    identityRegistry: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    validationRegistry: "0x8004Cb1BF31DAf7788923b405b754f57acEB4272"
+  },
+  bsc: {
+    identityRegistry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    validationRegistry: "0x8004Cb1BF31DAf7788923b405b754f57acEB4272"
+  },
+  "bsc-testnet": {
+    identityRegistry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    validationRegistry: "0x8004Cb1BF31DAf7788923b405b754f57acEB4272"
+  }
 };
 
 export const SETTLEMENT_CHAINS = Object.keys(CHAINS);
@@ -104,12 +124,30 @@ export function settlementAsset(symbol, chainId = activeSettlementChainId()) {
   return { symbol: wanted, address, decimals };
 }
 
-export function erc8004Registries() {
+export function erc8004Registries(chainId = activeSettlementChainId()) {
+  const defaults = ERC8004_REGISTRIES_BY_CHAIN[chainId] || ERC8004_REGISTRIES_BY_CHAIN["arc-testnet"];
   return {
-    identityRegistry: process.env.ADN_ERC8004_IDENTITY_REGISTRY || ERC8004_REGISTRIES.identityRegistry,
-    reputationRegistry: process.env.ADN_ERC8004_REPUTATION_REGISTRY || ERC8004_REGISTRIES.reputationRegistry,
-    validationRegistry: process.env.ADN_ERC8004_VALIDATION_REGISTRY || ERC8004_REGISTRIES.validationRegistry
+    identityRegistry: process.env.ADN_ERC8004_IDENTITY_REGISTRY || defaults.identityRegistry,
+    reputationRegistry: process.env.ADN_ERC8004_REPUTATION_REGISTRY || defaults.reputationRegistry,
+    validationRegistry: process.env.ADN_ERC8004_VALIDATION_REGISTRY || defaults.validationRegistry
   };
+}
+
+// eip155:{chainId}:{registry} — the identifier 8004scan and the EIP use.
+export function erc8004AgentRegistryId(chainId = activeSettlementChainId()) {
+  return `eip155:${settlementChain(chainId).id}:${erc8004Registries(chainId).identityRegistry}`;
+}
+
+// 8004scan only indexes BSC, and the link must describe the chain the agent was
+// actually registered on — not whichever chain this process happens to settle
+// on now. Passing the ambient chain produced links pointing at BSC's registry
+// for agents minted on Arc.
+export function erc8004ExplorerUrl(agentId, chainId = activeSettlementChainId()) {
+  if (!agentId) return null;
+  if (!CHAINS[chainId]) return null;
+  const chain = CHAINS[chainId];
+  if (chain.id !== 56 && chain.id !== 97) return null;
+  return `https://8004scan.io/agents/${chain.id}/${erc8004Registries(chainId).identityRegistry}/${agentId}`;
 }
 
 // The network a quote advertises must be the network it settles on. Pricing used

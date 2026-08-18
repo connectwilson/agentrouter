@@ -1,9 +1,12 @@
 import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
-import { erc8004Registries } from "./chains.js";
+import { erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl, settlementChain } from "./chains.js";
 import { hashJson } from "./evidence.js";
 import { keccak256Hex } from "./keccak.js";
+
+// The EIP's own schema id; indexers key off this exact string.
+export const ERC8004_REGISTRATION_SCHEMA = "https://eips.ethereum.org/EIPS/eip-8004#registration-v1";
 
 // Kept for existing importers. The 0x8004… registries are deployed
 // deterministically at the same addresses on Arc, BSC and BSC testnet, so this
@@ -80,20 +83,26 @@ export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
   const providerId = manifest?.provider?.provider_id || "";
   const detailUrl = origin && serviceId ? `${origin}/agent-router/service?service_id=${encodeURIComponent(serviceId)}` : "";
   const feedbackUrl = origin ? `${origin}/agent-router/feedback` : "/agent-router/feedback";
+  const agentId = resolveErc8004AgentId({ serviceId, manifest });
+  // Canonical EIP-8004 registration card. The keys below are the ones indexers
+  // (8004scan) read: `type` must be the EIP's schema URL, `supportedTrust` is
+  // camelCase, and `image` is what renders the agent in a listing — we shipped
+  // a private "erc8004-agent-v1" shape with none of those, so the cards were
+  // valid JSON that no indexer could place. Our extra detail (pricing,
+  // capabilities, feedback endpoint) rides alongside; unknown keys are ignored
+  // by indexers but are what an agent reading the card directly actually needs.
   const metadata = {
-    type: "erc8004-agent-v1",
+    type: ERC8004_REGISTRATION_SCHEMA,
     name: manifest?.title || serviceId || "AgentRouter data service",
     description: manifest?.description_for_agent || "Agent-callable data API service routed by AgentRouter.",
-    agent_type: "data_provider",
-    version: "1.0.0",
-    provider: {
-      provider_id: providerId,
-      payout_address: manifest?.provider?.payout_address || manifest?.pricing?.pay_to || null
-    },
-    capabilities: manifest?.capabilities || [],
+    image: manifest?.image || manifest?.provider?.logo_url || (origin ? `${origin}/assets/brand/logo.png` : ""),
+    active: manifest?.status ? manifest.status === "published" : true,
+    x402Support: (manifest?.pricing?.protocol || "x402") === "x402",
+    supportedTrust: ["reputation", "validation"],
     services: [
       {
-        type: "agentrouter_data_api",
+        name: "agentrouter_data_api",
+        endpoint: detailUrl,
         service_id: serviceId,
         title: manifest?.title || serviceId,
         description: manifest?.description_for_agent || "",
@@ -104,24 +113,35 @@ export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
           network: manifest?.pricing?.network || null,
           payment_protocol: manifest?.pricing?.protocol || "x402"
         },
-        endpoint: detailUrl,
         feedback_endpoint: feedbackUrl
       }
     ],
-    supported_trust: ["reputation", "validation"],
     registrations: [
       {
-        chain: ARC_TESTNET.network,
-        caip2: ARC_TESTNET.caip2,
+        // Null until the identity is minted — the EIP's own cards carry null
+        // here too, since the card must exist before it can be registered.
+        agentId: agentId ? String(agentId) : null,
+        agentRegistry: erc8004AgentRegistryId(),
+        chain: settlementChain().network,
+        caip2: settlementChain().caip2,
         identity_registry: erc8004Registries().identityRegistry,
         reputation_registry: erc8004Registries().reputationRegistry,
         validation_registry: erc8004Registries().validationRegistry
       }
-    ]
+    ],
+    provider: {
+      provider_id: providerId,
+      payout_address: manifest?.provider?.payout_address || manifest?.pricing?.pay_to || null
+    },
+    capabilities: manifest?.capabilities || []
   };
-  if (resolveErc8004AgentId({ serviceId, manifest })) {
-    metadata.agent_id = resolveErc8004AgentId({ serviceId, manifest });
+  // Only once minted: a link to the registry listing tells an agent nothing
+  // about *this* service.
+  if (agentId) {
+    const explorerUrl = erc8004ExplorerUrl(agentId);
+    if (explorerUrl) metadata.explorer_url = explorerUrl;
   }
+  if (agentId) metadata.agent_id = String(agentId);
   return metadata;
 }
 
@@ -131,6 +151,23 @@ export function defaultErc8004MetadataUri({ manifest, baseUrl = "" } = {}) {
   const origin = String(process.env.ADN_ERC8004_METADATA_BASE_URL || baseUrl || "").replace(/\/$/, "");
   if (!origin || !serviceId) return "";
   return `${origin}/.well-known/erc8004/agents/${encodeURIComponent(serviceId)}.json`;
+}
+
+// A registry address with bytecode is not a registry. On BSC the reputation and
+// validation addresses hold bare UUPS placeholder proxies — owner(), initialize()
+// and nothing else — so giveFeedback would revert and burn the gas. Simulating
+// first turns a lost transaction into a reported reason.
+export async function assertRegistryImplements({ publicClient, address, abi, functionName, args, account }) {
+  try {
+    await publicClient.simulateContract({ address, abi, functionName, args, account });
+    return null;
+  } catch (error) {
+    const code = await publicClient.getBytecode({ address }).catch(() => null);
+    if (!code || code === "0x") {
+      return `No contract is deployed at ${address} on ${settlementChain().network}.`;
+    }
+    return `${address} on ${settlementChain().network} does not implement ${functionName}: ${error.shortMessage || error.message}`;
+  }
 }
 
 export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", metadataUri = "" } = {}) {
@@ -328,20 +365,41 @@ export async function submitErc8004Feedback({
       chain: ARC_TESTNET,
       transport: http(ARC_TESTNET.rpcUrls.default.http[0])
     });
+    const args = [
+      BigInt(agentId),
+      BigInt(value),
+      valueDecimals,
+      base.tag1,
+      base.tag2,
+      endpoint,
+      feedbackURI,
+      feedbackHash
+    ];
+    const unsupported = await assertRegistryImplements({
+      publicClient,
+      address: registry,
+      abi: ERC8004_REPUTATION_ABI,
+      functionName: "giveFeedback",
+      args,
+      account
+    });
+    if (unsupported) {
+      // Off-chain reputation already recorded the rating; only the on-chain
+      // mirror is unavailable, so say which and keep the feedback.
+      return {
+        ...base,
+        status: "registry_unavailable",
+        submitter,
+        registry_address: registry,
+        error: unsupported,
+        recorded_offchain: true
+      };
+    }
     const txHash = await client.writeContract({
       address: registry,
       abi: ERC8004_REPUTATION_ABI,
       functionName: "giveFeedback",
-      args: [
-        BigInt(agentId),
-        BigInt(value),
-        valueDecimals,
-        base.tag1,
-        base.tag2,
-        endpoint,
-        feedbackURI,
-        feedbackHash
-      ]
+      args
     });
     const receipt = await publicClient.waitForTransactionReceipt({
       hash: txHash,

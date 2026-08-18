@@ -1176,9 +1176,15 @@ test("published services can register ERC-8004 identity metadata and use it for 
     const metadataResponse = await fetch(`${baseUrl}/.well-known/erc8004/agents/chain_fund_flow_7d_base.json`);
     assert.equal(metadataResponse.status, 200);
     const metadata = await metadataResponse.json();
-    assert.equal(metadata.type, "erc8004-agent-v1");
+    // Indexers key off the EIP's schema id and camelCase supportedTrust; a
+    // private card shape is unreadable to them however valid the JSON is.
+    assert.equal(metadata.type, "https://eips.ethereum.org/EIPS/eip-8004#registration-v1");
+    assert.ok(metadata.image, "card must carry an image so listings can render the agent");
+    assert.deepEqual(metadata.supportedTrust, ["reputation", "validation"]);
     assert.equal(metadata.services[0].service_id, "chain_fund_flow_7d_base");
+    assert.equal(metadata.services[0].name, "agentrouter_data_api");
     assert.equal(metadata.registrations[0].chain, "arc-testnet");
+    assert.equal(metadata.registrations[0].agentRegistry, "eip155:5042002:0x8004A818BFB912233c491871b3d84c89A494BD9e");
 
     const toolManifestResponse = await fetch(`${baseUrl}/.well-known/erc8257/tools/chain_fund_flow_7d_base.json`);
     assert.equal(toolManifestResponse.status, 200);

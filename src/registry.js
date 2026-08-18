@@ -12,6 +12,7 @@ import { assertArcUsdcBalance, sendArcUsdcTransfer, isEvmAddress } from "./arc-p
 import { assertPolicyAllows, readWallet, recordPayment } from "./wallet.js";
 import { registerErc8004AgentIdentity } from "./erc8004.js";
 import { executeProviderConfig } from "./provider-runtime.js";
+import { settlementChain } from "./chains.js";
 
 export function registerService(store, manifest, baseUrl) {
   const manifestErrors = validateManifest(manifest);
@@ -198,9 +199,9 @@ function applyErc8004RegistrationToManifest(manifest, registration = {}) {
     erc8004: {
       ...(manifest.registration?.erc8004 || {}),
       standard: "ERC-8004",
-      network: registration.network || "arc-testnet",
-      caip2: registration.caip2 || "eip155:5042002",
-      chain_id: registration.chain_id || 5042002,
+      network: registration.network || settlementChain().network,
+      caip2: registration.caip2 || settlementChain().caip2,
+      chain_id: registration.chain_id || settlementChain().id,
       agent_id: registration.agent_id || manifest.registration?.erc8004?.agent_id || null,
       metadata_uri: registration.metadata_uri || manifest.registration?.erc8004?.metadata_uri || null,
       metadata_hash: registration.metadata_hash || manifest.registration?.erc8004?.metadata_hash || null,

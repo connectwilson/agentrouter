@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { ARC_TESTNET, ARC_USDC_ADDRESS, isArcNetwork } from "./arc-payment.js";
+import { settlementChain } from "./chains.js";
 import { deriveAddress } from "./wallet.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 
@@ -15,7 +16,7 @@ export function createPaymentRequirements({ serviceId, amount, currency = "USDC"
     x402_version: arc ? "arc-x402-v1" : "x402-v1",
     payment_mode: currentPaymentBackend(),
     scheme: "exact",
-    network: arc ? "arc-testnet" : network,
+    network: arc ? settlementChain().network : network,
     caip2: arc ? ARC_TESTNET.caip2 : undefined,
     chain_id: arc ? ARC_TESTNET.id : undefined,
     asset: currency,
@@ -28,14 +29,14 @@ export function createPaymentRequirements({ serviceId, amount, currency = "USDC"
     nonce: `nonce_${crypto.randomBytes(16).toString("hex")}`,
     issued_at: issuedAt.toISOString(),
     expires_at: expiresAt,
-    resource_hash: hashResource({ serviceId, amount, currency, network: arc ? "arc-testnet" : network, payTo: resolvedPayTo, inputHash }),
+    resource_hash: hashResource({ serviceId, amount, currency, network: arc ? settlementChain().network : network, payTo: resolvedPayTo, inputHash }),
     facilitator_url: DEFAULT_FACILITATOR_URL,
     settlement_model: arc ? "direct_provider_wallet" : "provider_challenge",
     expires_in_seconds: expiresInSeconds
   };
 }
 
-export function createArcPaymentProof({ wallet, serviceId, amount, currency = "USDC", network = "arc-testnet", payTo, challenge, tx }) {
+export function createArcPaymentProof({ wallet, serviceId, amount, currency = "USDC", network = settlementChain().network, payTo, challenge, tx }) {
   const issuedAt = new Date().toISOString();
   const payload = {
     x402_version: "arc-x402-v1",

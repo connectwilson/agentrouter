@@ -1,3 +1,5 @@
+import { settlementChain, erc8004Registries, erc8004ExplorerUrl } from "./chains.js";
+
 export function createMemoryStore() {
   return {
     providers: new Map(),
@@ -440,6 +442,7 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
       source_provenance_level: summarizeProvenance(record).source_provenance_level,
       health_status: summarizeHealth(record).status,
       reputation: publicReputation(record, trust),
+      erc8004: publicErc8004(record),
       badges: publicRecord.badges
     };
   });
@@ -573,6 +576,7 @@ export function publicServiceSummary(record) {
     health_status: health.status,
     source_provenance_level: summarizeProvenance(record).source_provenance_level,
     reputation: publicReputation(record, trust, health),
+    erc8004: publicErc8004(record),
     created_at: record.created_at || null,
     updated_at: record.updated_at || null
   };
@@ -582,6 +586,25 @@ export function publicServiceSummary(record) {
 // from — one happy call is not a 100% service — so the count travels with them,
 // and a service with no feedback says so instead of showing a flattering
 // default. Aggregates only: never buyer identity or the queries they ran.
+// On-chain identity for the card. A service can advertise ERC-8004 support and
+// still not be registered, so this is null until an agentId actually exists —
+// a badge for an unminted identity would be a claim we cannot back.
+export function publicErc8004(record) {
+  const registration = record?.manifest?.registration?.erc8004;
+  const agentId = registration?.agent_id || record?.manifest?.provider?.erc8004_agent_id || null;
+  if (!agentId) return null;
+  const chain = registration?.network || settlementChain().network;
+  return {
+    agent_id: String(agentId),
+    chain,
+    chain_id: registration?.chain_id || settlementChain().id,
+    registry: registration?.identity_registry || erc8004Registries(chain).identityRegistry,
+    // Null off BSC: 8004scan indexes nothing else, and a link that 404s is
+    // worse than no link.
+    explorer_url: erc8004ExplorerUrl(String(agentId), chain)
+  };
+}
+
 export function publicReputation(record, trust = null, health = null) {
   const resolvedTrust = trust || summarizeTrust(record);
   const resolvedHealth = health || (record?.manifest ? summarizeHealth(record) : { status: "unknown", circuit_breaker: null });

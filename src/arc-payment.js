@@ -30,13 +30,30 @@ const ERC20_ABI = [
   }
 ];
 
-export function isArcNetwork(network) {
+// Recognises the chain this deployment actually settles on. Hardcoding Arc here
+// meant a BSC payment proof was rejected as a foreign network, which blocked
+// settlement on any chain but Arc. The Arc aliases stay accepted so existing
+// proofs and stored challenges keep verifying.
+export function isSettlementNetwork(network, chain = settlementChain()) {
   const normalized = String(network || "").toLowerCase();
-  return normalized === "arc" || normalized === "arc-testnet" || normalized === "eip155:5042002" || normalized === "5042002";
+  if (!normalized) return false;
+  const accepted = new Set([
+    chain.network.toLowerCase(),
+    chain.caip2.toLowerCase(),
+    String(chain.id),
+    "arc",
+    "arc-testnet",
+    "eip155:5042002",
+    "5042002"
+  ]);
+  return accepted.has(normalized);
 }
 
+// Kept as the historical name; callers gate settlement on it.
+export const isArcNetwork = isSettlementNetwork;
+
 export function normalizeArcNetwork(network) {
-  return isArcNetwork(network) ? "arc-testnet" : String(network || "arc-testnet");
+  return isSettlementNetwork(network) ? settlementChain().network : String(network || settlementChain().network);
 }
 
 export function arcAmountAtomic(amount) {
@@ -56,7 +73,7 @@ export async function getArcUsdcBalance(address) {
     return {
       address,
       chain_id: ARC_TESTNET.id,
-      network: "arc-testnet",
+      network: settlementChain().network,
       asset: "USDC",
       token_address: ARC_USDC_ADDRESS,
       amount: formatUnits(amountAtomic, ARC_USDC_DECIMALS),
@@ -86,7 +103,7 @@ export async function getArcUsdcBalance(address) {
   return {
     address,
     chain_id: ARC_TESTNET.id,
-    network: "arc-testnet",
+    network: settlementChain().network,
     asset: "USDC",
     token_address: ARC_USDC_ADDRESS,
     amount: formatUnits(amountAtomic, ARC_USDC_DECIMALS),
@@ -103,7 +120,7 @@ export async function assertArcUsdcBalance({ wallet, payment }) {
     error.status = "wallet_needs_funding";
     error.wallet = {
       address: wallet.address,
-      network: "arc-testnet",
+      network: settlementChain().network,
       chain_id: ARC_TESTNET.id,
       asset: "USDC",
       token_address: ARC_USDC_ADDRESS,
@@ -130,7 +147,7 @@ export async function sendArcUsdcTransfer({ wallet, payment }) {
     return {
       tx_hash: txHash,
       chain_id: ARC_TESTNET.id,
-      network: "arc-testnet",
+      network: settlementChain().network,
       asset: "USDC",
       token_address: ARC_USDC_ADDRESS,
       amount: payment.amount,
@@ -168,7 +185,7 @@ export async function sendArcUsdcTransfer({ wallet, payment }) {
   return {
     tx_hash: txHash,
     chain_id: ARC_TESTNET.id,
-    network: "arc-testnet",
+    network: settlementChain().network,
     asset: "USDC",
     token_address: ARC_USDC_ADDRESS,
     amount: payment.amount,

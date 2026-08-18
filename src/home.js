@@ -655,14 +655,15 @@ export function agentHtml({ auth = {} } = {}) {
         function showSkeleton() {
           const skeletonCard = (key) =>
             '<div class="api-card skeleton-card" data-key="' + key + '">' +
-              '<div class="api-top"><span class="sk sk-badge"></span><span class="sk sk-heart"></span></div>' +
-              '<div class="api-main"><div class="sk sk-logo"></div><div class="api-main-txt">' +
+              '<div class="api-top"><span class="sk sk-badge"></span></div>' +
+              '<div class="api-heading"><div class="sk sk-logo"></div><div class="api-main-txt">' +
                 '<span class="sk sk-title"></span>' +
                 '<span class="sk sk-line"></span>' +
-                '<span class="sk sk-line short"></span>' +
               '</div></div>' +
-              '<div class="pill-row sk-row"><span class="sk sk-pill"></span><span class="sk sk-pill"></span><span class="sk sk-pill"></span></div>' +
-              '<div class="stat-row sk-row"><span class="sk sk-pill"></span><span class="sk sk-pill"></span><span class="sk sk-pill"></span><span class="sk sk-pill"></span></div>' +
+              '<span class="sk sk-line"></span><span class="sk sk-line short"></span>' +
+              '<div class="api-core-metrics"><span class="sk sk-metric"></span><span class="sk sk-metric"></span></div>' +
+              '<div class="api-performance sk-row"><span class="sk sk-stat"></span><span class="sk sk-stat"></span><span class="sk sk-stat"></span><span class="sk sk-stat"></span></div>' +
+              '<div class="pill-row sk-row"><span class="sk sk-pill"></span><span class="sk sk-pill"></span></div>' +
               '<span class="sk sk-link"></span>' +
             '</div>';
           document.getElementById("agent-api-cards").innerHTML = Array.from({ length: 6 }, (_, i) => skeletonCard(i)).join("");
@@ -700,12 +701,16 @@ export function agentHtml({ auth = {} } = {}) {
         function builtInCapabilityCard(capability) {
           const platforms = (capability.platforms || []).map((platform) => '<span class="pill">' + escapeHtml(platform) + '</span>').join("");
           return '<article class="api-card builtin-capability-card">' +
-            '<div class="api-top"><span class="type-badge">Use browser</span><span class="heart">◌</span></div>' +
-            '<div class="api-main"><div class="logo">⌁</div><div><h3>' + escapeHtml(capability.title) + '</h3><p>' + escapeHtml(capability.description) + '</p></div></div>' +
-            '<div class="pill-row">' + platforms + '</div>' +
-            '<div class="stat-row"><span class="stat-pill"><b>Price</b> Free</span></div>' +
-            '<div class="byline"><span>Read-only · local connector</span><span>' + escapeHtml(capability.credential_policy === "never_upload" ? "Credentials stay local" : capability.credential_policy || "") + '</span></div>' +
-            '<span class="detail-link">' + escapeHtml(capability.connector_status === "local_connector_required" ? "Connect browser to use" : "Ready to use") + '</span>' +
+            '<div class="api-top"><span class="type-badge">Use browser</span></div>' +
+            '<div class="api-heading"><div class="logo">⌁</div><div><h3>' + escapeHtml(capability.title) + '</h3><div class="byline"><span>Local connector</span></div></div></div>' +
+            '<p class="api-description">' + escapeHtml(capability.description) + '</p>' +
+            '<div class="api-core-metrics">' +
+              '<div class="api-price"><span>Price</span><strong>Free</strong><small>Local read</small></div>' +
+              '<div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>—</strong><small>Not rated</small></div></div>' +
+            '</div>' +
+            '<div class="api-performance"><div><strong>Read-only</strong><span>Access</span></div><div><strong>Local</strong><span>Execution</span></div></div>' +
+            '<div class="api-card-footer"><div class="pill-row">' + platforms + '</div>' +
+            '<span class="detail-link">' + escapeHtml(capability.connector_status === "local_connector_required" ? "Connect browser" : "Ready to use") + ' →</span></div>' +
           '</article>';
         }
         function externalApiSourceCard(source) {
@@ -1237,62 +1242,59 @@ function serviceClientScript() {
       try { return await fetch("/agent-router/stats").then((res) => res.json()); }
       catch { return { registered_services: 0, verified_services: 0, total_calls: 0, services: [] }; }
     }
-    // A rate without its sample is misleading: one happy call is not a 100%
-    // service. Show the count alongside, and say plainly when there is nothing.
-    function reputationRow(reputation) {
-      if (!reputation) return "";
-      if (reputation.quarantined) {
-        return '<div class="rep-row rep-quarantined">Quarantined' +
-          (reputation.quarantine_reason ? ": " + escapeHtml(reputation.quarantine_reason) : "") + '</div>';
-      }
-      const pct = (value) => value == null ? "--" : Math.round(value * 100) + "%";
-      if (!reputation.has_agent_ratings) {
-        // Calls without ratings are still a track record; do not claim silence.
-        if (!reputation.call_count) return '<div class="rep-row rep-empty">No calls yet</div>';
-        return '<div class="rep-row">' +
-          '<span class="rep-pill"><b>Success</b> ' + pct(reputation.success_rate) + '</span>' +
-          '<span class="rep-sample">' + reputation.call_count + ' call' + (reputation.call_count === 1 ? "" : "s") + ' · no agent ratings yet</span>' +
-          '</div>';
-      }
-      const size = reputation.sample_size;
-      return '<div class="rep-row">' +
-        '<span class="rep-pill"><b>Intent fit</b> ' + pct(reputation.intent_fit_rate) + '</span>' +
-        '<span class="rep-pill"><b>Useful</b> ' + pct(reputation.usefulness_rate) + '</span>' +
-        '<span class="rep-sample">from ' + size + ' agent rating' + (size === 1 ? "" : "s") + '</span>' +
-        '</div>';
-    }
-
     function apiCard(service, options = {}) {
       const title = service.display_title || service.title || service.service_id;
       const description = service.description_for_agent || "Agent-callable data API with verified response envelope.";
       const logo = initials(title);
+      const reputation = service.reputation || {};
+      const priceValue = service.price_label
+        ? escapeHtml(service.price_label)
+        : formatUsdc(Number(service.price || 0)) + " " + escapeHtml(service.currency || "USDC");
       const selected = options.selected ? " selected" : "";
       const detailHref = "/agent-router/service?service_id=" + encodeURIComponent(service.service_id);
       const tagName = options.link ? "a" : "article";
       const hrefAttr = options.link ? ' href="' + detailHref + '"' : "";
       return \`
         <\${tagName} class="api-card\${selected}" data-service-id="\${escapeAttr(service.service_id)}"\${hrefAttr}>
-          <div class="api-top"><span class="type-badge">API</span><span class="heart">♡</span></div>
-          <div class="api-main">
+          <div class="api-top"><span class="type-badge">API</span>\${erc8004Badge(service.erc8004, options.link)}</div>
+          <div class="api-heading">
             <div class="logo">\${escapeHtml(logo)}</div>
             <div>
               <h3>\${escapeHtml(title)}</h3>
-              <p>\${escapeHtml(truncate(description, 106))}</p>
               <div class="byline"><span>By \${escapeHtml(service.provider_id || "provider")}</span><span>Updated now</span></div>
-              <div class="stat-row">
-                <span class="stat-pill"><b>Price</b> \${service.price_label ? escapeHtml(service.price_label) : formatUsdc(Number(service.price || 0)) + " " + escapeHtml(service.currency || "USDC")}</span>
-                <span class="stat-pill"><b>Calls</b> \${formatCount(service.total_calls)}</span>
-                <span class="stat-pill"><b>Success</b> \${formatSuccessRate(service.success_rate)}</span>
-                <span class="stat-pill"><b>Trust</b> \${formatRating(service.trust_score)}</span>
-                <span class="stat-pill"><b>Ratings</b> \${service.reputation ? service.reputation.sample_size : 0}</span>
-              </div>
-              \${reputationRow(service.reputation)}
-              <div class="pill-row">\${renderPills(service.capabilities || [])}</div>
-              \${options.human ? '<div class="actions"><a class="button ghost" href="/studio?service_id=' + encodeURIComponent(service.service_id) + '">Edit</a><a class="button" href="/agent-router/service?service_id=' + encodeURIComponent(service.service_id) + '">Details</a></div>' : '<span class="detail-link">View service details</span>'}
             </div>
+          </div>
+          <p class="api-description">\${escapeHtml(truncate(description, 132))}</p>
+          <div class="api-core-metrics">
+            <div class="api-price"><span>Price</span><strong>\${priceValue}</strong><small>Per call</small></div>
+            <div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>\${formatTrustScore(service.trust_score)}</strong><small>Trust score</small></div></div>
+          </div>
+          <div class="api-performance" aria-label="Service performance">
+            <div><strong>\${formatCount(service.total_calls)}</strong><span>Calls</span></div>
+            <div><strong>\${formatSuccessRate(service.success_rate)}</strong><span>Success</span></div>
+            <div><strong>\${formatSuccessRate(reputation.intent_fit_rate)}</strong><span>Intent fit</span></div>
+            <div><strong>\${formatSuccessRate(reputation.usefulness_rate)}</strong><span>Useful</span></div>
+          </div>
+          <div class="api-card-footer">
+            <div class="pill-row">\${renderPills(service.capabilities || [])}</div>
+            \${options.human ? '<div class="actions"><a class="button ghost" href="/studio?service_id=' + encodeURIComponent(service.service_id) + '">Edit</a><a class="button" href="/agent-router/service?service_id=' + encodeURIComponent(service.service_id) + '">Details</a></div>' : '<span class="detail-link">View details →</span>'}
           </div>
         </\${tagName}>
       \`;
+    }
+    // An on-chain identity is only worth showing if it resolves to something a
+    // reader can check, so the badge links to the registry entry rather than
+    // just asserting "ERC-8004". Inside a card that is itself an anchor it must
+    // stay a span: nested anchors are invalid HTML, and the parser unwinds them
+    // into a card whose contents escape the card.
+    function erc8004Badge(identity, insideLink) {
+      if (!identity || !identity.agent_id) return "";
+      const label = "ERC-8004 #" + escapeHtml(identity.agent_id);
+      if (insideLink || !identity.explorer_url) {
+        return '<span class="chain-badge" title="Registered on-chain as agent #' + escapeAttr(identity.agent_id) + '">' + label + '</span>';
+      }
+      return '<a class="chain-badge" href="' + escapeAttr(identity.explorer_url) +
+        '" target="_blank" rel="noopener noreferrer" title="View this agent on 8004scan">' + label + ' \u2197</a>';
     }
     function renderPills(tags) {
       const visible = tags.slice(0, 4);
@@ -1300,9 +1302,9 @@ function serviceClientScript() {
         (tags.length > visible.length ? '<span class="pill">+' + (tags.length - visible.length) + '</span>' : "");
     }
     function serviceRevenue(service) { return Number(service.price || 0) * Number(service.total_calls || 0); }
-    function formatRating(value) {
-      if (value == null) return "--";
-      return Math.min(10, Math.max(0, Number(value) * 10)).toFixed(1);
+    function formatTrustScore(value) {
+      if (value == null || Number.isNaN(Number(value))) return "—";
+      return Math.round(Math.max(0, Math.min(1, Number(value))) * 100) + "/100";
     }
     function formatSuccessRate(value) {
       if (value == null || Number.isNaN(Number(value))) return "--";

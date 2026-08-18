@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 import { readJson, readRawBody, sendHtml, sendJson, sendNotFound, getRequestBaseUrl } from "./http-utils.js";
-import { assertSettlementChainReady } from "./chains.js";
+import { assertSettlementChainReady, settlementChain, erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl } from "./chains.js";
 import { createMemoryStore, listServiceCategoryCounts, listServiceSummaries, publicServiceRecord, publicSampleResponse, publicValidationRun, summarizeHomeStats, summarizeRegistryStats } from "./store.js";
 import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.js";
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
@@ -3187,9 +3187,9 @@ function createConsumerRequiredErc8004Feedback({ feedbackResult, record, provide
     standard: "ERC-8004",
     registry_type: "reputation",
     event_type: "AgentRouterConsumerFeedback",
-    network: "arc-testnet",
-    caip2: "eip155:5042002",
-    chain_id: 5042002,
+    network: settlementChain().network,
+    caip2: settlementChain().caip2,
+    chain_id: settlementChain().id,
     agent_id: agentId ? String(agentId) : null,
     service_id: feedbackResult.service_id,
     provider_id: providerId,

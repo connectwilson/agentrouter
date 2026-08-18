@@ -1,5 +1,6 @@
 import { isArcNetwork, isEvmAddress, verifyArcUsdcTransfer } from "./arc-payment.js";
 import { createPaymentRequirements, verifyPaymentProof } from "./payment.js";
+import { settlementChain } from "./chains.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { hashJson } from "./evidence.js";
 import { createEnvelope, readProviderConfig } from "./provider-config.js";
@@ -294,7 +295,7 @@ async function requirePaymentOrRespond({ req, res, store, baseUrl = "", serviceI
       serviceId,
       amount,
       currency,
-      network: currentPaymentBackend() === "circle_arc" ? "arc-testnet" : network,
+      network: currentPaymentBackend() === "circle_arc" ? settlementChain().network : network,
       payTo,
       inputHash,
       preflight
@@ -306,12 +307,12 @@ async function requirePaymentOrRespond({ req, res, store, baseUrl = "", serviceI
     return { ok: false };
   }
 
-  const verification = await verifyPaymentWithChallenge(paymentProof, { serviceId, amount, currency, network: currentPaymentBackend() === "circle_arc" ? "arc-testnet" : network });
+  const verification = await verifyPaymentWithChallenge(paymentProof, { serviceId, amount, currency, network: currentPaymentBackend() === "circle_arc" ? settlementChain().network : network });
   if (!verification.ok) {
     sendJson(res, 402, {
       error: "Invalid Payment",
       code: verification.error,
-      payment: createPaymentRequirements({ serviceId, amount, currency, network: currentPaymentBackend() === "circle_arc" ? "arc-testnet" : network, payTo, inputHash })
+      payment: createPaymentRequirements({ serviceId, amount, currency, network: currentPaymentBackend() === "circle_arc" ? settlementChain().network : network, payTo, inputHash })
     });
     return { ok: false };
   }

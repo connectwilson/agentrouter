@@ -78,16 +78,87 @@ test("advertised pricing network matches where funds actually settle", async () 
   });
 });
 
-test("ERC-8004 registries are shared across chains and overridable", async () => {
-  await withChain("bsc", ({ erc8004Registries }) => {
+test("ERC-8004 registries resolve per chain and stay overridable", async () => {
+  await withChain("bsc", ({ erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl }) => {
   const registries = erc8004Registries();
-  // Verified on chain: the same 0x8004… addresses answer on Arc, BSC and BSC
-  // testnet, so switching chains needs no redeployment.
   for (const address of Object.values(registries)) {
     assert.match(address, /^0x8004[0-9a-fA-F]{36}$/);
   }
+  // BSC's identity registry is a different contract from Arc's. An earlier
+  // version assumed one address served every chain because it had bytecode on
+  // BSC — but that contract is not the ERC-721 agent registry, so every card
+  // pointed at the wrong place.
+  assert.equal(registries.identityRegistry, "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432");
+  assert.equal(erc8004AgentRegistryId(), "eip155:56:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432");
+  assert.equal(erc8004ExplorerUrl("7"), "https://8004scan.io/agents/56/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432/7");
   process.env.ADN_ERC8004_IDENTITY_REGISTRY = "0x1111111111111111111111111111111111111111";
   assert.equal(erc8004Registries().identityRegistry, "0x1111111111111111111111111111111111111111");
   delete process.env.ADN_ERC8004_IDENTITY_REGISTRY;
   });
+});
+
+test("payment proofs verify on whatever chain settles, not only Arc", async () => {
+  // isArcNetwork gated settlement and only ever matched Arc, so a BSC proof was
+  // rejected as a foreign network and BSC could not settle at all.
+  await withChain("bsc", async () => {
+    const { isArcNetwork, normalizeArcNetwork } = await import("../src/arc-payment.js");
+    for (const network of ["bsc", "eip155:56", "56"]) {
+      assert.equal(isArcNetwork(network), true, `${network} must be accepted while settling on BSC`);
+    }
+    // Arc aliases stay valid so stored challenges keep verifying after a switch.
+    assert.equal(isArcNetwork("arc-testnet"), true);
+    assert.equal(isArcNetwork("base"), false);
+    assert.equal(isArcNetwork(""), false);
+    assert.equal(normalizeArcNetwork("bsc"), "bsc");
+  });
+});
+
+test("quotes and ERC-8004 cards advertise the settling chain", async () => {
+  await withChain("bsc", async () => {
+    const { createPaymentRequirements } = await import("../src/payment.js");
+    const quote = createPaymentRequirements({ serviceId: "svc", amount: "0.01", network: "bsc", payTo: `0x${"a".repeat(40)}` });
+    assert.equal(quote.network, "bsc");
+    assert.equal(quote.chain_id, 56);
+    assert.equal(quote.caip2, "eip155:56");
+
+    const { createErc8004AgentMetadata } = await import("../src/erc8004.js");
+    const card = createErc8004AgentMetadata({ manifest: { service_id: "svc", title: "Svc" }, baseUrl: "https://agentrouter.network" });
+    assert.equal(card.registrations[0].caip2, "eip155:56");
+    assert.equal(card.registrations[0].agentId, null, "unminted cards carry a null agentId, as the EIP's own cards do");
+  });
+});
+
+test("a placeholder registry is reported, not paid for in gas", async () => {
+  // BSC's reputation and validation addresses hold bare UUPS proxies with no
+  // business logic. Bytecode at an address proves nothing about what it does,
+  // so the write is simulated first rather than broadcast into a revert.
+  const { assertRegistryImplements } = await import("../src/erc8004.js");
+  const reverting = {
+    simulateContract: async () => { throw Object.assign(new Error("execution reverted"), { shortMessage: "execution reverted" }); },
+    getBytecode: async () => "0x60806040"
+  };
+  const message = await assertRegistryImplements({ publicClient: reverting, address: "0x8004B663056A597Dffe9eCcC1965A193B7388713", functionName: "giveFeedback" });
+  assert.match(message, /does not implement giveFeedback/);
+
+  const empty = { ...reverting, getBytecode: async () => "0x" };
+  assert.match(await assertRegistryImplements({ publicClient: empty, address: "0xdead", functionName: "giveFeedback" }), /No contract is deployed/);
+
+  const working = { simulateContract: async () => ({ result: 1n }), getBytecode: async () => "0x60806040" };
+  assert.equal(await assertRegistryImplements({ publicClient: working, address: "0xok", functionName: "register" }), null);
+});
+
+test("an agent's explorer link follows the chain it was registered on", async () => {
+  const { publicErc8004 } = await import("../src/store.js");
+  const onArc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "22197", network: "arc-testnet", chain_id: 5042002 } } } });
+  // 8004scan indexes BSC only. Linking an Arc agent into BSC's registry — which
+  // is what using the ambient chain did — produces a link to a different agent.
+  assert.equal(onArc.explorer_url, null);
+  assert.equal(onArc.registry, "0x8004A818BFB912233c491871b3d84c89A494BD9e");
+
+  const onBsc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "7", network: "bsc", chain_id: 56 } } } });
+  assert.equal(onBsc.explorer_url, "https://8004scan.io/agents/56/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432/7");
+
+  // No identity until one is actually minted.
+  assert.equal(publicErc8004({ manifest: { registration: { erc8004: {} } } }), null);
+  assert.equal(publicErc8004({}), null);
 });

@@ -67,18 +67,25 @@ test("agent hub exposes callable AI Search API sources as one category", () => {
   assert.match(hub, /return apiCard\(source, \{ link: true \}\)/);
   assert.match(hub, /service\.price_label/);
   assert.match(hub, /if \(value == null\) return "--"/);
-  assert.match(hub, /Calls<\/b>/);
-  assert.match(hub, /Success<\/b>/);
-  assert.match(hub, /Trust<\/b>/);
+  assert.match(hub, /class="api-core-metrics"/);
+  assert.match(hub, /class="api-price"/);
+  assert.match(hub, /class="api-trust"/);
+  assert.match(hub, /formatTrustScore\(service\.trust_score\)/);
+  assert.match(hub, />Calls<\/span>/);
+  assert.match(hub, />Success<\/span>/);
+  assert.doesNotMatch(hub, /class="heart"/);
+  assert.doesNotMatch(hub, /class="[^"]*sk-heart/);
   assert.doesNotMatch(hub, /Connection required/);
   assert.doesNotMatch(hub, /Connect API to use/);
 });
 
-test("agent hub browser capability cards keep compact content height", () => {
+test("agent hub browser capability cards share the emphasized price and trust layout", () => {
   const hub = agentHtml({});
 
-  assert.match(hub, /\.builtin-capability-card \.api-main\{flex:0 0 auto\}/);
-  assert.match(hub, /\.builtin-capability-card \.detail-link\{[^}]*display:inline-block/);
+  assert.match(hub, /<strong>Free<\/strong><small>Local read<\/small>/);
+  assert.match(hub, /<strong>—<\/strong><small>Not rated<\/small>/);
+  assert.match(hub, /\.api-card\.builtin-capability-card\{min-height:390px\}/);
+  assert.match(hub, /\.builtin-capability-card \.api-performance\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/);
 });
 
 test("agent hub service grid keeps three equal columns without content-driven overflow", () => {
@@ -86,5 +93,5 @@ test("agent hub service grid keeps three equal columns without content-driven ov
 
   assert.match(hub, /\.market-shell\.list-only > section \{ min-width:0; \}/);
   assert.match(hub, /\.market-grid > \.api-card \{ width:100%; min-width:0; \}/);
-  assert.match(hub, /\.api-main > div:last-child \{ min-width:0; \}/);
+  assert.match(hub, /\.api-heading>div:last-child\{min-width:0\}/);
 });
