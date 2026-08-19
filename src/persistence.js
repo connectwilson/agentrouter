@@ -224,12 +224,37 @@ export async function upsertPersistentCreditAccount(account) {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `insert into adn_credit_accounts (account_id, owner_key, user_profile, updated_at)
-     values ($1, $2, $3::jsonb, now())
+    `insert into adn_credit_accounts (account_id, owner_key, user_profile, settings, deposit_address, updated_at)
+     values ($1, $2, $3::jsonb, $4::jsonb, $5, now())
      on conflict (owner_key)
-     do update set user_profile = excluded.user_profile, updated_at = now()
-     returning account_id, owner_key, user_profile, created_at, updated_at`,
-    [account.account_id, account.owner_key, JSON.stringify(account.user_profile || {})]
+     do update set
+       user_profile = excluded.user_profile,
+       settings = excluded.settings,
+       -- Once bound, a deposit address is never cleared by a later write that
+       -- happens not to carry one.
+       deposit_address = coalesce(excluded.deposit_address, adn_credit_accounts.deposit_address),
+       updated_at = now()
+     returning account_id, owner_key, user_profile, settings, deposit_address, created_at, updated_at`,
+    [
+      account.account_id,
+      account.owner_key,
+      JSON.stringify(account.user_profile || {}),
+      JSON.stringify(account.settings || {}),
+      account.deposit_address || null
+    ]
+  );
+  return result.rows[0] || null;
+}
+
+export async function readPersistentCreditAccountByDepositAddress(depositAddress) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select account_id, owner_key, user_profile, settings, deposit_address, created_at, updated_at
+     from adn_credit_accounts
+     where deposit_address = $1`,
+    [String(depositAddress || "").toLowerCase()]
   );
   return result.rows[0] || null;
 }
@@ -239,7 +264,7 @@ export async function readPersistentCreditAccountByOwner(ownerKey) {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `select account_id, owner_key, user_profile, created_at, updated_at
+    `select account_id, owner_key, user_profile, settings, deposit_address, created_at, updated_at
      from adn_credit_accounts
      where owner_key = $1`,
     [ownerKey]
@@ -447,6 +472,13 @@ async function ensureSchema(pool) {
     );
     alter table adn_credit_api_keys add column if not exists auth_method text not null default 'api_key';
     alter table adn_credit_api_keys add column if not exists client_name text;
+    alter table adn_credit_accounts add column if not exists settings jsonb not null default '{}'::jsonb;
+    -- The sending address of a crypto deposit binds to the account that first
+    -- claimed from it. Unique so two accounts can never claim the same wallet,
+    -- which is what stops a deposit being credited to whoever saw it first.
+    alter table adn_credit_accounts add column if not exists deposit_address text;
+    create unique index if not exists adn_credit_accounts_deposit_address_idx
+      on adn_credit_accounts (deposit_address) where deposit_address is not null;
     create table if not exists adn_credit_ledger (
       entry_id text primary key,
       account_id text not null references adn_credit_accounts(account_id),

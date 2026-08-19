@@ -23,10 +23,11 @@ import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
-import { authenticateCreditRequest, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey } from "./credits.js";
+import { accountSpendLimit, authenticateCreditRequest, bindDepositAddress, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, findAccountByDepositAddress, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey, setAccountSpendLimit } from "./credits.js";
 import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
+import { claimCryptoTopup, cryptoTopupInstructions } from "./credit-crypto.js";
 import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
 import { searchPublicDiscussions } from "./research-search.js";
 import { getSocialProviderHealth } from "./research-social-providers.js";
@@ -449,6 +450,39 @@ async function routeRequest(req, res, store, baseUrl, {
       keyId: decodeURIComponent(revokeKeyMatch[1])
     });
     sendJson(res, 200, revoked);
+    return;
+  }
+
+  // What to send, where, on which chain. Fetched before paying, so the address
+  // and chain come from the server rather than being retyped from a chat.
+  if (req.method === "GET" && url.pathname === "/account/credits/deposit") {
+    sendJson(res, 200, cryptoTopupInstructions());
+    return;
+  }
+
+  // Claiming a deposit that already happened on chain.
+  if (req.method === "POST" && url.pathname === "/account/credits/deposit") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to claim a deposit.");
+    const body = await readJson(req);
+    const account = await ensureCreditAccount(store, auth.user);
+    const claimed = await claimCryptoTopup(store, {
+      account,
+      txHash: body.tx_hash || body.txHash,
+      findAccountByDepositAddress: (address) => findAccountByDepositAddress(store, address),
+      bindDepositAddress: (acct, address) => bindDepositAddress(store, acct, address)
+    });
+    sendJson(res, 201, claimed);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/account/credits/limit") {
+    if (!auth.user) return sendAuthRequired(res, "Sign in to change the per-call limit.");
+    const body = await readJson(req);
+    const account = await ensureCreditAccount(store, auth.user);
+    sendJson(res, 200, await setAccountSpendLimit(store, {
+      account,
+      maxPricePerCall: body.max_price_per_call ?? body.maxPricePerCall
+    }));
     return;
   }
 
@@ -2194,7 +2228,9 @@ function buildAccountDashboard({ account, balance, ledger = [], apiKeys = [] }) 
   return {
     account: {
       account_id: account.account_id,
-      user_profile: account.user_profile || {}
+      user_profile: account.user_profile || {},
+      max_price_per_call: accountSpendLimit(account),
+      deposit_address: account.deposit_address || null
     },
     summary: {
       available_credits: balance,

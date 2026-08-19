@@ -1054,7 +1054,7 @@ export function accountHtml({ auth = {} } = {}) {
         .dash-view[hidden] { display:none; }.dash-section { margin-top:14px; }.dash-form { display:grid; gap:13px; }.dash-form label { color:#c1d0c8; font-size:12px; font-weight:750; }.dash-form-row { display:flex; gap:10px; }.dash-form input { min-width:0; flex:1; border:1px solid #365146; border-radius:7px; background:#081210; color:var(--dash-text); padding:12px 13px; outline:0; }.dash-form input:focus { border-color:var(--dash-accent); box-shadow:0 0 0 3px rgba(131,247,192,.11); }.dash-button { border:1px solid var(--dash-accent); border-radius:7px; background:var(--dash-accent); color:#07120d; padding:0 15px; font:inherit; font-size:12px; font-weight:850; cursor:pointer; white-space:nowrap; }.dash-button:disabled { cursor:wait; opacity:.65; }.dash-button.secondary { background:transparent; color:var(--dash-accent); }.dash-status { margin:14px 0 0; min-height:20px; color:var(--dash-muted); font-size:13px; }.dash-status.error { color:#ffaaa2; }.dash-key-result { display:grid; gap:10px; margin-top:16px; padding:15px; border:1px solid #33715c; border-radius:8px; background:#10251e; color:#d8eee2; }.dash-key-result code { overflow-wrap:anywhere; color:#b4ffd7; font:12px var(--font-mono); }
         .dash-key-table { width:100%; border-collapse:collapse; }.dash-key-table th, .dash-key-table td { padding:13px 10px; border-bottom:1px solid var(--dash-line); color:#aebeb6; text-align:left; font-size:13px; }.dash-key-table th { color:#708279; font-size:11px; letter-spacing:.07em; text-transform:uppercase; }.dash-key-table td:first-child { color:var(--dash-text); font-weight:650; }.dash-badge { display:inline-flex; padding:4px 7px; border-radius:99px; background:#173126; color:var(--dash-accent); font-size:11px; font-weight:800; }
         /* Dashboard intentionally reuses the public site's visual tokens. */
-        .ar-dashboard { background:var(--dash-bg); }.dash-sidebar { background:var(--color-panel); }.dash-workspace, .dash-panel, .dash-notice, .dash-action, .dash-form input, .dash-key-result { border-radius:0; }.dash-workspace { background:#fff; }.dash-workspace small { color:var(--dash-text); }.dash-nav-label { color:var(--dash-muted); }.dash-nav button { border-radius:0; color:var(--dash-muted); }.dash-nav button:hover, .dash-nav button[aria-selected="true"] { background:var(--color-accent); color:var(--color-accent-ink); }.dash-nav button span { color:inherit; }.dash-avatar { background:var(--color-accent-cool); color:var(--dash-text); }.dash-notice { border-color:var(--dash-line); background:var(--color-soft); color:var(--dash-text); }.dash-notice b, .dash-notice a { color:var(--dash-text); }.dash-metric::after { border-color:var(--dash-line); }.dash-metric small, .dash-row small { color:var(--dash-muted); }.dash-metric.accent strong { color:var(--dash-text); }.dash-card p, .dash-service-top, .dash-action, .dash-form label, .dash-key-table th, .dash-key-table td { color:var(--dash-muted); }.dash-row strong, .dash-service-top, .dash-action b, .dash-key-table td:first-child { color:var(--dash-text); }.dash-credit { color:#19733a; }.dash-debit, .dash-status.error { color:#9b401b; }.dash-service-bar { background:var(--color-soft); border-radius:0; }.dash-service-bar i { border-radius:0; background:var(--color-accent); }.dash-action { background:#fff; }.dash-action:hover { border-color:var(--color-strong-line); background:var(--color-soft); }.dash-action i { color:var(--dash-text); }.dash-form input { border-color:var(--dash-line); background:#fff; color:var(--dash-text); }.dash-form input:focus { border-color:var(--color-strong-line); box-shadow:none; }.dash-button { border:2px solid var(--dash-text); border-radius:0; background:var(--color-accent); color:var(--color-accent-ink); }.dash-button.secondary { background:#fff; color:var(--dash-text); }.dash-key-result { border-color:var(--dash-line); background:var(--color-soft); color:var(--dash-text); }.dash-key-result code { color:var(--dash-text); }.dash-badge { border-radius:0; background:var(--color-accent); color:var(--color-accent-ink); }
+        .ar-dashboard { background:var(--dash-bg); }.dash-sidebar { background:var(--color-panel); }.dash-workspace, .dash-panel, .dash-notice, .dash-action, .dash-form input, .dash-key-result { border-radius:0; }.dash-workspace { background:var(--color-panel); }.dash-workspace small { color:var(--dash-text); }.dash-nav-label { color:var(--dash-muted); }.dash-nav button { border-radius:0; color:var(--dash-muted); }.dash-nav button:hover, .dash-nav button[aria-selected="true"] { background:var(--color-accent); color:var(--color-accent-ink); }.dash-nav button span { color:inherit; }.dash-avatar { background:var(--color-accent-cool); color:var(--dash-text); }.dash-notice { border-color:var(--dash-line); background:var(--color-soft); color:var(--dash-text); }.dash-notice b, .dash-notice a { color:var(--dash-text); }.dash-metric::after { border-color:var(--dash-line); }.dash-metric small, .dash-row small { color:var(--dash-muted); }.dash-metric.accent strong { color:var(--dash-text); }.dash-card p, .dash-service-top, .dash-action, .dash-form label, .dash-key-table th, .dash-key-table td { color:var(--dash-muted); }.dash-row strong, .dash-service-top, .dash-action b, .dash-key-table td:first-child { color:var(--dash-text); }.dash-credit { color:#19733a; }.dash-debit, .dash-status.error { color:#9b401b; }.dash-service-bar { background:var(--color-soft); border-radius:0; }.dash-service-bar i { border-radius:0; background:var(--color-accent); }.dash-action { background:var(--color-soft); }.dash-action:hover { border-color:var(--color-strong-line); background:var(--color-soft); }.dash-action i { color:var(--dash-text); }.dash-form input { border-color:var(--dash-line); background:var(--color-soft); color:var(--dash-text); }.dash-form input:focus { border-color:var(--color-strong-line); box-shadow:none; }.dash-button { border:2px solid var(--dash-text); border-radius:0; background:var(--color-accent); color:var(--color-accent-ink); }.dash-button.secondary { background:var(--color-soft); color:var(--dash-text); }.dash-key-result { border-color:var(--dash-line); background:var(--color-soft); color:var(--dash-text); }.dash-key-result code { color:var(--dash-text); }.dash-badge { border-radius:0; background:var(--color-accent); color:var(--color-accent-ink); }
         @media (max-width:960px) { .ar-dashboard { grid-template-columns:1fr; }.dash-sidebar { display:none; }.dash-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.dash-grid { grid-template-columns:1fr; } }
         @media (max-width:620px) { .dash-main { padding:26px 16px 42px; }.dash-page-head { display:block; }.dash-user { margin-top:15px; }.dash-metrics { grid-template-columns:1fr; }.dash-row { grid-template-columns:1fr 1fr; }.dash-row > :last-child { display:none; }.dash-form-row { display:grid; }.dash-button { min-height:42px; }.topbar .shell { padding:0 16px; } }
       </style>
@@ -1097,16 +1097,25 @@ export function accountHtml({ auth = {} } = {}) {
 
           <section class="dash-view" data-panel="activity" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Account activity</h2><p>Top-ups and billable service calls from your account ledger.</p></div></div><div class="dash-activity" id="activity-list"></div></article></section>
 
-          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Production payments use Stripe Checkout. Credits appear after its signed confirmation.</p></div></div><form class="dash-form" id="topup-form"><label for="topup-amount">Amount in USD / credits</label><div class="dash-form-row"><input id="topup-amount" name="amount" type="number" min="0.5" max="10000" step="0.01" value="10.00" required><button class="dash-button" id="topup-button" type="submit">Continue to payment</button></div></form><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Billing model</h2><p>AgentRouter debits after validation and before data delivery. Failed provider calls are automatically refunded.</p><p>Need help with a payment? The error shown here includes the exact next step.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
+          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Send USDC or USDT on-chain, then submit the transaction hash. The deposit is read from the chain.</p></div></div><div id="deposit-instructions" class="deposit-box"><p class="dash-status">Loading deposit details…</p></div><form class="dash-form" id="deposit-form"><label for="deposit-tx">Transaction hash</label><div class="dash-form-row"><input id="deposit-tx" name="tx_hash" type="text" placeholder="0x…" pattern="0x[0-9a-fA-F]{64}" required><button class="dash-button" id="deposit-button" type="submit">Claim deposit</button></div></form><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Spending limit</h2><p>The most any single agent call may spend. A call above it is refused before anything is charged.</p><form class="dash-form" id="limit-form"><label for="limit-amount">Max per call (credits)</label><div class="dash-form-row"><input id="limit-amount" name="max_price_per_call" type="number" min="0.01" max="1000" step="0.01" required><button class="dash-button" id="limit-button" type="submit">Save limit</button></div></form><p class="dash-status" id="limit-status" role="status"></p><p class="dash-note">Credits are debited after validation and before delivery. Failed provider calls are refunded automatically.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
         </section>
       </main>
       <script>
         const dashboardState = { data: null };
-        const viewMeta = { overview:["Overview","Your prepaid balance, agent connections, and verified service activity in one place."], keys:["Connections","Approve agents in your browser and disconnect them here. Developer keys remain available for CI."], activity:["Activity","A transparent account ledger for credits and completed paid service calls."], credits:["Credits","Fund your balance through secure checkout and see every balance change."] };
+        const viewMeta = { overview:["Overview","Your prepaid balance, agent connections, and verified service activity in one place."], keys:["Connections","Approve agents in your browser and disconnect them here. Developer keys remain available for CI."], activity:["Activity","A transparent account ledger for credits and completed paid service calls."], credits:["Credits","Deposit USDC or USDT on-chain and see every balance change."] };
         const money = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6 });
         const escapeDash = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" })[char]);
+        const kindLabels = { service_call: "Service call", topup: "Deposit", refund: "Refund" };
         function renderActivity(target, entries, limit = 12) {
-          target.innerHTML = entries.slice(0, limit).map((entry) => '<div class="dash-row"><span><strong>' + escapeDash(entry.kind === "service_call" ? "Service call" : entry.kind) + '</strong><small>' + escapeDash(entry.service_id || "Account credit") + '</small></span><span class="' + (String(entry.delta).startsWith("-") ? "dash-debit" : "dash-credit") + '">' + escapeDash(entry.delta) + ' credits</span><span>Balance ' + escapeDash(entry.balance) + '</span><span><small>' + escapeDash(new Date(entry.created_at).toLocaleString()) + '</small></span></div>').join("") || '<div class="dash-empty">No account activity yet. Add credits, connect an agent, and make your first call.</div>';
+          target.innerHTML = entries.slice(0, limit).map((entry) => {
+            const meta = entry.metadata || {};
+            // A crypto deposit is only auditable if the row links to the
+            // transaction it came from.
+            const detail = meta.tx_hash
+              ? '<a class="dash-link" href="' + escapeDash(meta.explorer_url || "#") + '" target="_blank" rel="noopener noreferrer">' + escapeDash(String(meta.asset || "") + " " + meta.tx_hash.slice(0, 10) + "…") + ' \u2197</a>'
+              : '<small>' + escapeDash(entry.service_id || "Account credit") + '</small>';
+            return '<div class="dash-row"><span><strong>' + escapeDash(kindLabels[entry.kind] || entry.kind) + '</strong>' + detail + '</span><span class="' + (String(entry.delta).startsWith("-") ? "dash-debit" : "dash-credit") + '">' + escapeDash(entry.delta) + ' credits</span><span>Balance ' + escapeDash(entry.balance) + '</span><span><small>' + escapeDash(new Date(entry.created_at).toLocaleString()) + '</small></span></div>';
+          }).join("") || '<div class="dash-empty">No account activity yet. Add credits, connect an agent, and make your first call.</div>';
         }
         function renderDashboard(payload) {
           dashboardState.data = payload;
@@ -1118,6 +1127,10 @@ export function accountHtml({ auth = {} } = {}) {
           renderActivity(document.getElementById("overview-activity"), payload.recent_activity, 5);
           renderActivity(document.getElementById("activity-list"), payload.recent_activity);
           renderActivity(document.getElementById("credit-ledger"), payload.recent_activity);
+          // Show the limit that is actually in force, not the placeholder — an
+          // agent spends against the saved value, not what the box says.
+          const limitInput = document.getElementById("limit-amount");
+          if (limitInput && payload.account?.max_price_per_call) limitInput.value = payload.account.max_price_per_call;
           const connections = payload.api_keys.filter((key) => key.auth_method === "device");
           const developerKeys = payload.api_keys.filter((key) => key.auth_method !== "device");
           document.getElementById("agent-connection-list").innerHTML = connections.length ? '<table class="dash-key-table"><thead><tr><th>Agent</th><th>Status</th><th>Connected</th><th>Action</th></tr></thead><tbody>' + connections.map((key) => '<tr><td>' + escapeDash(key.client_name || key.label) + '</td><td><span class="dash-badge">' + escapeDash(key.status) + '</span></td><td>' + escapeDash(new Date(key.created_at).toLocaleDateString()) + '</td><td>' + (key.status === "active" ? '<button class="dash-link" type="button" data-revoke-key="' + escapeDash(key.key_id) + '">Disconnect</button>' : 'Disconnected') + '</td></tr>').join("") + '</tbody></table>' : '<div class="dash-empty">No agents connected yet. Install AgentRouter, then approve the browser prompt on the first paid call.</div>';
@@ -1130,7 +1143,65 @@ export function accountHtml({ auth = {} } = {}) {
         function showView(name) { document.querySelectorAll(".dash-view").forEach((node) => { node.hidden = node.dataset.panel !== name; }); document.querySelectorAll("[data-view]").forEach((node) => node.setAttribute("aria-selected", String(node.dataset.view === name))); document.getElementById("dash-title").textContent = viewMeta[name][0]; document.getElementById("dash-subtitle").textContent = viewMeta[name][1]; }
         document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
         document.querySelectorAll("[data-view-link]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewLink)));
-        document.getElementById("topup-form").addEventListener("submit", async (event) => { event.preventDefault(); const status = document.getElementById("account-status"); const button = document.getElementById("topup-button"); button.disabled = true; status.className = "dash-status"; status.textContent = "Creating secure checkout…"; try { const response = await fetch("/account/credits/topup", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ amount:document.getElementById("topup-amount").value }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message || "Top-up failed."); if (payload.checkout_url) { location.href = payload.checkout_url; return; } status.textContent = "Credits added."; await loadDashboard(); } catch (error) { status.className = "dash-status error"; status.textContent = error.message; } finally { button.disabled = false; } });
+        // The address and chain come from the server, never from something the
+        // user retyped: a mistyped address or the wrong chain loses the funds.
+        async function loadDepositInstructions() {
+          const box = document.getElementById("deposit-instructions");
+          try {
+            const response = await fetch("/account/credits/deposit");
+            const info = await response.json();
+            if (!info.enabled) {
+              box.innerHTML = '<p class="dash-status error">Crypto top-ups are not configured on this deployment yet.</p>';
+              document.getElementById("deposit-button").disabled = true;
+              return;
+            }
+            box.innerHTML =
+              '<div class="deposit-row"><span>Network</span><strong>' + escapeDash(info.chain_name) + ' (chain ' + info.chain_id + ')</strong></div>' +
+              '<div class="deposit-row"><span>Send to</span><strong class="deposit-address" id="deposit-address">' + escapeDash(info.treasury_address) + '</strong><button type="button" class="dash-button ghost" id="copy-deposit">Copy</button></div>' +
+              '<div class="deposit-row"><span>Accepted</span><strong>' + info.accepted.map((a) => escapeDash(a.symbol)).join(" · ") + '</strong></div>' +
+              '<div class="deposit-row"><span>Confirmations</span><strong>' + info.min_confirmations + '</strong></div>' +
+              '<ul class="deposit-notes">' + info.notes.map((n) => '<li>' + escapeDash(n) + '</li>').join("") + '</ul>';
+            document.getElementById("copy-deposit").addEventListener("click", async () => {
+              await navigator.clipboard.writeText(info.treasury_address);
+              document.getElementById("copy-deposit").textContent = "Copied";
+            });
+          } catch (error) {
+            box.innerHTML = '<p class="dash-status error">' + escapeDash(error.message) + '</p>';
+          }
+        }
+        document.getElementById("deposit-form").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const status = document.getElementById("account-status");
+          const button = document.getElementById("deposit-button");
+          button.disabled = true;
+          status.className = "dash-status";
+          status.textContent = "Reading the transaction from the chain…";
+          try {
+            const response = await fetch("/account/credits/deposit", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ tx_hash: document.getElementById("deposit-tx").value.trim() }) });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error?.message || payload.message || "Deposit could not be claimed.");
+            status.textContent = "Credited " + payload.deposit.amount + " " + payload.deposit.asset + ".";
+            document.getElementById("deposit-tx").value = "";
+            await loadDashboard();
+          } catch (error) { status.className = "dash-status error"; status.textContent = error.message; }
+          finally { button.disabled = false; }
+        });
+        document.getElementById("limit-form").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const status = document.getElementById("limit-status");
+          const button = document.getElementById("limit-button");
+          button.disabled = true;
+          status.className = "dash-status";
+          try {
+            const response = await fetch("/account/credits/limit", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ max_price_per_call: document.getElementById("limit-amount").value }) });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error?.message || "Could not save the limit.");
+            status.textContent = "Any single call may now spend up to " + payload.max_price_per_call + " credits.";
+            await loadDashboard();
+          } catch (error) { status.className = "dash-status error"; status.textContent = error.message; }
+          finally { button.disabled = false; }
+        });
+        loadDepositInstructions();
         document.getElementById("api-key-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/account/api-keys", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ label:document.getElementById("api-key-label").value }) }); const payload = await response.json(); if (!response.ok) { alert(payload.error?.message || "Key creation failed."); return; } document.getElementById("api-key-value").textContent = payload.api_key; document.getElementById("api-key-result").hidden = false; await loadDashboard(); });
         document.getElementById("copy-api-key").addEventListener("click", async () => { await navigator.clipboard.writeText(document.getElementById("api-key-value").textContent); document.getElementById("copy-api-key").textContent = "Copied"; });
         document.getElementById("agent-connection-list").addEventListener("click", async (event) => { const button = event.target.closest("[data-revoke-key]"); if (!button) return; button.disabled = true; const response = await fetch("/account/api-keys/" + encodeURIComponent(button.dataset.revokeKey) + "/revoke", { method:"POST" }); const payload = await response.json(); if (!response.ok) { alert(payload.error?.message || "Could not disconnect this agent."); button.disabled = false; return; } await loadDashboard(); });

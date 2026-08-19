@@ -8,7 +8,7 @@ import { createLiveBtcLiquidationEnvelope, createLiveFundFlowEnvelope } from "./
 import { readJson, sendJson, sendNotFound } from "./http-utils.js";
 import { readProviderSecret } from "./provider-secrets.js";
 import { isRealX402ProviderEnabled, processProviderX402Payment, sendX402Response, settleProviderX402Payment } from "./real-x402-provider.js";
-import { authenticateCreditRequest, creditPaymentRequired, debitCredits, refundCredits } from "./credits.js";
+import { accountSpendLimit, assertWithinSpendLimit, authenticateCreditRequest, creditPaymentRequired, debitCredits, refundCredits } from "./credits.js";
 
 const issuedChallenges = new Map();
 const preflightResults = new Map();
@@ -232,6 +232,29 @@ async function requirePaymentOrRespond({ req, res, store, baseUrl = "", serviceI
     const creditAuth = await authenticateCreditRequest(store, req);
     if (!creditAuth) {
       sendJson(res, 402, creditPaymentRequired({ amount, baseUrl }));
+      return { ok: false };
+    }
+    // Refused before the debit: a call over the ceiling is not charged and then
+    // refunded, it simply does not run.
+    try {
+      assertWithinSpendLimit(creditAuth.account, amount);
+    } catch (error) {
+      if (error.code !== "SPEND_LIMIT_EXCEEDED") throw error;
+      sendJson(res, 402, {
+        error: "Payment Required",
+        code: "SPEND_LIMIT_EXCEEDED",
+        message: error.message,
+        service_id: serviceId,
+        amount: String(amount),
+        currency: "credits",
+        max_price_per_call: accountSpendLimit(creditAuth.account),
+        action_required: {
+          action: "raise_per_call_limit_or_choose_a_cheaper_service",
+          endpoint: "/account/credits/limit",
+          method: "POST",
+          note: "The limit is the account owner's decision; do not raise it on their behalf without asking."
+        }
+      });
       return { ok: false };
     }
     const requestId = `bill_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;

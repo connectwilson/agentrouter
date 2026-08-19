@@ -70,7 +70,18 @@ Install form: `dsh plugin --profile web add github:<owner>/<repo>` **or** `npm i
 
 `bobleer` exposes Harness's own tools **outward** as an MCP server. **AR needs the opposite: register AR's already-hosted remote MCP (`https://<ar-host>/mcp`, streamable HTTP) INWARD into Harness's MCP client**, so the harness agent gains AR's tools. Two shapes:
 
-- **Shape 1 (recommended, least code):** the plugin's `cordis.patch.yml` adds AR's remote MCP server to Harness's **MCP client** config (the official `/mcp` client with server CRUD). AR runs no local process — you just register a streamable-HTTP server URL. Confirm the MCP-client's "add server" config key from the official `/mcp` client plugin or `PerryLink/dsh-mcp-panel` (which does exactly this CRUD).
+- **Shape 1 (recommended, nearly code-free):** the official MCP client is the npm package **`@deepseek-ai/dsh-mcp-client`**. Each MCP server = **one row in `cordis.patch.yml`** that instantiates that client with a `config` pointing at AR's remote `/mcp`. The client connects the transport, syncs AR's tools, and registers them as `mcp__agentrouter__<tool>`. So the AR plugin can be **just `package.json` + `cordis.patch.yml`, no plugin code**. Shape of the row (confirmed pattern; confirm exact HTTP-transport `config` field names against the `@deepseek-ai/dsh-mcp-client` package):
+
+  ```yaml
+  # agentrouter's cordis.patch.yml
+  - id: mcp-agentrouter
+    name: '@deepseek-ai/dsh-mcp-client'
+    config:
+      serverName: agentrouter          # → tools appear as mcp__agentrouter__<tool>
+      transport: http                  # streamable HTTP (AR's /mcp is streamable-HTTP JSON-RPC)
+      url: https://<ar-host>/mcp
+      # headers: { ... }               # if you later gate with an API key
+  ```
 - **Shape 2 (fallback):** bundle a thin local MCP bridge (like `bobleer`, using `@modelcontextprotocol/sdk`) that proxies to AR's remote `/mcp`. More code, fully self-contained.
 
 Your `agentrouter-dsh-plugin` `package.json` = bobleer's shape with **AR's search metadata**: `name: "agentrouter-dsh-plugin"`, and a description/keywords front-loading the words a DSH user searches:

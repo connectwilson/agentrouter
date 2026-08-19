@@ -7,6 +7,7 @@ import {
   persistenceEnabled,
   persistentCreditBalance,
   readPersistentCreditAccountByOwner,
+  readPersistentCreditAccountByDepositAddress,
   readPersistentCreditApiKeyByHash,
   revokePersistentCreditApiKey,
   upsertPersistentCreditAccount,
@@ -57,12 +58,91 @@ export async function ensureCreditAccount(store, user) {
     account_id: stableId("acct", ownerKey),
     owner_key: ownerKey,
     user_profile: publicUserProfile(user),
+    settings: { max_price_per_call: DEFAULT_MAX_PRICE_PER_CALL },
+    deposit_address: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
   const saved = persistenceEnabled() ? await upsertPersistentCreditAccount(account) : account;
   store.creditAccounts.set(ownerKey, saved);
   return saved;
+}
+
+// A balance an agent can spend without asking is only safe with a ceiling on
+// any one call. Without it a single mispriced or misrouted request can drain
+// the account, and the agent is by design not pausing to check.
+export const DEFAULT_MAX_PRICE_PER_CALL = String(process.env.ADN_CREDITS_DEFAULT_MAX_PER_CALL || "2");
+const MAX_SPEND_LIMIT = 1000;
+
+export function accountSpendLimit(account) {
+  const configured = account?.settings?.max_price_per_call;
+  const value = configured === undefined || configured === null || configured === ""
+    ? DEFAULT_MAX_PRICE_PER_CALL
+    : configured;
+  return String(value);
+}
+
+export function normalizeSpendLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    throw creditError("A per-call limit must be a positive number of credits.", 400, "INVALID_SPEND_LIMIT");
+  }
+  if (number > MAX_SPEND_LIMIT) {
+    throw creditError(`A per-call limit cannot exceed ${MAX_SPEND_LIMIT} credits.`, 400, "SPEND_LIMIT_TOO_HIGH");
+  }
+  creditsToAtomic(number);
+  return String(number);
+}
+
+// Checked before the debit, not after: refusing a call costs nothing, whereas
+// debiting and refunding leaves the caller charged for a request it was never
+// allowed to make.
+export function assertWithinSpendLimit(account, amount) {
+  const limit = accountSpendLimit(account);
+  if (creditsToAtomic(amount, { allowZero: true }) > creditsToAtomic(limit)) {
+    throw creditError(
+      `This call costs ${amount} credits, above the ${limit} per-call limit on this account.`,
+      402,
+      "SPEND_LIMIT_EXCEEDED"
+    );
+  }
+  return limit;
+}
+
+export async function setAccountSpendLimit(store, { account, maxPricePerCall }) {
+  if (!account?.account_id) throw creditError("Credit account is required.", 400, "CREDIT_ACCOUNT_REQUIRED");
+  const limit = normalizeSpendLimit(maxPricePerCall);
+  const updated = {
+    ...account,
+    settings: { ...(account.settings || {}), max_price_per_call: limit },
+    updated_at: new Date().toISOString()
+  };
+  const saved = persistenceEnabled() ? await upsertPersistentCreditAccount(updated) : updated;
+  const merged = { ...updated, ...(saved || {}) };
+  store.creditAccounts.set(merged.owner_key, merged);
+  return { account_id: merged.account_id, max_price_per_call: accountSpendLimit(merged) };
+}
+
+// Binding is one-way and first-come: an address that has paid one account can
+// never later credit a different one.
+export async function bindDepositAddress(store, account, depositAddress) {
+  const address = String(depositAddress || "").toLowerCase();
+  if (!address || account.deposit_address === address) return account;
+  const updated = { ...account, deposit_address: address, updated_at: new Date().toISOString() };
+  const saved = persistenceEnabled() ? await upsertPersistentCreditAccount(updated) : updated;
+  const merged = { ...updated, ...(saved || {}) };
+  store.creditAccounts.set(merged.owner_key, merged);
+  return merged;
+}
+
+export async function findAccountByDepositAddress(store, depositAddress) {
+  const address = String(depositAddress || "").toLowerCase();
+  if (!address) return null;
+  for (const account of store.creditAccounts.values()) {
+    if (String(account.deposit_address || "").toLowerCase() === address) return account;
+  }
+  if (persistenceEnabled()) return readPersistentCreditAccountByDepositAddress(address);
+  return null;
 }
 
 export async function createCreditApiKey(store, {
