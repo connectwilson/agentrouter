@@ -1216,6 +1216,7 @@ test("on-chain volume rankings come from the provider, not a scraped table", asy
     "BASE链上交易量最高的池子"
   ]) {
     assert.equal(route(task)?.source, "geckoterminal", `${task} should reach the on-chain source`);
+    assert.equal(route(task)?.operation, "trending", `${task} should use the provider's ranking`);
   }
 
   // Equities keep their own source; "volume" alone must not drag a stock
@@ -1233,7 +1234,7 @@ test("on-chain volume rankings come from the provider, not a scraped table", asy
     ]
   };
   const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
-    source: "geckoterminal", operation: "pools", query: "今天BSC链交易量最高的meme代币", limit: 5
+    source: "geckoterminal", operation: "trending", query: "今天BSC链交易量最高的meme代币", limit: 5
   }, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => payload }) });
 
   assert.equal(result.status, "completed");
@@ -1248,7 +1249,9 @@ test("on-chain volume rankings come from the provider, not a scraped table", asy
   assert.equal(second.metadata.base_token, "BBB");
   // A "meme" question cannot actually be filtered, so the envelope says what the
   // ranking is really over instead of implying a category it does not have.
-  assert.match(first.metadata.ranked_among, /all pools on bsc by 24h volume/);
+  // Raw volume order puts wash-traded pools on top, so the default is the
+  // provider's own trending ranking; the envelope always says which one ran.
+  assert.match(first.metadata.ranked_among, /trending over 24h, ranked by the provider/);
   assert.ok(result.request_id, "a successful call must be rateable");
 });
 
@@ -1297,4 +1300,30 @@ test("a token question reaches the token, not whatever the prose fuzzy-matched",
   assert.equal(top.metadata.chain, "bsc");
   assert.equal(top.metadata.volume_24h_usd, 1104505);
   assert.equal(top.metadata.liquidity_usd, 900000);
+});
+
+test("the ranking a caller asked for is the ranking they get", async () => {
+  const { runExternalApiQuery } = await import("../src/external-api-capability.js");
+  const { createMemoryStore } = await import("../src/store.js");
+  const seen = [];
+  const fetchImpl = async (url) => { seen.push(String(url)); return { ok: true, status: 200, json: async () => ({ data: [] }) }; };
+  const call = (query, operation) => runExternalApiQuery(createMemoryStore(), "github:user-a",
+    { source: "geckoterminal", operation, query, limit: 3 }, { fetchImpl });
+
+  // Filtering wash-traded pools out here would put per-source domain judgement
+  // in a routing layer. The provider already publishes a ranking that excludes
+  // them, so the choice is which endpoint to call — routing, not filtering.
+  await call("今天BSC链交易量最高的5个meme代币", "trending");
+  assert.match(seen.at(-1), /trending_pools\?duration=24h/);
+
+  // A caller who explicitly wants raw volume order still gets it, on either
+  // operation, because the wording decides.
+  await call("BSC 按交易量排序的池子", "trending");
+  assert.match(seen.at(-1), /\/pools\?sort=h24_volume_usd_desc/);
+  await call("BSC top pools", "pools");
+  assert.match(seen.at(-1), /\/pools\?sort=h24_volume_usd_desc/);
+
+  // The network still comes from the question, not a default.
+  await call("BASE链上热门池子", "trending");
+  assert.match(seen.at(-1), /networks\/base\//);
 });

@@ -74,7 +74,7 @@ const SOURCE_CATALOG = [
   source("gdelt", "新闻", "GDELT", "available", null, ["search"]),
   source("sec_edgar", "公司与监管", "SEC EDGAR", "available", null, ["filings"]),
   source("open_meteo", "天气与环境", "Open-Meteo", "available", null, ["forecast"]),
-  source("geckoterminal", "链上数据", "GeckoTerminal", "available", null, ["pools"]),
+  source("geckoterminal", "链上数据", "GeckoTerminal", "available", null, ["trending", "pools"]),
   source("dexscreener", "链上数据", "DexScreener", "available", null, ["search"]),
   source("coinmarketcap", "加密行情", "CoinMarketCap", "available", "coinmarketcap_api", ["listings"]),
   source("youtube", "社交媒体", "YouTube Data API", "available", "youtube_api", ["search"]),
@@ -258,7 +258,7 @@ const SOURCE_INTENTS = [
   { sources: ["dexscreener"], operation: "search",
     strong: ["dexscreener|dex screener|trading pairs?|liquidity for", "交易对|交易對"],
     weak: ["pair|liquidity|slippage|pool|price|dex", "流动性|流動性|价格|價格|滑点|滑點"] },
-  { sources: ["geckoterminal"], operation: "pools",
+  { sources: ["geckoterminal"], operation: "trending",
     strong: ["four\\.meme|pancakeswap|dexscreener|geckoterminal|dex pools?|liquidity pools?|on-?chain volume", "链上交易量|链上成交量|鏈上交易量|鏈上成交量"],
     weak: ["dex|on-?chain|volume|pools?|meme|bsc|bnb chain|solana|arbitrum|optimism", "交易量|成交量|代币|代幣|链上|鏈上|币价|幣價"] },
   // Market-wide crypto quotes. Distinct from the on-chain sources: this ranks
@@ -887,13 +887,32 @@ function geckoterminalNetwork(text) {
   return "bsc";
 }
 
-// Ranked pools straight from the API, already sorted by 24h volume. The point of
-// this source is that the ordering and the numbers come from the provider rather
-// than from reading a rendered table, which is where the names went missing.
-async function invokeGeckoTerminal({ query, limit, fetchImpl }) {
+// Two rankings, both the provider's own.
+//
+// Sorting by raw 24h volume is what the chain literally reports, and on BSC that
+// puts wash-traded pools on top: eight-figure volume against single-digit
+// liquidity, down 100%. Filtering those out here was the wrong instinct — it
+// would make a routing layer carry per-source domain judgement it has no
+// standing to make, for every source it ever adds.
+//
+// GeckoTerminal already does that work and publishes the result as
+// trending_pools, which on the same chain and hour returns none of them. So the
+// fix is to call the right endpoint, which is routing, not filtering. A question
+// that explicitly asks for volume order still gets volume order; every row says
+// which ranking produced it.
+function geckoterminalRanking(query, operation) {
+  if (operation === "pools") return "volume";
+  const text = String(query || "").toLowerCase();
+  return /by volume|volume ranking|按交易量|交易量排序|成交量排序/.test(text) ? "volume" : "trending";
+}
+
+async function invokeGeckoTerminal({ query, limit, fetchImpl, operation }) {
   const network = geckoterminalNetwork(query);
-  const url = new URL(`https://api.geckoterminal.com/api/v2/networks/${network}/pools`);
-  url.searchParams.set("sort", "h24_volume_usd_desc");
+  const ranking = geckoterminalRanking(query, operation);
+  const path = ranking === "trending" ? "trending_pools" : "pools";
+  const url = new URL(`https://api.geckoterminal.com/api/v2/networks/${network}/${path}`);
+  if (ranking === "trending") url.searchParams.set("duration", "24h");
+  else url.searchParams.set("sort", "h24_volume_usd_desc");
   url.searchParams.set("page", "1");
   const fetched = await fetchJson(fetchImpl, url, { headers: { accept: "application/json" } });
   if (!fetched.ok) return fetched;
@@ -915,7 +934,9 @@ async function invokeGeckoTerminal({ query, limit, fetchImpl }) {
         // category endpoint, so a question about "meme tokens" cannot actually
         // be filtered — saying so beats letting the caller read a category into
         // a list that does not have one.
-        ranked_among: `all pools on ${network} by 24h volume`,
+        ranked_among: ranking === "trending"
+          ? `${network} pools trending over 24h, ranked by the provider`
+          : `all pools on ${network} by raw 24h volume`,
         pool: name,
         base_token: base,
         network,
