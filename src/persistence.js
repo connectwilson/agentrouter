@@ -277,12 +277,22 @@ export async function writePersistentCreditApiKey(keyRecord) {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `insert into adn_credit_api_keys (key_id, account_id, key_hash, label, auth_method, client_name, created_at)
-     values ($1, $2, $3, $4, $5, $6, now())
-     returning key_id, account_id, key_hash, label, auth_method, client_name, created_at, revoked_at`,
-    [keyRecord.key_id, keyRecord.account_id, keyRecord.key_hash, keyRecord.label || null, keyRecord.auth_method || "api_key", keyRecord.client_name || null]
+    `insert into adn_credit_api_keys (key_id, account_id, key_hash, label, auth_method, client_name, key_prefix, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7, now())
+     returning key_id, account_id, key_hash, label, auth_method, client_name, key_prefix, last_used_at, created_at, revoked_at`,
+    [keyRecord.key_id, keyRecord.account_id, keyRecord.key_hash, keyRecord.label || null, keyRecord.auth_method || "api_key", keyRecord.client_name || null, keyRecord.key_prefix || null]
   );
   return result.rows[0] || null;
+}
+
+// Throttled by the caller: a write on every request would cost more than the
+// information is worth.
+export async function touchPersistentCreditApiKey(keyId) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query(`update adn_credit_api_keys set last_used_at = now() where key_id = $1`, [keyId]);
+  return true;
 }
 
 export async function readPersistentCreditApiKeyByHash(keyHash) {
@@ -305,7 +315,7 @@ export async function listPersistentCreditApiKeys(accountId, { limit = 100 } = {
   const pool = await getPool();
   await ensureSchema(pool);
   const result = await pool.query(
-    `select key_id, account_id, label, auth_method, client_name, created_at, revoked_at
+    `select key_id, account_id, label, auth_method, client_name, key_prefix, last_used_at, created_at, revoked_at
      from adn_credit_api_keys
      where account_id = $1
      order by created_at desc
@@ -472,6 +482,9 @@ async function ensureSchema(pool) {
     );
     alter table adn_credit_api_keys add column if not exists auth_method text not null default 'api_key';
     alter table adn_credit_api_keys add column if not exists client_name text;
+    -- Enough of the key to recognise which one a row is, never enough to use.
+    alter table adn_credit_api_keys add column if not exists key_prefix text;
+    alter table adn_credit_api_keys add column if not exists last_used_at timestamptz;
     alter table adn_credit_accounts add column if not exists settings jsonb not null default '{}'::jsonb;
     -- The sending address of a crypto deposit binds to the account that first
     -- claimed from it. Unique so two accounts can never claim the same wallet,

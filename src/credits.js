@@ -9,6 +9,7 @@ import {
   readPersistentCreditAccountByOwner,
   readPersistentCreditAccountByDepositAddress,
   readPersistentCreditApiKeyByHash,
+  touchPersistentCreditApiKey,
   revokePersistentCreditApiKey,
   upsertPersistentCreditAccount,
   writePersistentCreditApiKey,
@@ -154,12 +155,17 @@ export async function createCreditApiKey(store, {
 }) {
   if (!account?.account_id) throw creditError("Credit account is required.", 400, "CREDIT_ACCOUNT_REQUIRED");
   const rawKey = `${prefix}_${crypto.randomBytes(24).toString("base64url")}`;
+  // 192 bits of entropy; showing 6 leading and 4 trailing characters leaves
+  // well over 100, which is what makes a recognisable hint safe to store.
+  const keyPrefix = `${rawKey.slice(0, prefix.length + 7)}…${rawKey.slice(-4)}`;
   const record = {
     key_id: `key_${crypto.randomUUID()}`,
     account_id: account.account_id,
     owner_key: account.owner_key || null,
     user_profile: account.user_profile || {},
     key_hash: hashApiKey(rawKey),
+    key_prefix: keyPrefix,
+    last_used_at: null,
     label: String(label || "AgentRouter client").slice(0, 120),
     auth_method: authMethod === "device" ? "device" : "api_key",
     client_name: clientName ? String(clientName).slice(0, 120) : null,
@@ -172,6 +178,7 @@ export async function createCreditApiKey(store, {
   return {
     key_id: saved.key_id,
     label: saved.label,
+    key_prefix: saved.key_prefix || keyPrefix,
     api_key: rawKey,
     created_at: saved.created_at,
     auth_method: saved.auth_method || record.auth_method,
@@ -193,7 +200,9 @@ export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) 
     revoked_at: key.revoked_at || null,
     status: key.revoked_at ? "revoked" : "active",
     auth_method: key.auth_method || "api_key",
-    client_name: key.client_name || null
+    client_name: key.client_name || null,
+    key_prefix: key.key_prefix || null,
+    last_used_at: key.last_used_at || null
   }));
 }
 
@@ -232,6 +241,32 @@ export function creditApiKeyFromRequest(req) {
   return match?.[1]?.trim() || "";
 }
 
+// "Last used" is worth a timestamp, not a database write per request. Recorded
+// at most once every few minutes; a stale-by-minutes value tells the reader
+// everything a fresh one would.
+const LAST_USED_THROTTLE_MS = 5 * 60 * 1000;
+
+function markKeyUsed(store, key) {
+  const now = Date.now();
+  const previous = key.last_used_at ? new Date(key.last_used_at).getTime() : 0;
+  if (now - previous < LAST_USED_THROTTLE_MS) return;
+  key.last_used_at = new Date(now).toISOString();
+  store.creditApiKeys.set(key.key_hash, key);
+  if (persistenceEnabled()) {
+    // Fire and forget: a call must not fail because bookkeeping did.
+    touchPersistentCreditApiKey(key.key_id).catch(() => {});
+  }
+}
+
+async function accountSettingsForOwner(store, ownerKey) {
+  const cached = store.creditAccounts.get(ownerKey);
+  if (cached) return cached;
+  if (!persistenceEnabled()) return null;
+  const persisted = await readPersistentCreditAccountByOwner(ownerKey);
+  if (persisted) store.creditAccounts.set(ownerKey, persisted);
+  return persisted;
+}
+
 export async function authenticateCreditRequest(store, req) {
   const rawKey = creditApiKeyFromRequest(req);
   if (!rawKey) return null;
@@ -240,11 +275,19 @@ export async function authenticateCreditRequest(store, req) {
   if (!key && persistenceEnabled()) key = await readPersistentCreditApiKeyByHash(keyHash);
   if (!key || key.revoked_at) return null;
   store.creditApiKeys.set(keyHash, key);
+  // Settings travel with the account, not the key. Returning an account without
+  // them made every spend limit read as the default: the ceiling a user set in
+  // the dashboard had no effect on the one path that matters, agent calls
+  // authenticated by API key.
+  const owner = key.owner_key ? await accountSettingsForOwner(store, key.owner_key) : null;
+  markKeyUsed(store, key);
   return {
     account: {
       account_id: key.account_id,
       owner_key: key.owner_key || null,
-      user_profile: key.user_profile || {}
+      user_profile: key.user_profile || {},
+      settings: owner?.settings || {},
+      deposit_address: owner?.deposit_address || null
     },
     key: {
       key_id: key.key_id,

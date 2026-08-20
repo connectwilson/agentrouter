@@ -155,3 +155,45 @@ test("a per-call ceiling refuses the call instead of charging for it", async () 
     );
   }
 });
+
+test("a spend limit set by the owner applies to the agent's own calls", async () => {
+  const { ensureCreditAccount, createCreditApiKey, setAccountSpendLimit,
+          authenticateCreditRequest, accountSpendLimit, assertWithinSpendLimit } =
+    await import("../src/credits.js");
+  const store = createMemoryStore();
+  const account = await ensureCreditAccount(store, { provider: "github", id: "u9", login: "dave" });
+  const created = await createCreditApiKey(store, { account, label: "agent" });
+  await setAccountSpendLimit(store, { account, maxPricePerCall: "50" });
+
+  // Settings live on the account, not the key. Returning an account without
+  // them made every API-key call fall back to the default, so a limit raised
+  // in the dashboard had no effect on the one path that actually spends.
+  const auth = await authenticateCreditRequest(store, {
+    headers: { authorization: `Bearer ${created.api_key}` }
+  });
+  assert.equal(accountSpendLimit(auth.account), "50");
+  assert.doesNotThrow(() => assertWithinSpendLimit(auth.account, "10"));
+  assert.throws(() => assertWithinSpendLimit(auth.account, "50.01"), (error) => error.code === "SPEND_LIMIT_EXCEEDED");
+});
+
+test("a key can be told apart without ever being shown again", async () => {
+  const { ensureCreditAccount, createCreditApiKey, listCreditApiKeys, authenticateCreditRequest } =
+    await import("../src/credits.js");
+  const store = createMemoryStore();
+  const account = await ensureCreditAccount(store, { provider: "github", id: "u10", login: "erin" });
+  const created = await createCreditApiKey(store, { account, label: "CI server" });
+
+  const [listed] = await listCreditApiKeys(store, account.account_id);
+  // A row identified only by a UUID matches nothing the holder has. The hint
+  // is the ends of the real key and nothing in between.
+  assert.match(listed.key_prefix, /^ar_live_.{6}….{4}$/);
+  assert.ok(created.api_key.startsWith(listed.key_prefix.split("…")[0]));
+  assert.ok(created.api_key.endsWith(listed.key_prefix.split("…")[1]));
+  // Never enough to reconstruct: 192 bits of entropy, ~11 characters shown.
+  assert.ok(listed.key_prefix.length < created.api_key.length - 20);
+  assert.equal(listed.last_used_at, null, "a key that has never run reports so");
+
+  await authenticateCreditRequest(store, { headers: { authorization: `Bearer ${created.api_key}` } });
+  const [afterUse] = await listCreditApiKeys(store, account.account_id);
+  assert.ok(afterUse.last_used_at, "using a key records that it was used");
+});
