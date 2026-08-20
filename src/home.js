@@ -1097,13 +1097,22 @@ export function accountHtml({ auth = {} } = {}) {
 
           <section class="dash-view" data-panel="activity" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Account activity</h2><p>Top-ups and billable service calls from your account ledger.</p></div></div><div class="dash-activity" id="activity-list"></div></article></section>
 
-          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Pay from your browser wallet on BNB Chain. The deposit is verified on-chain and credited automatically.</p></div></div><div id="deposit-instructions" class="deposit-box"><p class="dash-status">Loading deposit details…</p></div><form class="dash-form" id="buy-form"><label for="buy-amount">Amount</label><div class="dash-form-row"><input id="buy-amount" name="amount" type="number" min="0.01" step="0.01" value="10" required><select id="buy-token" name="token"></select><button class="dash-button" id="buy-button" type="submit">Pay with wallet</button></div></form><details class="deposit-fallback"><summary>Already sent, or paying from another device?</summary><form class="dash-form" id="deposit-form"><label for="deposit-tx">Transaction hash</label><div class="dash-form-row"><input id="deposit-tx" name="tx_hash" type="text" placeholder="0x…" pattern="0x[0-9a-fA-F]{64}" required><button class="dash-button secondary" id="deposit-button" type="submit">Claim deposit</button></div></form></details><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Spending limit</h2><p>The most any single agent call may spend. A call above it is refused before anything is charged.</p><form class="dash-form" id="limit-form"><label for="limit-amount">Max per call (credits)</label><div class="dash-form-row"><input id="limit-amount" name="max_price_per_call" type="number" min="0.01" max="1000" step="0.01" required><button class="dash-button" id="limit-button" type="submit">Save limit</button></div></form><p class="dash-status" id="limit-status" role="status"></p><p class="dash-note">Credits are debited after validation and before delivery. Failed provider calls are refunded automatically.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
+          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Pay from your browser wallet on BNB Chain. The deposit is verified on-chain and credited automatically.</p></div></div><div id="deposit-instructions" class="deposit-box"><p class="dash-status">Loading deposit details…</p></div><form class="dash-form" id="buy-form"><label for="buy-amount">Amount</label><div class="dash-form-row"><input id="buy-amount" name="amount" type="number" min="0.01" step="0.01" value="10" required><select id="buy-token" name="token"></select><button class="dash-button" id="buy-button" type="submit">Pay with wallet</button></div></form><details class="deposit-fallback"><summary>Already sent, or paying from another device?</summary><form class="dash-form" id="deposit-form"><label for="deposit-tx">Transaction hash</label><div class="dash-form-row"><input id="deposit-tx" name="tx_hash" type="text" placeholder="0x…" pattern="0x[0-9a-fA-F]{64}" required><button class="dash-button secondary" id="deposit-button" type="submit">Claim deposit</button></div></form></details><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Spending limit</h2><p>The most any single agent call may spend. A call above it is refused before anything is charged.</p><form class="dash-form" id="limit-form"><label for="limit-amount">Max per call (USD)</label><div class="dash-form-row"><input id="limit-amount" name="max_price_per_call" type="number" min="0.01" max="1000" step="0.01" required><button class="dash-button" id="limit-button" type="submit">Save limit</button></div></form><p class="dash-status" id="limit-status" role="status"></p><p class="dash-note">Credits are debited after validation and before delivery. Failed provider calls are refunded automatically.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
         </section>
       </main>
       <script>
         const dashboardState = { data: null };
         const viewMeta = { overview:["Overview","Your prepaid balance, agent connections, and verified service activity in one place."], keys:["Connections","Approve agents in your browser and disconnect them here. Developer keys remain available for CI."], activity:["Activity","A transparent account ledger for credits and completed paid service calls."], credits:["Credits","Deposit USDC or USDT on-chain and see every balance change."] };
-        const money = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+        // A credit is one USDC or USDT, so showing it as dollars is what it is
+        // worth, not a conversion. Sub-cent amounts keep their precision —
+        // rounding a $0.002 call to $0.00 would hide what a call costs.
+        const money = (value) => {
+          const number = Number(value || 0);
+          const abs = Math.abs(number);
+          const digits = abs > 0 && abs < 0.01 ? 6 : 2;
+          const sign = number < 0 ? "-" : "";
+          return sign + "$" + abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: digits });
+        };
         const escapeDash = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" })[char]);
         const kindLabels = { service_call: "Service call", topup: "Deposit", refund: "Refund" };
         function renderActivity(target, entries, limit = 12) {
@@ -1114,7 +1123,7 @@ export function accountHtml({ auth = {} } = {}) {
             const detail = meta.tx_hash
               ? '<a class="dash-link" href="' + escapeDash(meta.explorer_url || "#") + '" target="_blank" rel="noopener noreferrer">' + escapeDash(String(meta.asset || "") + " " + meta.tx_hash.slice(0, 10) + "…") + ' \u2197</a>'
               : '<small>' + escapeDash(entry.service_id || "Account credit") + '</small>';
-            return '<div class="dash-row"><span><strong>' + escapeDash(kindLabels[entry.kind] || entry.kind) + '</strong>' + detail + '</span><span class="' + (String(entry.delta).startsWith("-") ? "dash-debit" : "dash-credit") + '">' + escapeDash(entry.delta) + ' credits</span><span>Balance ' + escapeDash(entry.balance) + '</span><span><small>' + escapeDash(new Date(entry.created_at).toLocaleString()) + '</small></span></div>';
+            return '<div class="dash-row"><span><strong>' + escapeDash(kindLabels[entry.kind] || entry.kind) + '</strong>' + detail + '</span><span class="' + (String(entry.delta).startsWith("-") ? "dash-debit" : "dash-credit") + '">' + money(entry.delta) + '</span><span>Balance ' + money(entry.balance) + '</span><span><small>' + escapeDash(new Date(entry.created_at).toLocaleString()) + '</small></span></div>';
           }).join("") || '<div class="dash-empty">No account activity yet. Add credits, connect an agent, and make your first call.</div>';
         }
         function renderDashboard(payload) {
@@ -1156,7 +1165,7 @@ export function accountHtml({ auth = {} } = {}) {
             : '<div class="dash-empty">No developer API keys yet.</div>';
           const services = payload.top_services || [];
           const max = Math.max(...services.map((item) => item.spend_credits), 1);
-          document.getElementById("top-services").innerHTML = services.length ? services.map((item) => '<div class="dash-service"><div class="dash-service-top"><span>' + escapeDash(item.service_id) + '</span><span>' + money(item.spend_credits) + ' credits</span></div><div class="dash-service-bar"><i style="width:' + Math.max(8, Math.round((item.spend_credits / max) * 100)) + '%"></i></div></div>').join("") : '<div class="dash-empty">Service usage will appear after your first successful paid call.</div>';
+          document.getElementById("top-services").innerHTML = services.length ? services.map((item) => '<div class="dash-service"><div class="dash-service-top"><span>' + escapeDash(item.service_id) + '</span><span>' + money(item.spend_credits) + '</span></div><div class="dash-service-bar"><i style="width:' + Math.max(8, Math.round((item.spend_credits / max) * 100)) + '%"></i></div></div>').join("") : '<div class="dash-empty">Service usage will appear after your first successful paid call.</div>';
         }
         async function loadDashboard() { const response = await fetch("/account/dashboard"); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message || "Could not load your dashboard."); renderDashboard(payload); }
         function showView(name) { document.querySelectorAll(".dash-view").forEach((node) => { node.hidden = node.dataset.panel !== name; }); document.querySelectorAll("[data-view]").forEach((node) => node.setAttribute("aria-selected", String(node.dataset.view === name))); document.getElementById("dash-title").textContent = viewMeta[name][0]; document.getElementById("dash-subtitle").textContent = viewMeta[name][1]; }
@@ -1179,7 +1188,9 @@ export function accountHtml({ auth = {} } = {}) {
             const tokenSelect = document.getElementById("buy-token");
             tokenSelect.innerHTML = info.accepted.map((a) => '<option value="' + escapeDash(a.symbol) + '">' + escapeDash(a.symbol) + '</option>').join("");
             document.getElementById("buy-button").textContent = window.ethereum ? "Pay with wallet" : "No wallet detected";
+            setTimeout(refreshDepositQr, 0);
             box.innerHTML =
+              '<div class="deposit-qr"><img id="deposit-qr-img" alt="Payment code for the AgentRouter treasury" src="/account/credits/deposit.svg?token=' + encodeURIComponent(info.accepted[0].symbol) + '" width="150" height="150"><small>Scan with a mobile wallet</small></div>' +
               '<div class="deposit-row"><span>Network</span><strong>' + escapeDash(info.chain_name) + ' (chain ' + info.chain_id + ')</strong></div>' +
               '<div class="deposit-row"><span>Send to</span><strong class="deposit-address" id="deposit-address">' + escapeDash(info.treasury_address) + '</strong><button type="button" class="dash-button ghost" id="copy-deposit">Copy</button></div>' +
               '<div class="deposit-row"><span>Accepted</span><strong>' + info.accepted.map((a) => escapeDash(a.symbol)).join(" · ") + '</strong></div>' +
@@ -1245,6 +1256,18 @@ export function accountHtml({ auth = {} } = {}) {
           }
           throw new Error("The deposit has not confirmed yet. Submit the transaction hash below in a moment.");
         }
+        // The code has to carry the amount on screen. A stale code is a payment
+        // for the wrong number, which nothing downstream can correct.
+        function refreshDepositQr() {
+          const img = document.getElementById("deposit-qr-img");
+          if (!img || !depositInfo) return;
+          const token = document.getElementById("buy-token").value || depositInfo.accepted[0].symbol;
+          const amount = document.getElementById("buy-amount").value;
+          const query = "?token=" + encodeURIComponent(token) + (Number(amount) > 0 ? "&amount=" + encodeURIComponent(amount) : "");
+          img.src = "/account/credits/deposit.svg" + query;
+        }
+        document.getElementById("buy-amount").addEventListener("change", refreshDepositQr);
+        document.getElementById("buy-token").addEventListener("change", refreshDepositQr);
         document.getElementById("buy-form").addEventListener("submit", async (event) => {
           event.preventDefault();
           const status = document.getElementById("account-status");
@@ -1308,7 +1331,7 @@ export function accountHtml({ auth = {} } = {}) {
             const response = await fetch("/account/credits/limit", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ max_price_per_call: document.getElementById("limit-amount").value }) });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error?.message || "Could not save the limit.");
-            status.textContent = "Any single call may now spend up to " + payload.max_price_per_call + " credits.";
+            status.textContent = "Any single call may now spend up to $" + payload.max_price_per_call + ".";
             await loadDashboard();
           } catch (error) { status.className = "dash-status error"; status.textContent = error.message; }
           finally { button.disabled = false; }

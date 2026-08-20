@@ -56,6 +56,7 @@ export function cryptoTopupInstructions({ chainId = activeSettlementChainId() } 
       address: asset.address,
       decimals: asset.decimals
     })),
+    payment_uri: treasury ? depositPaymentUri({ chainId }) : null,
     min_confirmations: MIN_CONFIRMATIONS,
     explorer: chain.explorer?.url || null,
     rate: "1 USDC or USDT credits 1 credit.",
@@ -70,6 +71,39 @@ export function cryptoTopupInstructions({ chainId = activeSettlementChainId() } 
       "Each transaction credits once, to one account."
     ]
   };
+}
+
+// EIP-681 is what a wallet expects from a scanned payment code: the token
+// contract, the chain, and a transfer call already filled in.
+//
+// The recipient comes from server configuration and never from the caller. A
+// QR whose destination could be set through a query string would let anyone
+// send a link that renders a code paying them instead.
+export function depositPaymentUri({ asset = "USDC", amount, chainId = activeSettlementChainId() } = {}) {
+  const treasury = creditTreasuryAddress();
+  if (!treasury) throw topupError("Crypto top-ups are not configured: no treasury address is set.", 503, "TREASURY_NOT_CONFIGURED");
+  const token = cryptoTopupAssets(chainId).find((item) => item.symbol === String(asset || "").toUpperCase());
+  if (!token) throw topupError(`${asset} is not an accepted deposit asset.`, 400, "UNSUPPORTED_DEPOSIT_ASSET");
+  const chain = settlementChain(chainId);
+  const base = `ethereum:${token.address}@${chain.id}/transfer?address=${treasury}`;
+  if (amount === undefined || amount === null || amount === "") return base;
+  return `${base}&uint256=${depositAtomicAmount(amount, token.decimals)}`;
+}
+
+// Decimal string to atomic units, in BigInt. An amount that rounds is a wrong
+// payment, and one USDT at eighteen decimals already exceeds what a double can
+// hold exactly.
+export function depositAtomicAmount(amount, decimals) {
+  const [whole, fraction = ""] = String(amount).trim().split(".");
+  if (!/^\d*$/.test(whole) || !/^\d*$/.test(fraction)) {
+    throw topupError("That amount is not a number.", 400, "INVALID_DEPOSIT_AMOUNT");
+  }
+  if (fraction.length > decimals) {
+    throw topupError(`That amount has more than ${decimals} decimal places.`, 400, "DEPOSIT_AMOUNT_TOO_PRECISE");
+  }
+  const atomic = BigInt(whole || "0") * (10n ** BigInt(decimals)) + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+  if (atomic <= 0n) throw topupError("Enter an amount above zero.", 400, "INVALID_DEPOSIT_AMOUNT");
+  return atomic.toString();
 }
 
 async function rpc(fetchImpl, chain, method, params) {

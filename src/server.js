@@ -27,7 +27,8 @@ import { accountSpendLimit, authenticateCreditRequest, bindDepositAddress, creat
 import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
-import { claimCryptoTopup, cryptoTopupInstructions } from "./credit-crypto.js";
+import { claimCryptoTopup, cryptoTopupInstructions, depositPaymentUri } from "./credit-crypto.js";
+import QRCode from "qrcode-svg";
 import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
 import { searchPublicDiscussions } from "./research-search.js";
 import { getSocialProviderHealth } from "./research-social-providers.js";
@@ -450,6 +451,26 @@ async function routeRequest(req, res, store, baseUrl, {
       keyId: decodeURIComponent(revokeKeyMatch[1])
     });
     sendJson(res, 200, revoked);
+    return;
+  }
+
+  // The payment code, rendered here rather than by an image service. Sending a
+  // treasury address to a third party to draw and fetching the picture back
+  // puts the destination of real money on someone else's server and in transit.
+  if (req.method === "GET" && url.pathname === "/account/credits/deposit.svg") {
+    const uri = depositPaymentUri({
+      asset: url.searchParams.get("token") || "USDC",
+      amount: url.searchParams.get("amount") || undefined
+    });
+    const svg = new QRCode({
+      content: uri, padding: 1, width: 320, height: 320, ecl: "M", join: true, container: "svg-viewbox",
+      color: "#000000", background: "#ffffff"
+    }).svg().replace(/^<\?xml[^>]*\?>\s*/, "");
+    res.writeHead(200, {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "no-store"
+    });
+    res.end(svg);
     return;
   }
 

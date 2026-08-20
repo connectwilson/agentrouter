@@ -197,3 +197,35 @@ test("a key can be told apart without ever being shown again", async () => {
   const [afterUse] = await listCreditApiKeys(store, account.account_id);
   assert.ok(afterUse.last_used_at, "using a key records that it was used");
 });
+
+test("a payment code cannot be pointed somewhere else by its link", async () => {
+  await withTreasury(async () => {
+    const { depositPaymentUri, depositAtomicAmount } = await import("../src/credit-crypto.js");
+    const treasury = "0x00000000000000000000000000000000000abcde";
+
+    // EIP-681 is what a wallet expects from a scanned code: token, chain, and
+    // a transfer already filled in.
+    const uri = depositPaymentUri({ asset: "USDT", amount: "10" });
+    assert.match(uri, /^ethereum:0x55d398326f99059fF775485246999027B3197955@56\/transfer\?/);
+    assert.ok(uri.includes(`address=${treasury}`));
+    assert.ok(uri.endsWith("uint256=10000000000000000000"));
+
+    // The recipient is server configuration. A code whose destination could be
+    // set from the outside would let anyone send a link that renders a QR
+    // paying them, which is the whole risk of drawing these codes at all.
+    const evil = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    assert.ok(!depositPaymentUri({ asset: "USDT", amount: "10", address: evil }).includes(evil));
+    await assert.rejects(
+      async () => depositPaymentUri({ asset: `ethereum:${evil}@56/transfer`, amount: "1" }),
+      (error) => error.code === "UNSUPPORTED_DEPOSIT_ASSET"
+    );
+
+    // An amount that rounds is a wrong payment, so it is refused rather than
+    // truncated.
+    assert.equal(depositAtomicAmount("10.5", 18), "10500000000000000000");
+    for (const [bad, code] of [["abc", "INVALID_DEPOSIT_AMOUNT"], ["0", "INVALID_DEPOSIT_AMOUNT"],
+                               ["-1", "INVALID_DEPOSIT_AMOUNT"], ["1.1234567890123456789", "DEPOSIT_AMOUNT_TOO_PRECISE"]]) {
+      assert.throws(() => depositAtomicAmount(bad, 18), (error) => error.code === code, `${bad} is not payable`);
+    }
+  });
+});
