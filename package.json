@@ -1,0 +1,16 @@
+{
+  "name": "agentrouter-public",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tooling for the published AgentRouter client. The npm packages under packages/ are published separately and have their own manifests.",
+  "scripts": {
+    "anchor:deploy": "node contracts/deploy.js",
+    "anchor:dry-run": "node contracts/deploy.js --dry-run"
+  },
+  "devDependencies": {
+    "solc": "0.8.36",
+    "viem": "^2.50.4"
+  },
+  "license": "MIT"
+}

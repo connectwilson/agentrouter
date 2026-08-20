@@ -83,7 +83,7 @@ it would expose every site you are signed in to.
 | `plugin/` | Claude Code plugin (stdio bridge + skill). |
 | `mcpb/agentrouter/` | Desktop Extension bundle scaffold. |
 | `skills/` | AgentRouter Skill for Claude and Codex. |
-| `contracts/` | The evidence anchor contract, as deployed. |
+| `contracts/` | The evidence anchor contract, with a script to compile and deploy your own. |
 | `docs/` | Protocol contract, architecture, upgrade notes. |
 
 ## What is not in here
@@ -91,6 +91,21 @@ it would expose every site you are signed in to.
 The hosted registry and Provider Studio, the routing, trust and reputation
 services, provider credentials and payout configuration, settlement and payment
 backends, and internal planning documents.
+
+## The evidence anchor
+
+`contracts/` holds the contract AgentRouter writes evidence and feedback hashes
+to, and a script that compiles and deploys it. It is events only — no storage,
+no owner, nothing upgradeable — so a deployment is disposable and you are meant
+to deploy your own rather than trust an address someone else published.
+
+```bash
+npm install
+RPC_URL=<your rpc> node contracts/deploy.js --dry-run
+```
+
+See [contracts/README.md](contracts/README.md) for deploying and for checking a
+deployed address against this source.
 
 ## Updating
 
