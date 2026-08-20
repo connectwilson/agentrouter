@@ -1097,7 +1097,7 @@ export function accountHtml({ auth = {} } = {}) {
 
           <section class="dash-view" data-panel="activity" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Account activity</h2><p>Top-ups and billable service calls from your account ledger.</p></div></div><div class="dash-activity" id="activity-list"></div></article></section>
 
-          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Send USDC or USDT on-chain, then submit the transaction hash. The deposit is read from the chain.</p></div></div><div id="deposit-instructions" class="deposit-box"><p class="dash-status">Loading deposit details…</p></div><form class="dash-form" id="deposit-form"><label for="deposit-tx">Transaction hash</label><div class="dash-form-row"><input id="deposit-tx" name="tx_hash" type="text" placeholder="0x…" pattern="0x[0-9a-fA-F]{64}" required><button class="dash-button" id="deposit-button" type="submit">Claim deposit</button></div></form><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Spending limit</h2><p>The most any single agent call may spend. A call above it is refused before anything is charged.</p><form class="dash-form" id="limit-form"><label for="limit-amount">Max per call (credits)</label><div class="dash-form-row"><input id="limit-amount" name="max_price_per_call" type="number" min="0.01" max="1000" step="0.01" required><button class="dash-button" id="limit-button" type="submit">Save limit</button></div></form><p class="dash-status" id="limit-status" role="status"></p><p class="dash-note">Credits are debited after validation and before delivery. Failed provider calls are refunded automatically.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
+          <section class="dash-view" data-panel="credits" hidden><div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Add credits</h2><p>Pay from your browser wallet on BNB Chain. The deposit is verified on-chain and credited automatically.</p></div></div><div id="deposit-instructions" class="deposit-box"><p class="dash-status">Loading deposit details…</p></div><form class="dash-form" id="buy-form"><label for="buy-amount">Amount</label><div class="dash-form-row"><input id="buy-amount" name="amount" type="number" min="0.01" step="0.01" value="10" required><select id="buy-token" name="token"></select><button class="dash-button" id="buy-button" type="submit">Pay with wallet</button></div></form><details class="deposit-fallback"><summary>Already sent, or paying from another device?</summary><form class="dash-form" id="deposit-form"><label for="deposit-tx">Transaction hash</label><div class="dash-form-row"><input id="deposit-tx" name="tx_hash" type="text" placeholder="0x…" pattern="0x[0-9a-fA-F]{64}" required><button class="dash-button secondary" id="deposit-button" type="submit">Claim deposit</button></div></form></details><p class="dash-status" id="account-status" role="status"></p></article><aside class="dash-panel dash-card"><h2>Spending limit</h2><p>The most any single agent call may spend. A call above it is refused before anything is charged.</p><form class="dash-form" id="limit-form"><label for="limit-amount">Max per call (credits)</label><div class="dash-form-row"><input id="limit-amount" name="max_price_per_call" type="number" min="0.01" max="1000" step="0.01" required><button class="dash-button" id="limit-button" type="submit">Save limit</button></div></form><p class="dash-status" id="limit-status" role="status"></p><p class="dash-note">Credits are debited after validation and before delivery. Failed provider calls are refunded automatically.</p></aside></div><article class="dash-panel dash-card dash-section"><div class="dash-card-head"><div><h2>Credit ledger</h2><p>Immutable record of credits added and used.</p></div></div><div class="dash-activity" id="credit-ledger"></div></article></section>
         </section>
       </main>
       <script>
@@ -1153,8 +1153,13 @@ export function accountHtml({ auth = {} } = {}) {
             if (!info.enabled) {
               box.innerHTML = '<p class="dash-status error">Crypto top-ups are not configured on this deployment yet.</p>';
               document.getElementById("deposit-button").disabled = true;
+              document.getElementById("buy-button").disabled = true;
               return;
             }
+            depositInfo = info;
+            const tokenSelect = document.getElementById("buy-token");
+            tokenSelect.innerHTML = info.accepted.map((a) => '<option value="' + escapeDash(a.symbol) + '">' + escapeDash(a.symbol) + '</option>').join("");
+            document.getElementById("buy-button").textContent = window.ethereum ? "Pay with wallet" : "No wallet detected";
             box.innerHTML =
               '<div class="deposit-row"><span>Network</span><strong>' + escapeDash(info.chain_name) + ' (chain ' + info.chain_id + ')</strong></div>' +
               '<div class="deposit-row"><span>Send to</span><strong class="deposit-address" id="deposit-address">' + escapeDash(info.treasury_address) + '</strong><button type="button" class="dash-button ghost" id="copy-deposit">Copy</button></div>' +
@@ -1169,6 +1174,94 @@ export function accountHtml({ auth = {} } = {}) {
             box.innerHTML = '<p class="dash-status error">' + escapeDash(error.message) + '</p>';
           }
         }
+        // Paying from the browser wallet the user already has. EIP-1193 is a
+        // plain JSON-RPC interface on window.ethereum, so an injected wallet
+        // needs no library, no bundle and no third-party checkout — which also
+        // means no CDN script for the page's CSP to refuse.
+        let depositInfo = null;
+        const ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
+
+        // Decimal string to atomic units. Never via Number: 10 USDT at 18
+        // decimals is already past the safe integer range, and a rounded amount
+        // is a wrong payment.
+        function toAtomic(value, decimals) {
+          const [whole, fraction = ""] = String(value).trim().split(".");
+          if (fraction.length > decimals) throw new Error("That amount has more decimal places than the token supports.");
+          return BigInt(whole || "0") * (10n ** BigInt(decimals)) + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+        }
+        function encodeTransfer(to, atomic) {
+          return ERC20_TRANSFER_SELECTOR
+            + to.toLowerCase().replace(/^0x/, "").padStart(64, "0")
+            + atomic.toString(16).padStart(64, "0");
+        }
+        async function ensureChain(chainIdDecimal) {
+          const hexChain = "0x" + Number(chainIdDecimal).toString(16);
+          try {
+            await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hexChain }] });
+          } catch (error) {
+            // 4902 means the wallet does not know this chain yet; adding it is
+            // the documented recovery, not an error to surface.
+            if (error?.code !== 4902) throw error;
+            await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
+              chainId: hexChain,
+              chainName: depositInfo.chain_name,
+              nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
+              rpcUrls: ["https://bsc-dataseed.binance.org"],
+              blockExplorerUrls: depositInfo.explorer ? [depositInfo.explorer] : []
+            }] });
+          }
+        }
+        // The deposit needs confirmations before it can be credited, so the
+        // claim is retried rather than failing the moment the block is young.
+        async function claimWhenConfirmed(txHash, status) {
+          for (let attempt = 0; attempt < 40; attempt++) {
+            const response = await fetch("/account/credits/deposit", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ tx_hash: txHash }) });
+            const payload = await response.json();
+            if (response.ok) return payload;
+            if (payload.code !== "DEPOSIT_NOT_CONFIRMED" && payload.code !== "DEPOSIT_NOT_FOUND") {
+              throw new Error(payload.error?.message || payload.message || "Deposit could not be claimed.");
+            }
+            status.textContent = "Waiting for confirmations… (" + (attempt + 1) + ")";
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+          }
+          throw new Error("The deposit has not confirmed yet. Submit the transaction hash below in a moment.");
+        }
+        document.getElementById("buy-form").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const status = document.getElementById("account-status");
+          const button = document.getElementById("buy-button");
+          status.className = "dash-status";
+          if (!window.ethereum) {
+            status.className = "dash-status error";
+            status.textContent = "No browser wallet detected. Send the tokens from any wallet, then submit the transaction hash below.";
+            return;
+          }
+          button.disabled = true;
+          try {
+            const token = depositInfo.accepted.find((a) => a.symbol === document.getElementById("buy-token").value);
+            const atomic = toAtomic(document.getElementById("buy-amount").value, token.decimals);
+            if (atomic <= 0n) throw new Error("Enter an amount above zero.");
+            status.textContent = "Connecting wallet…";
+            const [account] = await window.ethereum.request({ method: "eth_requestAccounts" });
+            await ensureChain(depositInfo.chain_id);
+            status.textContent = "Confirm the transfer in your wallet…";
+            const txHash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{
+              from: account,
+              to: token.address,
+              data: encodeTransfer(depositInfo.treasury_address, atomic),
+              value: "0x0"
+            }] });
+            status.textContent = "Sent. Waiting for confirmations…";
+            const claimed = await claimWhenConfirmed(txHash, status);
+            status.textContent = "Credited " + claimed.deposit.amount + " " + claimed.deposit.asset + ".";
+            await loadDashboard();
+          } catch (error) {
+            status.className = "dash-status error";
+            // 4001 is the user declining in their wallet, which is a decision,
+            // not a failure to report as one.
+            status.textContent = error?.code === 4001 ? "Payment cancelled." : (error.message || "Payment failed.");
+          } finally { button.disabled = false; }
+        });
         document.getElementById("deposit-form").addEventListener("submit", async (event) => {
           event.preventDefault();
           const status = document.getElementById("account-status");

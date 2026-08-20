@@ -11,5 +11,6 @@ node_modules/
 *.key
 .gstack/
 .env.local
+.env.local*
 .env.*.local
 server.log
