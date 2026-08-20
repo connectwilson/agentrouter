@@ -1239,8 +1239,8 @@ async function routeRequest(req, res, store, baseUrl, {
     sendJson(res, 200, {
       evidence_event_version: "agent_router_evidence_events_v1",
       storage: "offchain_memory_db",
-      chain_anchor: "arc_testnet_hash_anchor",
-      storage_model: "full_evidence_offchain_hashes_on_arc",
+      chain_anchor: `${settlementChain().network}_hash_anchor`,
+      storage_model: "full_evidence_offchain_hashes_onchain",
       count: events.length,
       events
     });

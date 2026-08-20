@@ -2,6 +2,7 @@ import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
 import { hashJson } from "./evidence.js";
+import { settlementChain } from "./chains.js";
 
 export const AGENT_ROUTER_EVIDENCE_ANCHOR_ABI = [
   {
@@ -74,7 +75,7 @@ export function createUnconfiguredArcAnchor(evidence = {}) {
     chain_id: ARC_TESTNET.id,
     status: "not_configured",
     event_type: "AgentRouterEvidence",
-    storage_model: "full_evidence_offchain_hashes_on_arc",
+    storage_model: "full_evidence_offchain_hashes_onchain",
     trace_hash: evidence.trace_hash || null,
     result_hash: evidence.result_hash || null,
     verification_hash: evidence.verification_hash || null,
@@ -141,7 +142,7 @@ export async function anchorEvidenceOnArc(evidence = {}) {
     return {
       ...baseAnchor(evidence),
       status: "anchored",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       tx_hash: txHash,
       block_number: receipt.blockNumber?.toString?.(),
       contract_address: contractAddress,
@@ -152,7 +153,7 @@ export async function anchorEvidenceOnArc(evidence = {}) {
     return {
       ...baseAnchor(evidence),
       status: "anchor_failed",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       contract_address: contractAddress,
       error: error.shortMessage || error.message
     };
@@ -167,7 +168,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     event_type: "AgentRouterFeedback",
-    storage_model: "full_feedback_offchain_hash_on_arc",
+    storage_model: "full_feedback_offchain_hash_onchain",
     request_id: requestId || null,
     feedback_hash: feedbackHashValue,
     service_hash: hashJson(serviceId || ""),
@@ -231,7 +232,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     return {
       ...base,
       status: "anchored",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       tx_hash: txHash,
       block_number: receipt.blockNumber?.toString?.(),
       contract_address: contractAddress,
@@ -242,7 +243,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     return {
       ...base,
       status: "anchor_failed",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       contract_address: contractAddress,
       error: error.shortMessage || error.message
     };
@@ -256,7 +257,7 @@ function baseAnchor(evidence) {
     caip2: ARC_TESTNET.caip2,
     chain_id: ARC_TESTNET.id,
     event_type: "AgentRouterEvidence",
-    storage_model: "full_evidence_offchain_hashes_on_arc",
+    storage_model: "full_evidence_offchain_hashes_onchain",
     request_id: evidence.request_id || null,
     trace_hash: evidence.trace_hash || null,
     result_hash: evidence.result_hash || null,

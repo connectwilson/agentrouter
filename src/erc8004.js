@@ -255,7 +255,7 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
     return {
       ...base,
       status: "registered",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       agent_id: simulation.result?.toString?.() || null,
       owner_address: account.address,
       tx_hash: txHash,
@@ -266,7 +266,7 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
     return {
       ...base,
       status: "registration_failed",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       error: error.shortMessage || error.message
     };
   }
@@ -409,7 +409,7 @@ export async function submitErc8004Feedback({
     return {
       ...base,
       status: "submitted",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       submitter,
       tx_hash: txHash,
       block_number: receipt.blockNumber?.toString?.(),
@@ -420,7 +420,7 @@ export async function submitErc8004Feedback({
     return {
       ...base,
       status: "submit_failed",
-      mode: "arc_testnet",
+      mode: settlementChain().network,
       submitter,
       error: error.shortMessage || error.message
     };

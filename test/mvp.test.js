@@ -1477,7 +1477,7 @@ test("AgentRouter capability catalog and structured request route deterministica
     assert.equal(routed.evidence.arc_anchor.network, "arc-testnet");
     assert.equal(routed.evidence.arc_anchor.status, "anchored");
     assert.equal(routed.evidence.arc_anchor.mode, "mock");
-    assert.equal(routed.evidence.arc_anchor.storage_model, "full_evidence_offchain_hashes_on_arc");
+    assert.equal(routed.evidence.arc_anchor.storage_model, "full_evidence_offchain_hashes_onchain");
     assert.equal(routed.observation.observation_version, "agent_router_route_observation_v1");
     assert.equal(routed.observation.status, "routed");
     assert.equal(routed.observation.selected_service_id, "btc_liquidation_max_pain_demo");
@@ -1488,7 +1488,9 @@ test("AgentRouter capability catalog and structured request route deterministica
     assert.equal(evidenceResponse.status, 200);
     const evidenceEvents = await evidenceResponse.json();
     assert.equal(evidenceEvents.storage, "offchain_memory_db");
-    assert.equal(evidenceEvents.chain_anchor, "arc_testnet_hash_anchor");
+    // The label names the chain that actually anchors. Pinning it to Arc meant a
+    // response could say bsc and arc_testnet in the same breath.
+    assert.equal(evidenceEvents.chain_anchor, "arc-testnet_hash_anchor");
     assert.equal(evidenceEvents.count, 1);
     assert.equal(evidenceEvents.events[0].trace_hash, routed.evidence.trace_hash);
 
