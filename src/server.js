@@ -26,6 +26,7 @@ import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAu
 import { accountSpendLimit, authenticateCreditRequest, bindDepositAddress, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, findAccountByDepositAddress, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey, setAccountSpendLimit } from "./credits.js";
 import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
+import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agentrouter-connection.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { claimCryptoTopup, cryptoTopupInstructions, depositPaymentUri } from "./credit-crypto.js";
 import QRCode from "qrcode-svg";
@@ -1764,28 +1765,6 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
   };
 }
 
-function agentRouterConnectionRequired() {
-  const actionRequired = {
-    action: "connect_agentrouter_account",
-    preferred_tool: "agentrouter_connect",
-    tool_arguments: { client_name: "current AI client" },
-    user_experience: "Open the returned browser approval link. After approval, retry the original request automatically.",
-    api_key_fallback: {
-      for_headless_clients_only: true,
-      environment_variable: "AGENT_ROUTER_API_KEY"
-    }
-  };
-  return {
-    ok: false,
-    status: "connection_required",
-    error: {
-      code: "AGENTROUTER_CONNECTION_REQUIRED",
-      message: "Connect this AI client to the AgentRouter account that owns the data-source connection. Do not ask the user to create, paste, or edit an API key."
-    },
-    action_required: actionRequired
-  };
-}
-
 function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice, currency }) {
   const { capability, type, params, constraints, budget, consumer_context: consumerContext, ...inlineParams } = requirement;
   const cleanInlineParams = {};
@@ -2322,7 +2301,7 @@ function createAgentRouterOriginDocument(store, baseUrl) {
 
 function requestPaymentRequired(result) {
   if (!result.ok && result.status !== "quote_blocked") return result;
-  return {
+  const response = {
     ...result,
     ok: false,
     status: result.status === "quote_blocked" ? "quote_blocked" : "payment_required",
@@ -2334,24 +2313,26 @@ function requestPaymentRequired(result) {
       ? "Increase the max_price budget or choose a lower-cost service."
       : paymentRequiredNextStep(result)
   };
+  return response.status === "payment_required" && isAgentRouterCreditsQuote(result)
+    ? agentRouterConnectionRequired(response)
+    : response;
 }
 
 function paymentRequiredNextStep(result) {
-  if (result?.quote?.settlement?.backend === "credits" || result?.settlement?.backend === "credits") {
-    return "Sign in to AgentRouter, add credits, then configure an AgentRouter API key in your MCP client environment. Never paste the key into chat.";
-  }
+  if (isAgentRouterCreditsQuote(result)) return "Call agentrouter_connect to approve this AI client in the browser, then retry automatically.";
   return "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof.";
 }
 
 function paymentBoundaryStatusCode(payload) {
   if (payload?.status === "invalid_request") return 422;
+  if (payload?.status === "connection_required") return 401;
   if (payload?.status === "payment_required" || payload?.status === "quote_blocked") return 402;
   return 200;
 }
 
 function routePaymentRequired(resolved, body) {
   if (resolved.status === "needs_clarification" || resolved.status === "no_match") return resolved;
-  return {
+  const response = {
     ...resolved,
     ok: false,
     status: "payment_required",
@@ -2362,6 +2343,9 @@ function routePaymentRequired(resolved, body) {
     budget: body.budget || {},
     next_step: "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof."
   };
+  return currentPaymentBackend() === "credits"
+    ? agentRouterConnectionRequired(response)
+    : response;
 }
 
 function paymentRequiredForService(store, serviceId, input = {}, budget = {}) {
@@ -2376,29 +2360,33 @@ function paymentRequiredForService(store, serviceId, input = {}, budget = {}) {
   const price = Number(record.manifest.pricing.amount);
   const max = maxAmount == null || maxAmount === "" ? null : Number(maxAmount);
   const allowed = max == null || price <= max;
-  return {
-    statusCode: allowed ? 402 : 402,
-    body: {
-      ok: false,
-      status: allowed ? "payment_required" : "quote_blocked",
+  const body = {
+    ok: false,
+    status: allowed ? "payment_required" : "quote_blocked",
+    service_id: serviceId,
+    input,
+    quote: {
+      quote_version: "agent_router_payment_quote_v1",
       service_id: serviceId,
-      input,
-      quote: {
-        quote_version: "agent_router_payment_quote_v1",
-        service_id: serviceId,
-        provider_id: record.manifest.provider.provider_id,
-        pricing: record.manifest.pricing,
-        budget: {
-          max_price_usdc: maxAmount || null,
-          allowed
-        },
-        guard_result: allowed ? "pass" : "budget_too_low",
-        would_pay: allowed
+      provider_id: record.manifest.provider.provider_id,
+      pricing: record.manifest.pricing,
+      budget: {
+        max_price_usdc: maxAmount || null,
+        allowed
       },
-      next_step: allowed
-        ? "Call the provider endpoint with a valid x402/Arc payment proof. Public connectors never return paid data without a verified payment."
-        : "Increase the max_price budget or choose a lower-cost service."
-    }
+      guard_result: allowed ? "pass" : "budget_too_low",
+      would_pay: allowed
+    },
+    next_step: allowed
+      ? "Call the provider endpoint with a valid x402/Arc payment proof. Public connectors never return paid data without a verified payment."
+      : "Increase the max_price budget or choose a lower-cost service."
+  };
+  const connectionRequired = allowed && currentPaymentBackend() === "credits";
+  return {
+    statusCode: connectionRequired ? 401 : 402,
+    body: connectionRequired
+      ? agentRouterConnectionRequired(body)
+      : body
   };
 }
 

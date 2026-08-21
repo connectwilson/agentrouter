@@ -13,6 +13,7 @@ import { assertPolicyAllows, readWallet, recordPayment } from "./wallet.js";
 import { registerErc8004AgentIdentity } from "./erc8004.js";
 import { executeProviderConfig } from "./provider-runtime.js";
 import { settlementChain } from "./chains.js";
+import { agentRouterConnectionRequired } from "./agentrouter-connection.js";
 
 export function registerService(store, manifest, baseUrl) {
   const manifestErrors = validateManifest(manifest);
@@ -417,13 +418,8 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
   if (currentPaymentBackend() === "credits") {
     if (!options.consumerApiKey) {
       return {
-        statusCode: 402,
-        body: {
-          error: {
-            code: "CREDITS_REQUIRED",
-            message: "An AgentRouter credit API key is required for this paid service call."
-          }
-        }
+        statusCode: 401,
+        body: agentRouterConnectionRequired()
       };
     }
     paidResponse = await fetch(manifest.endpoint.url, {

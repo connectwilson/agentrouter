@@ -1,6 +1,7 @@
 import { invokePaidService, searchServices } from "./registry.js";
 import { quoteCapabilityRequest, routeCapabilityRequest } from "./router.js";
 import { createPaymentQuote } from "./payment-adapter.js";
+import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agentrouter-connection.js";
 import { inferExternalApiRequest } from "./external-api-capability.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 
@@ -120,7 +121,7 @@ export async function askAgentRouter(store, {
       constraints: { max_price_usdc: maxPrice },
       selectedService: selected
     });
-    return {
+    const response = {
       ok: false,
       status: quote.would_pay ? "payment_required" : "quote_blocked",
       protocol: {
@@ -136,6 +137,9 @@ export async function askAgentRouter(store, {
         ? paymentNextStep(quote)
         : "Increase the max_price budget or choose a lower-cost service."
     };
+    return quote.would_pay && isAgentRouterCreditsQuote(quote)
+      ? agentRouterConnectionRequired(response)
+      : response;
   }
   const tokenResolution = await maybeResolveTokenAddressLocal(store, intent, record?.manifest, { maxPrice, currency }, invocationOptions);
   if (tokenResolution?.ok === false) {
@@ -194,7 +198,7 @@ export async function askAgentRouter(store, {
 
 function paymentRequiredFromQuote({ task, quoted, protocol }) {
   if (!quoted.ok && quoted.status !== "quote_blocked") return { ...quoted, task };
-  return {
+  const response = {
     ...quoted,
     ok: false,
     status: quoted.status === "quote_blocked" ? "quote_blocked" : "payment_required",
@@ -207,12 +211,13 @@ function paymentRequiredFromQuote({ task, quoted, protocol }) {
       ? "Increase the max_price budget or choose a lower-cost service."
       : paymentNextStep(quoted)
   };
+  return response.status === "payment_required" && isAgentRouterCreditsQuote(quoted)
+    ? agentRouterConnectionRequired(response)
+    : response;
 }
 
 function paymentNextStep(quote) {
-  if (quote?.quote?.settlement?.backend === "credits" || quote?.settlement?.backend === "credits") {
-    return "Sign in to AgentRouter, add credits, then configure an AgentRouter API key in your MCP client environment. Never paste the key into chat.";
-  }
+  if (isAgentRouterCreditsQuote(quote)) return "Call agentrouter_connect to approve this AI client in the browser, then retry automatically.";
   return "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof.";
 }
 
