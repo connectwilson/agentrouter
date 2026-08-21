@@ -75,3 +75,29 @@ test("credit-backed HTTP calls return a browser connection action instead of API
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("credit-backed connector calls distinguish missing connection from insufficient payment", async () => {
+  const store = createMemoryStore();
+  createPaidService(store);
+  const server = createServer({ store });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const response = await fetch(`${baseUrl}/connector/invoke_paid_service`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        service_id: "browser_auth_test_service",
+        input: { asset: "BTC" },
+        budget: { max_amount: "0.05", currency: "USDC" }
+      })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 401);
+    assertBrowserConnectionRequired(payload);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
