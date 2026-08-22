@@ -4,7 +4,10 @@ import fs from "node:fs/promises";
 import { encodeFunctionData } from "viem";
 
 import {
+  anchorConsumerFeedbackOnArc,
+  anchorEvidenceOnArc,
   assertEvidenceAnchorReady,
+  createUnconfiguredArcAnchor,
   evidenceAnchorConfig
 } from "../src/arc-anchor.js";
 import {
@@ -60,6 +63,37 @@ test("evidence anchor config prefers chain-neutral names and preflight rejects a
       (error) => error.code === "EVIDENCE_ANCHOR_NOT_DEPLOYED"
     );
   });
+});
+
+test("evidence and feedback anchoring use the active BSC chain for writes and metadata", async () => {
+  await withEnv({
+    ADN_SETTLEMENT_CHAIN: "bsc",
+    ADN_SETTLEMENT_RPC_URL: "https://bsc-dataseed.binance.org",
+    ADN_EVIDENCE_ANCHOR_MODE: "mock",
+    ADN_EVIDENCE_ANCHOR_CONTRACT: undefined,
+    ADN_EVIDENCE_ANCHOR_PRIVATE_KEY: undefined
+  }, async () => {
+    const evidence = await anchorEvidenceOnArc({ request_id: "req_bsc" });
+    const feedback = await anchorConsumerFeedbackOnArc({
+      requestId: "req_bsc",
+      serviceId: "service_bsc",
+      providerId: "provider_bsc",
+      feedback: { useful: true }
+    });
+    const unconfigured = createUnconfiguredArcAnchor({ request_id: "req_bsc" });
+
+    for (const record of [evidence, feedback, unconfigured]) {
+      assert.equal(record.network, "bsc");
+      assert.equal(record.caip2, "eip155:56");
+      assert.equal(record.chain_id, 56);
+    }
+    assert.match(evidence.explorer_url, /^https:\/\/bscscan\.com\/tx\//);
+    assert.match(feedback.explorer_url, /^https:\/\/bscscan\.com\/tx\//);
+  });
+
+  const source = await fs.readFile(new URL("../src/arc-anchor.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /chain:\s*ARC_TESTNET/);
+  assert.doesNotMatch(source, /ARC_TESTNET\.blockExplorers/);
 });
 
 function feedbackInput() {
