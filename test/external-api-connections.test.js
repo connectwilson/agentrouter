@@ -46,6 +46,11 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(exa.total_calls, null);
   assert.equal(exa.connection_state, "unknown");
   assert.equal(exa.connected, null);
+  assert.match(exa.capability_manual.best_for.join(" "), /general web research/i);
+  const openalex = catalog.find((item) => item.source === "openalex");
+  assert.match(openalex.capability_manual.best_for.join(" "), /DOI|citation/i);
+  assert.match(openalex.capability_manual.not_for.join(" "), /general web research/i);
+  assert.ok(openalex.capability_manual.route_only_when.some((rule) => /paper|DOI|citation/i.test(rule)));
 });
 
 test("external API catalog separates service availability from account connection state", () => {
@@ -253,6 +258,7 @@ test("AgentRouter capability schema and connection UI expose the expanded provid
   assert.match(html, /Amadeus/);
   assert.match(html, /EasyPost/);
   assert.match(html, /OpenAlex/);
+  assert.match(html, /connect_source/);
 });
 
 test("Brave API credentials stay secret and query results are normalized", async () => {
@@ -298,6 +304,9 @@ test("external API query fails clearly when the user has not connected the sourc
   assert.equal(result.ok, false);
   assert.equal(result.status, "connection_required");
   assert.equal(result.action_required, "connect_api_source");
+  assert.equal(result.connection_action.preferred_tool, "agentrouter_connect_source");
+  assert.deepEqual(result.connection_action.tool_arguments, { source: "exa" });
+  assert.equal(result.do_not_fallback_outside_agentrouter, true);
 });
 
 test("provider rate limits are preserved as structured AgentRouter status", async () => {
@@ -691,6 +700,59 @@ test("remote MCP routes public and credit-key-owned external providers through t
   }
 });
 
+test("remote MCP turns a missing upstream source into a browser authorization handoff", async () => {
+  const store = createMemoryStore();
+  const secretStore = secrets();
+  const user = { provider: "github", id: "source-connect-user", name: "Source Connect User" };
+  const ownerKey = authUserKey(user);
+  const account = await ensureCreditAccount(store, user);
+  const { api_key: apiKey } = await createCreditApiKey(store, { account, label: "Source connection" });
+  const server = createServer({ store, socialConnectionOptions: secretStore });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const mcp = async (method, params = {}) => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-agentrouter-api-key": apiKey },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+    });
+    const rpc = await response.json();
+    return rpc.result;
+  };
+
+  try {
+    const tools = await mcp("tools/list");
+    assert.ok(tools.tools.some((tool) => tool.name === "agentrouter_connect_source"));
+
+    const first = await mcp("tools/call", {
+      name: "agentrouter_connect_source",
+      arguments: { source: "openalex" }
+    });
+    const authorization = JSON.parse(first.content[0].text);
+    assert.equal(authorization.status, "authorization_required");
+    assert.equal(authorization.source, "openalex");
+    assert.match(authorization.verification_uri, /^http:\/\/127\.0\.0\.1:\d+\/research\?connect_source=openalex/);
+    assert.equal(authorization.retry_original_request, true);
+    assert.equal(authorization.do_not_fallback_outside_agentrouter, true);
+
+    await createSocialConnection(store, ownerKey, {
+      platform: "openalex",
+      provider_type: "openalex_api",
+      credentials: { api_key: "openalex-secret" }
+    }, secretStore);
+
+    const second = await mcp("tools/call", {
+      name: "agentrouter_connect_source",
+      arguments: { source: "openalex" }
+    });
+    const connected = JSON.parse(second.content[0].text);
+    assert.equal(connected.status, "connected");
+    assert.equal(connected.retry_original_request, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("remote MCP routes social user voice research through the same built-in dispatcher", async () => {
   const store = createMemoryStore();
   const user = { provider: "github", id: "mcp-social-user", name: "MCP Social User" };
@@ -949,6 +1011,11 @@ test("ordinary questions reach the right API without naming the source", async (
   // Web search picks a connected source, and falls back to a key-free one.
   assert.equal(route("latest developments in AI agents", ["tavily"]).params.source, "tavily");
   assert.equal(route("search Exa for crypto pm jobs").params.source, "exa", "a named source still wins");
+  assert.equal(route("research AgentRouter product positioning and competitors", ["exa"]).params.source, "exa");
+  assert.equal(route("研究 AgentRouter 的产品定位和竞品", ["exa"]).params.source, "exa");
+  assert.equal(route("研究同类策略的实证表现", ["exa"]).params.source, "exa");
+  assert.equal(route("peer-reviewed papers and DOI citations about agent routing", ["exa"]).params.source, "openalex");
+  assert.equal(route("查找 AgentRouter 相关论文的 DOI 和引用次数", ["exa"]).params.source, "openalex");
 });
 
 test("successful calls can be rated, not only failed ones", async () => {
