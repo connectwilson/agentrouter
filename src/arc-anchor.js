@@ -1,6 +1,6 @@
 import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
+import { isEvmAddress } from "./arc-payment.js";
 import { hashJson } from "./evidence.js";
 import { settlementChain } from "./chains.js";
 
@@ -116,11 +116,12 @@ export async function assertEvidenceAnchorReady({ fetchImpl = globalThis.fetch }
 
 export function createUnconfiguredArcAnchor(evidence = {}) {
   const config = evidenceAnchorConfig();
+  const chain = settlementChain();
   return {
     anchor_version: "agent_router_arc_anchor_v1",
-    network: ARC_TESTNET.network,
-    caip2: ARC_TESTNET.caip2,
-    chain_id: ARC_TESTNET.id,
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
     status: "not_configured",
     event_type: "AgentRouterEvidence",
     storage_model: "full_evidence_offchain_hashes_onchain",
@@ -135,6 +136,7 @@ export function createUnconfiguredArcAnchor(evidence = {}) {
 
 export async function anchorEvidenceOnArc(evidence = {}) {
   const config = evidenceAnchorConfig();
+  const chain = settlementChain();
   if (config.mode === "mock") {
     return {
       ...baseAnchor(evidence),
@@ -143,7 +145,7 @@ export async function anchorEvidenceOnArc(evidence = {}) {
       tx_hash: `0x${"b".repeat(64)}`,
       block_number: "0",
       contract_address: config.contractAddress || `0x${"c".repeat(40)}`,
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/0x${"b".repeat(64)}`
+      explorer_url: `${chain.blockExplorers.default.url}/tx/0x${"b".repeat(64)}`
     };
   }
   if (!arcAnchorConfigured()) {
@@ -161,12 +163,12 @@ export async function anchorEvidenceOnArc(evidence = {}) {
     const account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
     const client = createWalletClient({
       account,
-      chain: ARC_TESTNET,
-      transport: http(ARC_TESTNET.rpcUrls.default.http[0])
+      chain,
+      transport: http(chain.rpcUrl)
     });
     const publicClient = createPublicClient({
-      chain: ARC_TESTNET,
-      transport: http(ARC_TESTNET.rpcUrls.default.http[0])
+      chain,
+      transport: http(chain.rpcUrl)
     });
     const txHash = await client.writeContract({
       address: contractAddress,
@@ -191,18 +193,18 @@ export async function anchorEvidenceOnArc(evidence = {}) {
     return {
       ...baseAnchor(evidence),
       status: "anchored",
-      mode: settlementChain().network,
+      mode: chain.network,
       tx_hash: txHash,
       block_number: receipt.blockNumber?.toString?.(),
       contract_address: contractAddress,
       anchor_account: account.address,
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/${txHash}`
+      explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`
     };
   } catch (error) {
     return {
       ...baseAnchor(evidence),
       status: "anchor_failed",
-      mode: settlementChain().network,
+      mode: chain.network,
       contract_address: contractAddress,
       error: error.shortMessage || error.message
     };
@@ -211,12 +213,13 @@ export async function anchorEvidenceOnArc(evidence = {}) {
 
 export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, providerId, feedback } = {}) {
   const config = evidenceAnchorConfig();
+  const chain = settlementChain();
   const feedbackHashValue = hashJson(feedback || null);
   const base = {
     anchor_version: "agent_router_feedback_arc_anchor_v1",
-    network: ARC_TESTNET.network,
-    caip2: ARC_TESTNET.caip2,
-    chain_id: ARC_TESTNET.id,
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
     event_type: "AgentRouterFeedback",
     storage_model: "full_feedback_offchain_hash_onchain",
     request_id: requestId || null,
@@ -233,7 +236,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
       tx_hash: `0x${"d".repeat(64)}`,
       block_number: "0",
       contract_address: config.contractAddress || `0x${"c".repeat(40)}`,
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/0x${"d".repeat(64)}`
+      explorer_url: `${chain.blockExplorers.default.url}/tx/0x${"d".repeat(64)}`
     };
   }
   if (!arcAnchorConfigured()) {
@@ -256,12 +259,12 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     const account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
     const client = createWalletClient({
       account,
-      chain: ARC_TESTNET,
-      transport: http(ARC_TESTNET.rpcUrls.default.http[0])
+      chain,
+      transport: http(chain.rpcUrl)
     });
     const publicClient = createPublicClient({
-      chain: ARC_TESTNET,
-      transport: http(ARC_TESTNET.rpcUrls.default.http[0])
+      chain,
+      transport: http(chain.rpcUrl)
     });
     const txHash = await client.writeContract({
       address: contractAddress,
@@ -282,18 +285,18 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     return {
       ...base,
       status: "anchored",
-      mode: settlementChain().network,
+      mode: chain.network,
       tx_hash: txHash,
       block_number: receipt.blockNumber?.toString?.(),
       contract_address: contractAddress,
       anchor_account: account.address,
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/${txHash}`
+      explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`
     };
   } catch (error) {
     return {
       ...base,
       status: "anchor_failed",
-      mode: settlementChain().network,
+      mode: chain.network,
       contract_address: contractAddress,
       error: error.shortMessage || error.message
     };
@@ -301,11 +304,12 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
 }
 
 function baseAnchor(evidence) {
+  const chain = settlementChain();
   return {
     anchor_version: "agent_router_arc_anchor_v1",
-    network: ARC_TESTNET.network,
-    caip2: ARC_TESTNET.caip2,
-    chain_id: ARC_TESTNET.id,
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
     event_type: "AgentRouterEvidence",
     storage_model: "full_evidence_offchain_hashes_onchain",
     request_id: evidence.request_id || null,
