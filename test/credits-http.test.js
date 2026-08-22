@@ -120,6 +120,11 @@ test("an installed agent can connect through browser approval without copying an
     assert.match(approvalHtml, /Connect Claude Desktop/);
     assert.match(approvalHtml, new RegExp(flow.user_code));
     assert.doesNotMatch(approvalHtml, new RegExp(flow.device_code));
+    assert.match(approvalHtml, /id="success-panel"[^>]*hidden/);
+    assert.match(approvalHtml, /Connection approved/);
+    assert.match(approvalHtml, /Claude Desktop is now connected/);
+    assert.match(approvalHtml, /Your AI client will continue automatically/);
+    assert.match(approvalHtml, /aria-live="polite"/);
 
     const approved = await fetch(`${baseUrl}/auth/device/approve`, {
       method: "POST",
