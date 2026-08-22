@@ -5354,6 +5354,8 @@ test("public agentrouter installer configures Codex through its TOML config", as
       skillDirs: path.join(home, "skills")
     });
     assert.deepEqual(result.configured_clients.map((client) => client.name), ["Codex"]);
+    assert.equal(result.setup_action, "updated");
+    assert.equal(result.reload_required, true);
 
     const written = await fs.readFile(configPath, "utf8");
     // The stale github bridge is replaced by the published package...
@@ -5369,10 +5371,13 @@ test("public agentrouter installer configures Codex through its TOML config", as
     assert.equal((written.match(/^\[mcp_servers\.AgentRouter\]$/gm) || []).length, 1);
 
     // Re-running must stay idempotent rather than stacking blocks.
-    await installAgentRouter({
+    const repeated = await installAgentRouter({
       home, client: "codex", agentRouterUrl: baseUrl,
       env: { AGENTROUTER_SKIP_BROWSER_SETUP: "1" }, skillDirs: path.join(home, "skills")
     });
+    assert.equal(repeated.setup_action, "already_configured");
+    assert.equal(repeated.reload_required, false);
+    assert.equal(repeated.configured_clients[0].changed, false);
     const again = await fs.readFile(configPath, "utf8");
     assert.equal((again.match(/^\[mcp_servers\.AgentRouter\]$/gm) || []).length, 1);
     assert.equal((again.match(/^\[mcp_servers\.node_repl\]$/gm) || []).length, 1);
