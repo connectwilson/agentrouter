@@ -70,7 +70,7 @@ const agentRouterSkillPath = new URL("../claude-skills/agent-router/SKILL.md", i
 const remoteMcpTools = [
   {
     name: "agentrouter_fetch",
-    description: "Default AgentRouter entrypoint. Use this single tool for data/API questions: AgentRouter handles discovery, routing, quote/payment boundary, provider invocation when available, verification, evidence, and feedback request internally. Pass either the user's natural-language task, or structured data_requirements when the main agent can parse them. Do not call capabilities/quote/request first unless debugging or the user asks to inspect routing.",
+    description: "Default first hop for external information. Use this single tool first for research, search, URLs, platforms, current information, and API/data questions. AgentRouter selects public web, local read-only connectors, or specialist services and handles budget, authorization, invocation, verification, evidence, and feedback internally. Pass the original task or structured data_requirements; use max_price 0 for free-only research. Use another acquisition backend only when this response names a handoff, or when the user explicitly requests direct mode.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2006,6 +2006,8 @@ function sendUpdateManifest(req, res, baseUrl) {
     schema_version: "agentrouter_update_manifest_v1",
     channel: "stable",
     installer_version: "0.2.0",
+    skill_version: "0.8.0",
+    routing_policy_version: "external_information_first_v1",
     repository_access_required: false,
     remote_mcp_url: `${origin}/mcp`,
     skill_url: `${origin}/SKILL.md`,

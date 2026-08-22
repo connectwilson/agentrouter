@@ -102,6 +102,11 @@ test("hosted fetch recognizes an X URL and requests local execution instead of n
     assert.equal(payload.status, "local_connector_required");
     assert.equal(payload.request.capability, "social_post_read");
     assert.equal(payload.local_execution_plan.params.target, xUrl);
+    assert.equal(payload.handoff.kind, "local_execution");
+    assert.equal(payload.handoff.backend, "agentrouter_mcp_local_connector");
+    assert.equal(payload.handoff.adapter, "opencli");
+    assert.equal(payload.handoff.preserve_route_context, true);
+    assert.equal(payload.fallback_allowed, false);
     assert.notEqual(payload.status, "no_service_found");
   } finally {
     await new Promise((resolve) => server.close(resolve));

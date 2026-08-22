@@ -1983,6 +1983,8 @@ test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async (
     const listPayload = await listed.json();
     assert.equal(listPayload.result.tools[0].name, "agentrouter_fetch");
     assert.ok(/single tool/.test(listPayload.result.tools[0].description));
+    assert.match(listPayload.result.tools[0].description, /default first hop/i);
+    assert.match(listPayload.result.tools[0].description, /research, search, URLs, platforms/i);
     assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_request"));
     assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_ask"));
 
@@ -5908,6 +5910,10 @@ test("a question with no matching service gets a route it can actually take", as
     assert.equal(jobs.suggested_route.call.capability, "external_api_query");
     assert.equal(jobs.suggested_route.call.params.source, "exa");
     assert.match(jobs.next_actions[0], /Retry as a structured call/);
+    assert.equal(jobs.handoff.kind, "agentrouter_route");
+    assert.equal(jobs.handoff.tool, "agentrouter_request");
+    assert.deepEqual(jobs.handoff.request, jobs.suggested_route.call);
+    assert.equal(jobs.handoff.preserve_route_context, true);
 
     // Naming a platform should route to the free browser read, not a paid
     // search source — the user already has that session open.

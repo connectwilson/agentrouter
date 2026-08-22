@@ -102,6 +102,20 @@ export async function askAgentRouter(store, {
       task,
       tried: intent.search_queries,
       ...(suggestion ? { suggested_route: suggestion } : {}),
+      handoff: suggestion
+        ? {
+          kind: "agentrouter_route",
+          tool: "agentrouter_request",
+          request: suggestion.call,
+          preserve_route_context: true
+        }
+        : {
+          kind: "external_acquisition",
+          backend: "agent-reach",
+          reason: "agentrouter_coverage_gap",
+          preserve_route_context: true
+        },
+      fallback_allowed: !suggestion,
       next_actions: suggestion
         ? [
           `Retry as a structured call: ${JSON.stringify(suggestion.call)}`,
@@ -252,7 +266,14 @@ export async function askAgentRouterRemote({
       ok: false,
       status: "no_service_found",
       task,
-      tried: intent.search_queries
+      tried: intent.search_queries,
+      handoff: {
+        kind: "external_acquisition",
+        backend: "agent-reach",
+        reason: "agentrouter_coverage_gap",
+        preserve_route_context: true
+      },
+      fallback_allowed: true
     };
   }
   const selected = selectService(candidates, intent);

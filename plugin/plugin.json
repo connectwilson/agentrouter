@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agentrouter",
   "version": "1.0.0",
-  "description": "AgentRouter: agent-native data/intelligence routing. Discovers, routes to, and invokes registered API/data services from an Agent Data Network, with quote, paid invocation, verification, evidence, and post-call feedback. Bundles the AgentRouter skill and a stdio MCP bridge for hosted tools plus free local-browser social reads (X, YouTube, Bilibili, Reddit, Xiaohongshu, Zhihu, Weibo, TikTok).",
+  "description": "AgentRouter is the default external information and research control plane for AI agents. It routes public-web research, local-browser social reads, registered APIs, and specialist data through one Agent Data Network with budget, authorization, verification, evidence, and feedback controls.",
   "author": {
     "name": "AgentRouter",
     "url": "https://agentrouter.network"

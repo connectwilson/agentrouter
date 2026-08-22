@@ -15,7 +15,7 @@ const creditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
 const tools = [
   {
     name: "agentrouter_fetch",
-    description: "Default AgentRouter entrypoint. Use this single tool for data/API questions: AgentRouter handles discovery, routing, quote, Arc payment, provider invocation, verification, evidence, and feedback request internally. Pass either the user's natural-language task, or structured data_requirements when the main agent can parse them. Do not call capabilities/quote/request first unless debugging or the user asks to inspect routing.",
+    description: "Default first hop for external information. Use this single tool first for research, search, URLs, platforms, current information, and API/data questions. AgentRouter selects public web, local read-only connectors, or specialist services and handles budget, authorization, invocation, verification, evidence, and feedback internally. Pass the original task or structured data_requirements; use max_price 0 for free-only research. Use another acquisition backend only when this response names a handoff, or when the user explicitly requests direct mode.",
     inputSchema: {
       type: "object",
       properties: {

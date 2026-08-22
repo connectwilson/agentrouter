@@ -117,6 +117,14 @@ function localConnectorRequired(parsed, attempts) {
       message: "Read this X post through the AgentRouter MCP bridge on the user's device, where the browser login remains local.",
       reload_after_bridge_update: true
     },
+    handoff: {
+      kind: "local_execution",
+      backend: "agentrouter_mcp_local_connector",
+      adapter: "opencli",
+      capability: "social_post_read",
+      preserve_route_context: true
+    },
+    fallback_allowed: false,
     local_execution_plan: buildLocalSocialExecutionPlan({
       platform: parsed.platform,
       operation: "read_post",

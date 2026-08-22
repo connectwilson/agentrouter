@@ -50,7 +50,7 @@ export async function installAgentRouter(options = {}) {
       account_url: `${origin}/account`,
       local_wallet_created: false
     },
-    updates: "Hosted capabilities, providers, routing, and tools update automatically."
+    updates: "Hosted capabilities, providers, and tools update automatically. Rerun this installer when the update manifest reports a newer local Skill routing policy."
   };
 
   if (options.full === false) return result;
