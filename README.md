@@ -247,7 +247,7 @@ After a paid call, AgentRouter records:
 - consumer-agent feedback
 - ERC-8004 Reputation Registry feedback when configured
 
-The custom Arc evidence anchor keeps the full call trace auditable without putting raw API data onchain. ERC-8004 provides the standard reputation surface for provider/service trust.
+The custom evidence anchor keeps the paid-call trace auditable without putting raw API data onchain. Consumer feedback uses ERC-8004 as its one public onchain record; AgentRouter does not also create a custom feedback-anchor transaction.
 
 Each published service can expose an ERC-8004 Agent Registration File and register an onchain identity:
 
@@ -268,8 +268,9 @@ Useful server config:
 ```bash
 ADN_ARC_ANCHOR_CONTRACT=0x...
 ADN_ARC_ANCHOR_PRIVATE_KEY=0x...
+ADN_SETTLEMENT_CHAIN=bsc
+ADN_BSC_PAYMASTER_URL=https://your-bnb-eoa-paymaster-rpc
 ADN_ERC8004_OWNER_PRIVATE_KEY=0x...
-ADN_ERC8004_PRIVATE_KEY=0x...
 ADN_ERC8004_AGENT_ID=1001
 ADN_ERC8004_METADATA_BASE_URL=https://agentrouter.network
 ADN_ERC8004_IDENTITY_REGISTRY=0x8004A818BFB912233c491871b3d84c89A494BD9e
@@ -584,7 +585,7 @@ Production x402 integration should replace:
 - buyer-side `createWalletPaymentProof` with an official x402 exact EVM client payment authorization where a facilitator supports the target chain
 - seller-side `verifyDevPaymentProof` with facilitator `/verify` and `/settle`
 - demo payment requirements with official x402 payment requirements
-- local mock anchors with real `EvidenceAnchored` and `FeedbackAnchored` events on Arc Testnet; `circle_arc` already supports a direct Arc Testnet USDC transfer proof path for local-wallet calls
+- local evidence mocks with real `EvidenceAnchored` transactions on the configured settlement chain; consumer feedback is a separate, consumer-signed ERC-8004 transaction and can be gas-sponsored by BNB EOA Paymaster
 
 Relevant runtime configuration:
 

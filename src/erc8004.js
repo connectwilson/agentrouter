@@ -415,6 +415,7 @@ export async function submitErc8004Feedback({
 }
 
 export function createErc8004FeedbackDescriptor({ requestId, serviceId, providerId, manifest, feedback, baseUrl = "" } = {}) {
+  const chain = settlementChain();
   const agentId = resolveErc8004AgentId({ serviceId, manifest });
   const registry = reputationRegistryAddress();
   const endpoint = endpointFor(baseUrl, requestId);
@@ -422,9 +423,9 @@ export function createErc8004FeedbackDescriptor({ requestId, serviceId, provider
     standard: "ERC-8004",
     registry_type: "reputation",
     event_type: "AgentRouterConsumerFeedback",
-    network: ARC_TESTNET.network,
-    caip2: ARC_TESTNET.caip2,
-    chain_id: ARC_TESTNET.id,
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
     registry_address: registry || null,
     identity_registry_address: erc8004Registries().identityRegistry,
     validation_registry_address: erc8004Registries().validationRegistry,

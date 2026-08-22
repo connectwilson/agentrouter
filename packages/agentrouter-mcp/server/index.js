@@ -3,6 +3,8 @@ import { pathToFileURL } from "node:url";
 import { localSocialPostRequest, runLocalSocialPostRead } from "./local-social-post.js";
 import { localSocialSearchRequest, runLocalSocialSearch } from "./local-social-search.js";
 import { readStoredCredential, writeStoredCredential } from "./credential-store.js";
+import { submitSponsoredFeedback } from "./bsc-feedback.js";
+import { readOrCreateFeedbackSigner } from "./feedback-wallet.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const configuredCreditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
@@ -119,6 +121,7 @@ async function forwardRequest(message) {
       throw new Error("AgentRouter remote MCP returned an invalid JSON response");
     }
     if (message.method === "tools/list") appendLocalTools(payload);
+    await completeSponsoredFeedback(message, payload);
     send(payload);
   } catch (error) {
     send({
@@ -246,6 +249,57 @@ async function postJson(pathname, body) {
     body: JSON.stringify(body)
   });
   return { ok: response.ok, status: response.status, payload: await response.json().catch(() => null) };
+}
+
+async function postAuthenticatedJson(pathname, body) {
+  const headers = { "content-type": "application/json", accept: "application/json" };
+  const credential = await currentCredential();
+  if (credential) {
+    headers["x-agentrouter-api-key"] = credential;
+    headers.authorization = `Bearer ${credential}`;
+  }
+  const response = await fetch(`${baseUrl}${pathname}`, { method: "POST", headers, body: JSON.stringify(body) });
+  return { ok: response.ok, status: response.status, payload: await response.json().catch(() => null) };
+}
+
+async function completeSponsoredFeedback(message, payload) {
+  if (message?.method !== "tools/call" || message?.params?.name !== "agentrouter_feedback") return;
+  const block = payload?.result?.content?.find((item) => item?.type === "text");
+  if (!block?.text) return;
+  const feedback = safeJson(block.text);
+  if (feedback?.erc8004?.status !== "consumer_submission_required") return;
+  try {
+    const account = await readOrCreateFeedbackSigner();
+    const erc8004 = await submitSponsoredFeedback({
+      descriptor: feedback.erc8004,
+      account,
+      paymasterRpc: async (method, params) => {
+        const response = await postAuthenticatedJson("/agent-router/paymaster", {
+          method,
+          params,
+          service_id: feedback.service_id,
+          request_id: feedback.request_id
+        });
+        if (!response.ok) throw new Error(response.payload?.error || `AgentRouter Paymaster proxy returned HTTP ${response.status}.`);
+        return response.payload?.result;
+      }
+    });
+    feedback.erc8004 = erc8004;
+    feedback.trust_anchor = { ...(feedback.trust_anchor || {}), erc8004 };
+    if (erc8004.status === "submitted") {
+      const attached = await postAuthenticatedJson("/agent-router/feedback/erc8004", {
+        service_id: feedback.service_id,
+        request_id: feedback.request_id,
+        erc8004
+      });
+      feedback.erc8004_attachment = attached.payload;
+      if (attached.ok) feedback.trust_anchor = attached.payload?.trust_anchor || feedback.trust_anchor;
+    }
+    block.text = JSON.stringify(feedback, null, 2);
+  } catch (error) {
+    feedback.erc8004 = { ...feedback.erc8004, status: "sponsorship_failed", recorded_offchain: true, error: error.message };
+    block.text = JSON.stringify(feedback, null, 2);
+  }
 }
 
 async function currentCredential() {

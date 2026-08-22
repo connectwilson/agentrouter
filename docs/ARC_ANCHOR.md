@@ -1,6 +1,6 @@
 # Arc Evidence and ERC-8004 Trust Anchoring
 
-AgentRouter stores full evidence offchain, anchors evidence hashes on Arc, and submits post-call consumer feedback to ERC-8004 when configured.
+AgentRouter stores full evidence and feedback offchain, anchors evidence hashes on the configured settlement chain, and submits one public post-call feedback transaction to ERC-8004 when configured.
 
 ## What Goes Onchain
 
@@ -15,14 +15,14 @@ AgentRouter stores full evidence offchain, anchors evidence hashes on Arc, and s
 - `providerHash`
 - `paymentTxHash`
 
-It also emits `FeedbackAnchored` after the consumer agent submits post-call feedback:
+The deployed contract retains a legacy `FeedbackAnchored` event, but AgentRouter no longer calls it for new consumer feedback:
 
 - `requestId`
 - `feedbackHash`
 - `serviceHash`
 - `providerHash`
 
-The raw request, result, verification details, and consumer feedback stay in the registry/persistence layer. Arc is the immutable timestamp and integrity anchor, not the full data store.
+The raw request, result, verification details, and consumer feedback stay in the registry/persistence layer. The configured settlement chain is the immutable timestamp and integrity anchor for evidence, not the full data store.
 
 ## ERC-8004 Reputation Feedback
 
@@ -30,7 +30,8 @@ The custom `AgentRouterEvidenceAnchor` contract is a minimal evidence hash ancho
 
 - Provider/data services can be associated with an ERC-8004 `agent_id`
 - After a paid invocation, the buyer Agent submits consumer feedback to AgentRouter
-- AgentRouter writes that feedback to the ERC-8004 Reputation Registry with `giveFeedback(...)`
+- The local consumer wallet signs `giveFeedback(...)`; on BNB Chain, the configured EOA Paymaster submits it with zero gas price and sponsors the gas
+- The custom evidence-anchor contract is not called again for consumer feedback, avoiding two onchain writes for one rating
 - The onchain feedback points back to the offchain feedback/evidence URI and hash
 
 This gives the MVP two layers:
@@ -87,7 +88,16 @@ ADN_ARC_ANCHOR_PRIVATE_KEY=0x...
 
 `ADN_ARC_ANCHOR_PRIVATE_KEY` is the server-side anchoring wallet. It is not a provider API key and should not be used for user payments.
 
-To enable ERC-8004 feedback on Arc Testnet:
+To enable gas-sponsored ERC-8004 feedback on BNB Chain:
+
+```bash
+ADN_SETTLEMENT_CHAIN=bsc
+ADN_BSC_PAYMASTER_URL=https://your-bnb-eoa-paymaster-rpc
+```
+
+`ADN_BSC_PAYMASTER_URL` belongs on the AgentRouter server (for example Render). The local MCP bridge signs with a local encrypted reviewer wallet and sends only the signed transaction through AgentRouter's authenticated Paymaster proxy. If sponsorship is unavailable, feedback remains recorded offchain and the bridge does not fall back to spending the consumer's BNB.
+
+For legacy direct ERC-8004 submission without BNB sponsorship:
 
 ```bash
 ADN_ERC8004_PRIVATE_KEY=0x...
@@ -105,7 +115,7 @@ ADN_ERC8004_IDENTITY_REGISTRY=0x8004A818BFB912233c491871b3d84c89A494BD9e
 
 `ADN_ERC8004_AGENT_ID` can be replaced per service by attaching `registration.erc8004.agent_id` to the service manifest, or by setting `ADN_ERC8004_AGENT_ID_<SERVICE_ID>`.
 
-If ERC-8004 is not configured, the API returns `erc8004.status = "not_configured"` and still records the custom Arc evidence anchor when available.
+If ERC-8004 is not configured, the API returns `erc8004.status = "not_configured"` and keeps the feedback offchain. Evidence anchoring remains independent; AgentRouter no longer creates a second custom onchain anchor for the feedback itself.
 
 For local tests:
 

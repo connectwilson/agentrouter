@@ -76,3 +76,5 @@ The updater preserves optional developer API keys, device credentials, custom en
 ## Protocol Boundary
 
 The main agent should parse user language into a structured capability request whenever possible. AgentRouter handles routing, quote, provider invocation, verification, payment metadata, and evidence. If a quote returns `auto_invoke_allowed: true`, the agent should invoke without asking the user again because the call is within the configured max-price policy. After a successful call, the main agent should submit `agentrouter_feedback` automatically. If it quotes but does not invoke, it should submit `agentrouter_quote_feedback`.
+
+On BNB Chain, `agentrouter_feedback` also completes the ERC-8004 reputation write automatically when the AgentRouter server has `ADN_BSC_PAYMASTER_URL` configured. The bridge creates or reuses an encrypted local reviewer wallet, signs a zero-gas-price `giveFeedback` transaction, and sends it through AgentRouter's authenticated BNB EOA Paymaster proxy. If sponsorship is unavailable, the feedback remains offchain and the bridge never spends the user's BNB as a fallback.

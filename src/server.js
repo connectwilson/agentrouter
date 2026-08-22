@@ -16,8 +16,8 @@ import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabi
 import { writePersistentServiceEvent } from "./persistence.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { isArcNetwork, verifyArcUsdcTransfer } from "./arc-payment.js";
-import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
-import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, submitErc8004Feedback, verifyErc8004FeedbackTransaction } from "./erc8004.js";
+import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
+import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, ERC8004_REPUTATION_ABI, verifyErc8004FeedbackTransaction } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
@@ -30,6 +30,7 @@ import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agen
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { claimCryptoTopup, cryptoTopupInstructions, depositPaymentUri } from "./credit-crypto.js";
 import QRCode from "qrcode-svg";
+import { decodeFunctionData, parseTransaction } from "viem";
 import { createResearchDraft, normalizeSocialEvidenceItem, researchHtml } from "./research.js";
 import { searchPublicDiscussions } from "./research-search.js";
 import { getSocialProviderHealth } from "./research-social-providers.js";
@@ -1050,9 +1051,7 @@ async function routeRequest(req, res, store, baseUrl, {
       body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
     }
     const result = recordConsumerFeedback(store, body);
-    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl, {
-      deferErc8004ToConsumer: Boolean(body.defer_erc8004_to_consumer)
-    });
+    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
     result.arc_anchor = trustAnchor.arc_anchor;
     result.erc8004 = trustAnchor.erc8004;
     result.trust_anchor = trustAnchor;
@@ -1064,6 +1063,17 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req);
     const result = await recordClientSubmittedErc8004Feedback(store, body);
     sendJson(res, result.ok ? 200 : 422, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/agent-router/paymaster") {
+    if (!paymentContext.ownerKey) {
+      sendJson(res, 401, { ok: false, status: "authentication_required", error: "An authenticated AgentRouter connection is required." });
+      return;
+    }
+    const body = await readJson(req);
+    const result = await relayBscPaymasterRequest(body, store);
+    sendJson(res, result.ok ? 200 : result.statusCode, result);
     return;
   }
 
@@ -1675,9 +1685,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     const body = { ...args };
     if (!body.service_id) body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
     const result = recordConsumerFeedback(store, body);
-    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl, {
-      deferErc8004ToConsumer: Boolean(body.defer_erc8004_to_consumer)
-    });
+    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
     return {
       ...result,
       arc_anchor: trustAnchor.arc_anchor,
@@ -3293,28 +3301,19 @@ function resolveFeedbackServiceId(store, requestId) {
   return null;
 }
 
-async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "", { deferErc8004ToConsumer = false } = {}) {
+async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "") {
   const record = store.services.get(feedbackResult.service_id);
   const providerId = record?.manifest?.provider?.provider_id || feedbackResult.provider_id || "";
-  const anchor = await anchorConsumerFeedbackOnArc({
-    requestId: feedbackResult.request_id,
-    serviceId: feedbackResult.service_id,
-    providerId,
-    feedback: feedbackResult.consumer_feedback
-  });
-  const erc8004 = deferErc8004ToConsumer
-    ? createConsumerRequiredErc8004Feedback({ feedbackResult, record, providerId, baseUrl })
-    : await submitErc8004Feedback({
-        requestId: feedbackResult.request_id,
-        serviceId: feedbackResult.service_id,
-        providerId,
-        manifest: record?.manifest,
-        feedback: feedbackResult.consumer_feedback,
-        baseUrl
-      });
+  const anchor = {
+    status: "not_used",
+    recorded_offchain: true,
+    superseded_by: "ERC-8004",
+    reason: "ERC-8004 is the single public onchain record for consumer feedback."
+  };
+  const erc8004 = createConsumerRequiredErc8004Feedback({ feedbackResult, record, providerId, baseUrl });
   const trustAnchor = {
     trust_anchor_version: "agent_router_trust_anchor_v1",
-    primary_standard: erc8004.status === "submitted" ? "ERC-8004" : "custom_arc_anchor",
+    primary_standard: erc8004.status === "not_configured" ? "offchain_feedback" : "ERC-8004",
     arc_anchor: anchor,
     erc8004
   };
@@ -3361,6 +3360,16 @@ function createConsumerRequiredErc8004Feedback({ feedbackResult, record, provide
     feedback: feedbackResult.consumer_feedback,
     baseUrl
   });
+  if (!descriptor.registry_address || !descriptor.agent_id) {
+    return {
+      ...descriptor,
+      status: "not_configured",
+      recorded_offchain: true,
+      error: descriptor.agent_id
+        ? "ERC-8004 Reputation Registry is not configured."
+        : "ERC-8004 agent_id is missing for the active settlement chain."
+    };
+  }
   return {
     ...descriptor,
     status: "consumer_submission_required",
@@ -3427,7 +3436,8 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
       mode: "mock",
       tx_hash: erc8004.tx_hash,
       block_number: String(erc8004.block_number || "0"),
-      feedback_account: erc8004.feedback_account || null
+      feedback_account: erc8004.feedback_account || null,
+      gas_sponsorship: erc8004.gas_sponsorship || null
     };
   } else {
     try {
@@ -3446,6 +3456,7 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
           feedbackUri: pending.feedback_uri
         }
       });
+      verified.gas_sponsorship = erc8004.gas_sponsorship || null;
     } catch (error) {
       return {
         ok: false,
@@ -3492,6 +3503,101 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
     erc8004: verified,
     trust_anchor: event.consumer_feedback_trust_anchor
   };
+}
+
+async function relayBscPaymasterRequest(body = {}, store) {
+  const method = String(body.method || "");
+  if (!new Set(["pm_isSponsorable", "eth_sendRawTransaction"]).has(method)) {
+    return { ok: false, statusCode: 422, status: "invalid_paymaster_method", error: "Only BNB Paymaster sponsorship checks and signed transaction submission are allowed." };
+  }
+  if (!Array.isArray(body.params)) {
+    return { ok: false, statusCode: 422, status: "invalid_paymaster_params", error: "Paymaster params must be an array." };
+  }
+  const serviceId = body.service_id || resolveFeedbackServiceId(store, body.request_id);
+  const feedbackEvent = [...(store.services.get(serviceId)?.feedback_events || [])]
+    .reverse()
+    .find((event) => event.request_id === body.request_id);
+  const pending = feedbackEvent?.consumer_feedback_erc8004;
+  if (pending?.status !== "consumer_submission_required") {
+    return { ok: false, statusCode: 422, status: "feedback_not_pending", error: "A pending ERC-8004 feedback descriptor is required for Paymaster sponsorship." };
+  }
+  const validationError = validateBscPaymasterParams(method, body.params, pending);
+  if (validationError) {
+    return { ok: false, statusCode: 422, status: "invalid_paymaster_transaction", error: validationError };
+  }
+  const paymasterUrl = String(process.env.ADN_BSC_PAYMASTER_URL || "").trim();
+  if (!paymasterUrl) {
+    return { ok: false, statusCode: 503, status: "paymaster_not_configured", error: "ADN_BSC_PAYMASTER_URL is not configured on the AgentRouter server." };
+  }
+  try {
+    const response = await fetch(paymasterUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: body.params }),
+      signal: AbortSignal.timeout(Number(process.env.ADN_BSC_PAYMASTER_TIMEOUT_MS || 15000))
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.error) {
+      return {
+        ok: false,
+        statusCode: response.ok ? 502 : response.status,
+        status: "paymaster_request_failed",
+        error: payload?.error?.message || `BNB Paymaster returned HTTP ${response.status}.`
+      };
+    }
+    return { ok: true, statusCode: 200, result: payload?.result };
+  } catch (error) {
+    return { ok: false, statusCode: 502, status: "paymaster_unavailable", error: error.message };
+  }
+}
+
+function validateBscPaymasterParams(method, params, pending) {
+  const chain = settlementChain();
+  if (![56, 97].includes(chain.id)) return "The active settlement chain is not BNB Smart Chain.";
+  let transaction;
+  try {
+    transaction = method === "pm_isSponsorable" ? params[0] : parseTransaction(params[0]);
+  } catch {
+    return "The signed Paymaster transaction cannot be decoded.";
+  }
+  if (!transaction || String(transaction.to || "").toLowerCase() !== String(pending.registry_address || erc8004Registries().reputationRegistry || "").toLowerCase()) {
+    return "The Paymaster transaction must target the configured ERC-8004 Reputation Registry.";
+  }
+  try {
+    if (BigInt(transaction.value || 0) !== 0n) return "ERC-8004 feedback must not transfer native currency.";
+  } catch {
+    return "The Paymaster transaction value is invalid.";
+  }
+  if (method === "eth_sendRawTransaction") {
+    if (Number(transaction.chainId) !== chain.id) return "The signed transaction chain does not match the active BNB chain.";
+    try {
+      if (BigInt(transaction.gasPrice ?? -1) !== 0n) return "A sponsored feedback transaction must use zero gas price.";
+    } catch {
+      return "The sponsored transaction gas price is invalid.";
+    }
+  }
+  try {
+    const decoded = decodeFunctionData({ abi: ERC8004_REPUTATION_ABI, data: transaction.data });
+    if (decoded.functionName !== "giveFeedback") return "Only ERC-8004 giveFeedback calls can be sponsored.";
+    const expectedArgs = [
+      String(pending.agent_id),
+      String(pending.value),
+      String(pending.value_decimals),
+      pending.tag1,
+      pending.tag2,
+      pending.endpoint,
+      pending.feedback_uri,
+      String(pending.feedback_hash).toLowerCase()
+    ];
+    const actualArgs = decoded.args.map((value) => typeof value === "bigint" ? value.toString() : String(value));
+    actualArgs[actualArgs.length - 1] = actualArgs.at(-1).toLowerCase();
+    if (actualArgs.some((value, index) => value !== expectedArgs[index])) {
+      return "The Paymaster call does not match the pending AgentRouter feedback descriptor.";
+    }
+  } catch {
+    return "The Paymaster transaction is not a valid ERC-8004 giveFeedback call.";
+  }
+  return null;
 }
 
 async function recordQuoteFeedback(store, body = {}) {

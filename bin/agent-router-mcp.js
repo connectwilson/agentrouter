@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import { getArcUsdcBalance } from "../src/arc-payment.js";
-import { submitErc8004Feedback } from "../src/erc8004.js";
+import { submitSponsoredErc8004Feedback } from "../src/bsc-paymaster.js";
 import { invokePaidServiceWithLocalWallet } from "../src/local-invoke.js";
 import { routeTaskWithLocalWallet } from "../src/local-route.js";
 import { createCompactResult } from "../src/compact-result.js";
@@ -340,14 +340,7 @@ async function callTool(name, args) {
   }
 
   if (name === "agentrouter_feedback") {
-    if (["x402", "circle_arc"].includes(currentPaymentBackend())) {
-      return submitFeedbackWithLocalWallet(args);
-    }
-    return post("/agent-router/feedback", {
-      request_id: args.request_id,
-      consumer_id: args.consumer_id || "main_agent",
-      feedback: args.feedback || {}
-    });
+    return submitFeedbackWithLocalWallet(args);
   }
 
   if (name === "agentrouter_wallet_status") {
@@ -513,16 +506,19 @@ async function submitFeedbackWithLocalWallet(args) {
   }
   try {
     const wallet = await readWallet();
-    const detail = await get(`/agent-router/service?service_id=${encodeURIComponent(feedbackResult.service_id)}`);
-    const erc8004 = await submitErc8004Feedback({
-      requestId: feedbackResult.request_id,
-      serviceId: feedbackResult.service_id,
-      providerId: detail?.manifest?.provider?.provider_id || feedbackResult.provider_id,
-      manifest: detail?.manifest,
-      feedback: feedbackResult.consumer_feedback,
-      baseUrl,
+    const erc8004 = await submitSponsoredErc8004Feedback({
+      descriptor: erc8004Request,
       privateKey: wallet.private_key_hex,
-      submitter: "consumer_wallet"
+      paymasterRpc: async (method, params) => {
+        const response = await post("/agent-router/paymaster", {
+          method,
+          params,
+          service_id: feedbackResult.service_id,
+          request_id: feedbackResult.request_id
+        });
+        if (!response.ok) throw new Error(response.error || "AgentRouter Paymaster proxy rejected the request.");
+        return response.result;
+      }
     });
     feedbackResult.erc8004 = erc8004;
     feedbackResult.trust_anchor = {

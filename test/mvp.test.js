@@ -1606,6 +1606,19 @@ test("local wallet paid invocation records evidence trace verification and consu
   });
 });
 
+test("BNB Paymaster proxy rejects unauthenticated callers", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/paymaster`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "pm_isSponsorable", params: [] })
+    });
+    assert.equal(response.status, 401);
+    const payload = await response.json();
+    assert.equal(payload.status, "authentication_required");
+  });
+});
+
 test("AgentRouter services endpoint returns paginated lightweight service summaries", async () => {
   await withServer(async ({ baseUrl }) => {
     for (let index = 0; index < 3; index += 1) {

@@ -67,7 +67,7 @@ Last updated: 2026-07-31
 - `GET /agent-router/evidence` and `GET /agent-router/feedback` can now filter by `request_id`, and `POST /agent-router/feedback` can accept a unique `request_id` without exposing service IDs to the user-visible agent response.
 - The MCP server now exposes `agentrouter_feedback`, so the main agent can submit intent fit, answer usefulness, missing fields, and confidence after it decides whether the paid result answered the user.
 - Evidence and consumer feedback now support Arc Testnet hash anchoring. Full evidence stays offchain; `trace_hash`, `result_hash`, `verification_hash`, payment tx hash, and feedback hash are anchored through `contracts/AgentRouterEvidenceAnchor.sol` when `ADN_ARC_ANCHOR_CONTRACT` and `ADN_ARC_ANCHOR_PRIVATE_KEY` are configured. Local tests use `ADN_ARC_ANCHOR_MODE=mock`.
-- Consumer feedback now supports ERC-8004 Reputation Registry submission on Arc Testnet. In the real local-wallet flow, the server records feedback and Arc evidence anchors, then the demand-side consumer wallet submits ERC-8004 Reputation feedback to avoid provider/operator self-feedback. Local tests use `ADN_ERC8004_MODE=mock`.
+- Consumer feedback is always recorded offchain and uses ERC-8004 as its single public onchain record. On BNB Chain, the local consumer/reviewer wallet signs a zero-gas-price `giveFeedback` transaction and the server-side BNB EOA Paymaster proxy sponsors and submits it. A declined sponsorship never falls back to spending consumer BNB. The old custom consumer-feedback anchor is no longer written; evidence anchoring remains separate.
 - Published services can expose ERC-8004 Agent Registration Files at `/.well-known/erc8004/agents/:service_id.json` and register an ERC-8004 Identity Registry token through `POST /services/:service_id/erc8004/register`. The returned `agent_id` is written back into the manifest and becomes the target for later Reputation Registry feedback.
 - Published services now include `manifest_type: hosted_http_data_api`, `version`, structured routing metadata, `manifest_hash`, `config_hash`, optional `/.well-known/agentrouter.json` origin-binding metadata, and ERC-8257-compatible tool manifest metadata at `/.well-known/erc8257/tools/:service_id.json`.
 - Router scoring now considers consumer feedback, recent failure rate, service health, and source provenance instead of ranking only by capability/text match and price.
@@ -75,9 +75,9 @@ Last updated: 2026-07-31
 - Deployed a real AgentRouter evidence anchor contract on Arc Testnet and verified a live paid data request end-to-end:
   - Local demand wallet paid Arc Testnet USDC to the provider payout wallet.
   - Server verified the payment tx before returning data.
-  - Server anchored the evidence trace and consumer feedback hashes on Arc Testnet.
+  - Server anchored the evidence trace on Arc Testnet (the historical run also used the now-retired custom feedback anchor).
   - Consumer wallet submitted ERC-8004 Reputation feedback for the provider agent.
-  - The completed request record includes payment verification, deterministic data verification, evidence trace hash, feedback anchor tx, and ERC-8004 reputation tx.
+  - New runs keep feedback offchain plus one ERC-8004 reputation transaction; evidence anchoring remains independent.
 
 ## Known Useful Local Flow
 
