@@ -186,5 +186,8 @@ test("an Arc identity token id is never reused as a BSC feedback target", async 
       }
     });
     assert.equal(onBsc.agent_id, "7");
+    assert.equal(onBsc.network, "bsc");
+    assert.equal(onBsc.caip2, "eip155:56");
+    assert.equal(onBsc.chain_id, 56);
   });
 });

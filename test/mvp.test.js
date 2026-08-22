@@ -1591,18 +1591,18 @@ test("local wallet paid invocation records evidence trace verification and consu
     assert.equal(consumerFeedbackResponse.status, 200);
     const consumerFeedback = await consumerFeedbackResponse.json();
     assert.equal(consumerFeedback.ok, true);
-    assert.equal(consumerFeedback.arc_anchor.status, "anchored");
-    assert.equal(consumerFeedback.arc_anchor.event_type, "AgentRouterFeedback");
+    assert.equal(consumerFeedback.arc_anchor.status, "not_used");
+    assert.equal(consumerFeedback.arc_anchor.superseded_by, "ERC-8004");
     assert.equal(consumerFeedback.erc8004.standard, "ERC-8004");
-    assert.equal(consumerFeedback.erc8004.status, "submitted");
+    assert.equal(consumerFeedback.erc8004.status, "consumer_submission_required");
     assert.equal(consumerFeedback.erc8004.registry_type, "reputation");
     assert.equal(consumerFeedback.trust_anchor.primary_standard, "ERC-8004");
 
     const updatedFeedback = await fetch(`${baseUrl}/agent-router/feedback?request_id=${invocation.result.request_id}`).then((res) => res.json());
     assert.equal(updatedFeedback.events[0].consumer_feedback.answer_useful, "yes");
     assert.equal(updatedFeedback.events[0].consumer_rating, 0.975);
-    assert.equal(updatedFeedback.events[0].consumer_feedback_arc_anchor.status, "anchored");
-    assert.equal(updatedFeedback.events[0].consumer_feedback_erc8004.status, "submitted");
+    assert.equal(updatedFeedback.events[0].consumer_feedback_arc_anchor.status, "not_used");
+    assert.equal(updatedFeedback.events[0].consumer_feedback_erc8004.status, "consumer_submission_required");
   });
 });
 
