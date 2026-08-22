@@ -68,7 +68,15 @@ export async function installAgentRouter(options = {}) {
     );
   }
 
-  const configuredClient = await configureMcpClient(client, origin);
+  const priorSetupState = await inspectAgentRouterClientConfig(client);
+  const configuredClient = priorSetupState === "current"
+    ? { name: client.name, config_path: client.configPath, changed: false }
+    : { ...await configureMcpClient(client, origin), changed: true };
+  const setupAction = priorSetupState === "current"
+    ? "already_configured"
+    : priorSetupState === "legacy"
+      ? "updated"
+      : "installed";
   const verification = await verifyRemoteMcp(result.remote_mcp_url);
   if (!verification.tools.includes("agentrouter_fetch")) {
     throw new Error(`AgentRouter MCP at ${result.remote_mcp_url} did not expose agentrouter_fetch.`);
@@ -89,6 +97,8 @@ export async function installAgentRouter(options = {}) {
     remote_mcp_verified: true,
     mcp_tools: verification.tools,
     configured_clients: [configuredClient],
+    setup_action: setupAction,
+    reload_required: setupAction !== "already_configured",
     browser_connector: browserConnector
   };
 }
@@ -175,8 +185,19 @@ function runShell(command, args, options = {}) {
 
 export function formatInstallResult(result) {
   if (result.runtime_mode === "mcp") {
+    if (result.setup_action === "already_configured") {
+      return [
+        "AgentRouter is already configured. No reinstall was performed.",
+        `MCP client: ${result.configured_clients.map((client) => client.name).join(", ")}`,
+        `Remote MCP tools verified: ${result.mcp_tools.join(", ")}`,
+        "Account authorization is separate from installation: call agentrouter_connect to open the browser approval page.",
+        "If agentrouter_connect is already visible, use it now; reload the AI client only when the existing session has a stale tool list.",
+        "Reloading activates the configured MCP tools; it does not authorize the AgentRouter account."
+      ].join("\n") + "\n";
+    }
+    const setupVerb = result.setup_action === "updated" ? "updated" : "installed";
     return [
-      "AgentRouter installed. SETUP COMPLETE (client reload required)",
+      `AgentRouter ${setupVerb}. SETUP COMPLETE (client reload required)`,
       `Skill installed: ${result.skill_paths.join(", ")}`,
       `MCP configured: ${result.configured_clients.map((client) => client.name).join(", ")}`,
       `Remote MCP tools verified: ${result.mcp_tools.join(", ")}`,
@@ -598,6 +619,54 @@ async function configHasAgentRouter(filePath) {
   } catch {
     return false;
   }
+}
+
+async function inspectAgentRouterClientConfig(client) {
+  if (!await exists(client.configPath)) return "absent";
+  let source;
+  try {
+    source = await fs.readFile(client.configPath, "utf8");
+  } catch {
+    return "absent";
+  }
+
+  if (client.format === "toml") {
+    const lines = source.split("\n");
+    const blocks = [];
+    let current = null;
+    for (const line of lines) {
+      if (/^\s*\[mcp_servers\.AgentRouter(?:\.[A-Za-z0-9_-]+)?\]\s*$/.test(line)) {
+        current = [line];
+        blocks.push(current);
+        continue;
+      }
+      if (current && /^\s*\[/.test(line)) current = null;
+      if (current) current.push(line);
+    }
+    if (!blocks.length) return "absent";
+    const agentRouterSource = blocks.flat().join("\n");
+    return agentRouterSource.includes(MCP_PACKAGE) && /\bagentrouter-mcp\b/.test(agentRouterSource)
+      ? "current"
+      : "legacy";
+  }
+
+  let config;
+  try {
+    config = JSON.parse(source);
+  } catch {
+    return "legacy";
+  }
+  const server = client.format === "opencode"
+    ? config?.mcp?.AgentRouter
+    : client.format === "openclaw"
+      ? config?.mcp?.servers?.AgentRouter
+      : config?.mcpServers?.AgentRouter;
+  if (!server) return "absent";
+  const command = Array.isArray(server.command) ? server.command : [server.command, ...(server.args || [])];
+  const serialized = command.filter(Boolean).join(" ");
+  return serialized.includes(MCP_PACKAGE) && /\bagentrouter-mcp\b/.test(serialized)
+    ? "current"
+    : "legacy";
 }
 
 async function verifyRemoteMcp(url) {
