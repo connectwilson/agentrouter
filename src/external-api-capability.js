@@ -291,7 +291,7 @@ function termPattern(latin, cjk = "", flags = "i") {
 // first intent whose pattern matched won outright, with nothing comparing how
 // well it matched. A weak term now needs a second signal from the same domain,
 // and every intent is scored so the best one wins instead of the earliest.
-const SOURCE_INTENTS = [
+const DATA_REQUIREMENT_CONTRACTS = [
   { sources: ["gdelt"], operation: "search",
     strong: ["news|headlines?|news coverage", "新闻|新聞|报道|報道|舆情|輿情"],
     weak: "press|coverage|media|reported" },
@@ -327,7 +327,7 @@ const SOURCE_INTENTS = [
     strong: ["github|repository|pull request|source code", "开源|開源|仓库|倉庫"],
     weak: "repo|issues?|commit|branch" },
   { sources: ["openalex"], operation: "search",
-    strong: ["papers?|publications?|citations?|doi|arxiv|peer.reviewed", "论文|論文|文献|文獻"],
+    strong: ["papers?|publications?|citations?|doi|arxiv|peer.reviewed", "论文|論文|文献|文獻|学术出版物|學術出版物|被引数据|被引數據"],
     weak: "study|studies|research|journal|authors?" },
   { sources: ["google_places"], operation: "search",
     strong: ["restaurants?|cafes?|coffee shops?|hotels?|nearby", "附近|餐厅|餐廳|咖啡"],
@@ -368,8 +368,8 @@ function intentScore(text, intent) {
 // Anything else that is plainly a lookup goes to whichever web search is usable.
 const WEB_SEARCH_SOURCES = ["exa", "tavily", "brave_search", "serper", "perplexity", "firecrawl", "jina"];
 const WEB_SEARCH_PATTERN = termPattern(
-  "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?|research|investigate|evidence|benchmark",
-  "招聘|岗位|崗位|职位|職位|最新|最近|查一下|搜一下|查找|了解|怎么|怎樣|研究|调研|調研|实证|實證|竞品|競品|公开讨论|公開討論|行业报告|行業報告"
+  "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?|research|investigate|evidence|benchmark|analy[sz]e|assess|evaluate|map|overview",
+  "招聘|岗位|崗位|职位|職位|最新|最近|查一下|搜一下|查找|了解|怎么|怎樣|研究|调研|調研|实证|實證|竞品|競品|公开讨论|公開討論|行业报告|行業報告|分析|评估|評估|梳理"
 );
 
 // A question is a lookup even when it uses none of those verbs. "How does
@@ -416,37 +416,83 @@ export function inferExternalApiRequest(task, { connectedSources = [], tier = "a
   const text = clean(task, 1000);
   if (!text) return null;
   const connected = new Set(connectedSources);
-  if (tier === "web") {
-    if (!asksAboutSomething(text)) return null;
-    const source = pickAvailableSource(WEB_SEARCH_SOURCES, connected, "search");
-    return source ? externalApiRequest(source, "search", text) : null;
-  }
-  let definition = SOURCE_CATALOG.find((item) =>
-    item.implementation_status === "available"
-      && item.operations.includes("search")
-      && sourceMentioned(text, item));
-  let operation = "search";
-  if (!definition) {
-    // Best score, not first match: one incidental keyword used to win outright.
-    const best = SOURCE_INTENTS
-      .map((entry) => ({ entry, score: intentScore(text, entry) }))
-      .filter((candidate) => candidate.score >= INTENT_ROUTE_THRESHOLD)
-      .sort((a, b) => b.score - a.score)[0];
-    if (best) {
-      definition = pickAvailableSource(best.entry.sources, connected, best.entry.operation);
-      if (definition) operation = best.entry.operation;
-    }
-  }
-  if (!definition && tier !== "specialized"
-    && (WEB_SEARCH_PATTERN.test(text) || QUESTION_PATTERN.test(text)) && asksAboutSomething(text)) {
-    definition = pickAvailableSource(WEB_SEARCH_SOURCES, connected, "search");
-  }
+  const requirement = inferDataRequirement(text, { tier });
+  if (!requirement) return null;
+  let definition = requirement.source_hint
+    ? SOURCE_CATALOG.find((item) => item.source === requirement.source_hint && item.implementation_status === "available")
+    : pickAvailableSource(requirement.candidate_sources, connected, requirement.operation);
   if (!definition) return null;
-  if (!definition.operations.includes(operation)) operation = definition.operations[0] || "search";
-  return externalApiRequest(definition, operation, text);
+  const operation = definition.operations.includes(requirement.operation)
+    ? requirement.operation
+    : definition.operations[0] || "search";
+  return externalApiRequest(definition, operation, text, requirement);
 }
 
-function externalApiRequest(definition, operation, text) {
+export function inferDataRequirement(task, { tier = "all" } = {}) {
+  const text = clean(task, 1000);
+  if (!text || !asksAboutSomething(text)) return null;
+  if (tier === "web") return buildDataRequirement(text, WEB_SEARCH_SOURCES, "search");
+
+  const explicit = SOURCE_CATALOG.find((item) =>
+    item.implementation_status === "available" && sourceMentioned(text, item));
+  if (explicit) {
+    const operation = explicit.operations.includes("search") ? "search" : explicit.operations[0] || "search";
+    return buildDataRequirement(text, [explicit.source], operation, explicit.source);
+  }
+
+  const best = DATA_REQUIREMENT_CONTRACTS
+    .map((entry) => ({ entry, score: intentScore(text, entry) }))
+    .filter((candidate) => candidate.score >= INTENT_ROUTE_THRESHOLD)
+    .sort((a, b) => b.score - a.score)[0];
+  if (best) return buildDataRequirement(text, best.entry.sources, best.entry.operation);
+  if (tier !== "specialized" && (WEB_SEARCH_PATTERN.test(text) || QUESTION_PATTERN.test(text))) {
+    return buildDataRequirement(text, WEB_SEARCH_SOURCES, "search");
+  }
+  return null;
+}
+
+function buildDataRequirement(text, candidateSources, operation, sourceHint = null) {
+  const metadata = requirementMetadata(candidateSources[0], operation);
+  const publicContract = {
+    capability: metadata.capability,
+    data_object: metadata.data_object,
+    evidence_type: metadata.evidence_type,
+    operation,
+    read_only: true,
+    freshness: /latest|recent|current|today|最近|最新|当前|目前|过去|過去/i.test(text) ? "current" : "unspecified"
+  };
+  return {
+    ...publicContract,
+    public_contract: publicContract,
+    candidate_sources: [...candidateSources],
+    source_hint: sourceHint
+  };
+}
+
+function requirementMetadata(sourceId, operation) {
+  const definitions = {
+    gdelt: ["news_research", "news_coverage", "current_news"],
+    sec_edgar: ["corporate_filings", "regulatory_filing", "specialist_dataset"],
+    open_meteo: ["weather_forecast", "weather_forecast", "specialist_dataset"],
+    dexscreener: ["dex_pair_search", "dex_pair", "specialist_dataset"],
+    geckoterminal: ["onchain_market_ranking", "liquidity_pool", "specialist_dataset"],
+    coinmarketcap: ["crypto_market_data", "crypto_asset", "specialist_dataset"],
+    yahoo_finance: ["equity_market_data", "public_equity", "specialist_dataset"],
+    finnhub: ["equity_market_data", "public_equity", "specialist_dataset"],
+    github: ["code_repository_search", "code_repository", "specialist_dataset"],
+    openalex: ["scholarly_literature", "scholarly_publication", "scholarly_metadata"],
+    google_places: ["place_search", "place", "specialist_dataset"],
+    amadeus: ["flight_search", "flight_options", "specialist_dataset"],
+    easy_post: ["shipment_tracking", "shipment_status", "specialist_dataset"],
+    virus_total: ["domain_security_check", "security_indicator", "specialist_dataset"],
+    youtube: ["video_search", "video", "platform_dataset"]
+  };
+  const [capability, dataObject, evidenceType] = definitions[sourceId]
+    || [operation === "search" ? "public_web_research" : "external_data_query", "public_web_evidence", "current_web"];
+  return { capability, data_object: dataObject, evidence_type: evidenceType };
+}
+
+function externalApiRequest(definition, operation, text, requirement) {
   const params = {
     source: definition.source,
     operation,
@@ -458,6 +504,7 @@ function externalApiRequest(definition, operation, text) {
   return {
     capability: "external_api_query",
     params,
+    data_requirement: requirement.public_contract,
     ...(researchPlan ? { research_plan: researchPlan } : {})
   };
 }

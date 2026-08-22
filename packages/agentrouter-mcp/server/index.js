@@ -5,6 +5,7 @@ import { localSocialSearchRequest, runLocalSocialSearch } from "./local-social-s
 import { readStoredCredential, writeStoredCredential } from "./credential-store.js";
 import { submitSponsoredFeedback } from "./bsc-feedback.js";
 import { readOrCreateFeedbackSigner } from "./feedback-wallet.js";
+import { decorateBrowserAuthorization, resolveMcpClientAction } from "./action-state.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const configuredCreditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
@@ -74,6 +75,7 @@ async function forwardRequest(message) {
       send({ jsonrpc: "2.0", id: message.id, result: await handleConnectRequest(message) });
       return;
     }
+    await resumePendingDeviceAuthorization();
     // Keyword search only works where a browser is: the hosted server has none.
     const localSearch = localSocialSearchRequest(message);
     if (localSearch) {
@@ -121,6 +123,22 @@ async function forwardRequest(message) {
       throw new Error("AgentRouter remote MCP returned an invalid JSON response");
     }
     if (message.method === "tools/list") appendLocalTools(payload);
+    const clientAction = resolveMcpClientAction(payload);
+    if (clientAction.state === "authorize_account") {
+      const authorization = await handleConnectRequest({
+        method: "tools/call",
+        params: {
+          name: "agentrouter_connect",
+          arguments: { client_name: "current AI client", wait_seconds: 0 }
+        }
+      });
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: decorateBrowserAuthorization(authorization, message)
+      });
+      return;
+    }
     await completeSponsoredFeedback(message, payload);
     send(payload);
   } catch (error) {
@@ -194,11 +212,12 @@ async function handleConnectRequest(message) {
   }
   if (args.restart) deviceAuthorization = null;
   if (!deviceAuthorization) {
+    const clientName = String(args.client_name || "AI agent").slice(0, 120);
     const started = await postJson("/auth/device/start", {
-      client_name: String(args.client_name || "AI agent").slice(0, 120)
+      client_name: clientName
     });
     if (!started.ok) return toolResult({ status: "connection_failed", error: started.payload?.error || `HTTP ${started.status}` }, true);
-    deviceAuthorization = started.payload;
+    deviceAuthorization = { ...started.payload, client_name: clientName };
   }
 
   const waitSeconds = Math.max(0, Math.min(55, Number(args.wait_seconds ?? 45) || 0));
@@ -208,14 +227,7 @@ async function handleConnectRequest(message) {
     await delay(Math.max(1, Number(deviceAuthorization.interval) || 3) * 1000);
     tokenResult = await pollDeviceToken();
   }
-  if (tokenResult.access_token) {
-    await writeStoredCredential({
-      origin: baseUrl,
-      accessToken: tokenResult.access_token,
-      keyId: tokenResult.key_id,
-      clientName: String(args.client_name || "AI agent").slice(0, 120)
-    });
-    deviceAuthorization = null;
+  if (await acceptDeviceCredential(tokenResult, args.client_name)) {
     return toolResult({
       status: "connected",
       auth_method: "device",
@@ -235,6 +247,26 @@ async function handleConnectRequest(message) {
     expires_in: deviceAuthorization.expires_in,
     message: "Open the authorization link and approve this agent. Then call agentrouter_connect again if this call returns before approval."
   });
+}
+
+async function resumePendingDeviceAuthorization() {
+  if (!deviceAuthorization) return false;
+  const tokenResult = await pollDeviceToken();
+  if (await acceptDeviceCredential(tokenResult)) return true;
+  if (tokenResult.error === "expired_token") deviceAuthorization = null;
+  return false;
+}
+
+async function acceptDeviceCredential(tokenResult, clientName) {
+  if (!tokenResult?.access_token) return false;
+  await writeStoredCredential({
+    origin: baseUrl,
+    accessToken: tokenResult.access_token,
+    keyId: tokenResult.key_id,
+    clientName: String(clientName || deviceAuthorization?.client_name || "AI agent").slice(0, 120)
+  });
+  deviceAuthorization = null;
+  return true;
 }
 
 async function pollDeviceToken() {
