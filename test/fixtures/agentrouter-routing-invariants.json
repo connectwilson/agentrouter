@@ -1,0 +1,50 @@
+{
+  "schema_version": "agentrouter_routing_invariants_v1",
+  "paraphrase_groups": [
+    {
+      "id": "general-product-research",
+      "expected_source": "exa",
+      "expected_capability": "public_web_research",
+      "expected_evidence_type": "current_web",
+      "prompts": [
+        "研究 AgentRouter 的产品定位和竞争格局",
+        "请评估 AgentRouter 的市场空间与主要竞争者",
+        "梳理 AgentRouter 的商业定位、竞品和机会"
+      ]
+    },
+    {
+      "id": "scholarly-routing",
+      "expected_source": "openalex",
+      "expected_capability": "scholarly_literature",
+      "expected_evidence_type": "scholarly_metadata",
+      "prompts": [
+        "查找关于 agent routing 的同行评审论文",
+        "汇总 agent routing 的学术出版物和被引数据",
+        "Agent routing 有哪些 arXiv 文献和 DOI"
+      ]
+    },
+    {
+      "id": "shipment-tracking",
+      "expected_source": "easy_post",
+      "expected_capability": "shipment_tracking",
+      "expected_evidence_type": "specialist_dataset",
+      "prompts": [
+        "查询快递单号 EZ1000000001 当前运输状态",
+        "帮我追踪包裹 EZ1000000001 到哪里了",
+        "track shipment EZ1000000001"
+      ]
+    }
+  ],
+  "contrast_pairs": [
+    {
+      "id": "research-versus-paper",
+      "left": { "prompt": "研究 AI Agent 路由产品的市场机会", "source": "exa" },
+      "right": { "prompt": "查找 AI Agent 路由的同行评审论文", "source": "openalex" }
+    },
+    {
+      "id": "track-topic-versus-track-parcel",
+      "left": { "prompt": "研究 AltLayer hackathon track 的提交规则", "source": "exa" },
+      "right": { "prompt": "track parcel EZ1000000001", "source": "easy_post" }
+    }
+  ]
+}

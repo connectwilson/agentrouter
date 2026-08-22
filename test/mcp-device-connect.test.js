@@ -111,6 +111,85 @@ test("agentrouter_connect completes browser approval and future MCP calls use th
   }
 });
 
+test("agentrouter_fetch turns an account-connection action into browser authorization without a second user command", async () => {
+  let approved = false;
+  let authenticatedFetches = 0;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/auth/device/start") {
+      response.writeHead(201);
+      response.end(JSON.stringify({
+        device_code: "ard_automatic_handoff",
+        user_code: "AR-AUTO",
+        verification_uri: `${baseUrl}/connect`,
+        verification_uri_complete: `${baseUrl}/connect?user_code=AR-AUTO`,
+        expires_in: 600,
+        interval: 1
+      }));
+      return;
+    }
+    if (request.url === "/auth/device/token") {
+      response.writeHead(approved ? 200 : 400);
+      response.end(JSON.stringify(approved
+        ? { access_token: "ar_automatic_handoff", token_type: "Bearer", key_id: "key_auto" }
+        : { error: "authorization_pending" }));
+      return;
+    }
+    if (request.url === "/mcp") {
+      const authenticated = request.headers.authorization === "Bearer ar_automatic_handoff";
+      if (body.method === "initialize") {
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "AgentRouter", version: "test" } } }));
+        return;
+      }
+      if (body.method === "tools/call" && body.params?.name === "agentrouter_fetch") {
+        if (authenticated) authenticatedFetches += 1;
+        const value = authenticated
+          ? { ok: true, status: "data_returned", answer: "authorized result" }
+          : {
+              ok: false,
+              status: "connection_required",
+              error: { code: "AGENTROUTER_CONNECTION_REQUIRED" },
+              action_required: { action: "connect_agentrouter_account", preferred_tool: "agentrouter_connect" }
+            };
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify(value) }], isError: false } }));
+        return;
+      }
+    }
+    response.writeHead(404);
+    response.end(JSON.stringify({ error: "not_found" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agentrouter-mcp-auto-connect-"));
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: baseUrl,
+    AGENT_ROUTER_CREDENTIALS_FILE: path.join(root, "credentials.json")
+  });
+  const request = { name: "agentrouter_fetch", arguments: { task: "research Rialto" } };
+  try {
+    await client.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test-client", version: "1" } });
+
+    const first = await client.request("tools/call", request);
+    const authorization = JSON.parse(first.content[0].text);
+    assert.equal(authorization.status, "authorization_required");
+    assert.equal(authorization.action, "open_browser_approval");
+    assert.equal(authorization.verification_uri_complete, `${baseUrl}/connect?user_code=AR-AUTO`);
+    assert.equal(authorization.retry_original_request, true);
+    assert.doesNotMatch(JSON.stringify(authorization), /install|reload/i);
+
+    approved = true;
+    const retried = await client.request("tools/call", request);
+    assert.equal(JSON.parse(retried.content[0].text).answer, "authorized result");
+    assert.equal(authenticatedFetches, 1);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 function createMcpClient(env) {
   const child = spawn(process.execPath, [path.join(process.cwd(), "packages/agentrouter-mcp/bin/agentrouter-mcp.js")], {
     env: { ...process.env, ...env },
