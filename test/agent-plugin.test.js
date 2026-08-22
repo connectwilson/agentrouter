@@ -14,6 +14,9 @@ function loadJson(relative) {
 
 const plugin = loadJson("plugin.json");
 const mcp = loadJson("mcp.json");
+const canonicalSkill = fs.readFileSync(
+  path.join(here, "..", "claude-skills", "agent-router", "SKILL.md"), "utf8"
+);
 
 test("plugin/plugin.json exists with required manifest fields", () => {
   for (const field of ["$schema", "name"]) {
@@ -97,4 +100,32 @@ test("plugin skill matches the hosted AgentRouter skill (no drift)", async () =>
   if (hosted !== canonical) {
     console.log("note: hosted SKILL.md is behind the committed copy; it updates on the next deploy.");
   }
+});
+
+test("AgentRouter is the first hop for external information instead of only specialist paid data", () => {
+  assert.match(canonicalSkill, /^description: MUST USE FIRST .*external information/im);
+  assert.match(canonicalSkill, /research, search, find, look up, read, browse/i);
+  assert.match(canonicalSkill, /调研.*搜索.*查找/);
+  assert.match(canonicalSkill, /public web.*AgentRouter/i);
+  assert.match(canonicalSkill, /max_price[^\n]*0/);
+  assert.doesNotMatch(canonicalSkill, /Use generic web search only for broad public web lookup/i);
+});
+
+test("AgentRouter owns routing while agent-reach is an explicit execution handoff", () => {
+  assert.match(canonicalSkill, /agent-reach[^\n]*execution backend/i);
+  assert.match(canonicalSkill, /AgentRouter[^\n]*first-hop orchestrator/i);
+  assert.match(canonicalSkill, /no_service_found[^\n]*handoff/i);
+  assert.match(canonicalSkill, /local_connector_required[^\n]*handoff/i);
+  assert.match(canonicalSkill, /explicitly asks[^\n]*agent-reach/i);
+});
+
+test("plugin positioning matches the default external-information control plane", () => {
+  assert.match(plugin.description, /default external information/i);
+  assert.match(plugin.description, /research/i);
+});
+
+test("plugin skill sync copies the committed canonical policy, not an older hosted copy", () => {
+  const script = fs.readFileSync(path.join(here, "..", "scripts", "sync-plugin-skill.js"), "utf8");
+  assert.match(script, /claude-skills.*agent-router.*SKILL\.md/s);
+  assert.doesNotMatch(script, /fetch\(hostedSkillUrl/);
 });

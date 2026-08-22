@@ -341,6 +341,8 @@ test("AgentRouter exposes a repository-independent remote update channel", async
     const manifest = await manifestResponse.json();
     assert.equal(manifest.schema_version, "agentrouter_update_manifest_v1");
     assert.equal(manifest.channel, "stable");
+    assert.equal(manifest.skill_version, "0.8.0");
+    assert.equal(manifest.routing_policy_version, "external_information_first_v1");
     assert.equal(manifest.mcp.package, "@agentrouternetwork/mcp");
     assert.equal(manifest.mcp.spec, "@agentrouternetwork/mcp@latest");
     assert.equal(manifest.remote_mcp_url, `${baseUrl}/mcp`);
