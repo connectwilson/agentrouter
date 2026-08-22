@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { askAgentRouter, inferIntent } from "../src/agent-router.js";
 import { inferExternalApiRequest, runExternalApiQuery } from "../src/external-api-capability.js";
@@ -9,38 +12,11 @@ import { findSocialPostUrl } from "../src/social-post-read.js";
 import { createMemoryStore } from "../src/store.js";
 import { localSocialSearchRequest, runLocalSocialSearch } from "../packages/agentrouter-mcp/server/local-social-search.js";
 
-const PROMPTS = [
-  "研究 AgentRouter 的产品定位、主要竞品和市场机会。",
-  "调研目前主流 AI Agent API Marketplace 的商业模式。",
-  "研究同类量化策略过去一年的实证表现。",
-  "在Reddit上，人们对hyperliquid前端产品的看法",
-  "查找最近关于 Agentic Commerce 的公开讨论和行业报告。",
-  "查找关于 AI Agent 路由的同行评审论文。",
-  "找出 Agent routing 领域引用次数最高的 10 篇论文。",
-  "查询 DOI 10.1145/3442188.3445922 的论文信息和引用次数。",
-  "查找 2024 年以后关于 multi-agent orchestration 的 arXiv 论文。",
-  "查询作者 Stuart Russell 最近发表的论文及合作作者。",
-  "查询英伟达最新股价、成交量和市值。",
-  "查询 BTC 当前价格以及加密货币市值排名。",
-  "查询 BNB Chain 最近 24 小时交易量最大的 10 个流动性池。",
-  "查询 SOL/USDC 在不同 DEX 上的交易对和流动性。",
-  "查询 AZTEC 最近 24 小时的 smart-money activity。",
-  "查询苹果公司最近提交的 10-K、8-K 和其他 SEC 文件。",
-  "查询台北未来七天的气温、降雨概率和风速。",
-  "搜索 GitHub 上与 ERC-8004 相关、最近仍在更新的开源项目。",
-  "查询最近一周全球媒体如何报道 AI Agent 支付。",
-  "检查 example.com 是否被标记为恶意域名或钓鱼网站。",
-  "查找台北车站附近目前营业、评分超过 4.3 的咖啡店。",
-  "查询下周五从台北飞往东京的直飞航班。",
-  "查询快递单号 EZ1000000001 当前运输状态。",
-  "搜索 YouTube 上最近一个月关于 AgentRouter 的评测视频。",
-  "阅读这条 X 帖子的内容并总结观点：https://x.com/example/status/1234567890。",
-  "使用 OpenAlex 查找 AgentRouter 相关资料。",
-  "使用 Exa 研究最近的 AI Agent 创业公司融资情况。",
-  "查找小红书上，人们对Agent交易的看法",
-  "查询一个最多收费 0.05 USDC 的高可信度链上数据服务。",
-  "帮我研究一下这个东西。"
-];
+const here = path.dirname(fileURLToPath(import.meta.url));
+const corpus = JSON.parse(fs.readFileSync(
+  path.join(here, "fixtures", "agentrouter-feedback-regressions.json"), "utf8"
+));
+const PROMPTS = corpus.routing_cases.map((entry) => entry.prompt);
 
 const sourceFor = (task, tier = "all") => inferExternalApiRequest(task, {
   connectedSources: ["exa"],
@@ -49,19 +25,13 @@ const sourceFor = (task, tier = "all") => inferExternalApiRequest(task, {
 
 test("the 30-prompt corpus keeps general research separate from specialist sources", () => {
   assert.equal(PROMPTS.length, 30);
-  const expectedSources = new Map([
-    [0, "exa"], [1, "exa"], [2, "exa"], [4, "exa"],
-    [5, "openalex"], [6, "openalex"], [7, "openalex"], [8, "openalex"], [9, "openalex"],
-    [10, "yahoo_finance"], [11, "coinmarketcap"], [12, "geckoterminal"], [13, "dexscreener"],
-    [15, "sec_edgar"], [16, "open_meteo"], [17, "github"], [18, "gdelt"],
-    [19, "virus_total"], [20, "google_places"], [21, "amadeus"], [22, "easy_post"],
-    [23, "youtube"], [25, "openalex"], [26, "exa"]
-  ]);
-  for (const [index, expected] of expectedSources) {
-    assert.equal(sourceFor(PROMPTS[index])?.params.source, expected, PROMPTS[index]);
+  for (const entry of corpus.routing_cases.filter((item) => item.expected.kind === "source")) {
+    assert.equal(sourceFor(entry.prompt)?.params.source, entry.expected.source, `${entry.id}: ${entry.prompt}`);
+    if (Object.hasOwn(entry.expected, "specialized_source")) {
+      assert.equal(sourceFor(entry.prompt, "specialized")?.params.source || null,
+        entry.expected.specialized_source, `${entry.id}: specialized route`);
+    }
   }
-  assert.equal(sourceFor(PROMPTS[0], "specialized"), null, "general product research waits for the web fallback");
-  assert.equal(sourceFor(PROMPTS[2], "specialized"), null, "generic empirical research is not scholarly by default");
   assert.equal(sourceFor(PROMPTS[5], "specialized")?.params.source, "openalex");
   const smartMoney = inferIntent(PROMPTS[14]);
   assert.equal(smartMoney.wants_smart_money_activity, true);
