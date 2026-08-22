@@ -2542,7 +2542,8 @@ function discoverPageHtml(result) {
 }
 
 function deviceConnectHtml({ authorization, user = null, error = "" }) {
-  const title = authorization ? `Connect ${escapeHtml(authorization.client_name)}` : "Connection unavailable";
+  const clientName = escapeHtml(authorization?.client_name || "AI agent");
+  const title = authorization ? `Connect ${clientName}` : "Connection unavailable";
   const code = authorization?.user_code || "";
   return `<!doctype html>
 <html lang="en">
@@ -2551,38 +2552,73 @@ function deviceConnectHtml({ authorization, user = null, error = "" }) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${title} · AgentRouter</title>
   <style>
-    :root { color-scheme:light; --ink:#151719; --muted:#6f7479; --line:#d8dcdf; --panel:#f3f4f2; --accent:#323842; }
+    /* Hallmark · pre-emit critique: P4 H5 E4 S5 R5 V3 */
+    /* Hallmark · macrostructure: Focused Approval · tone: quiet confidence · anchor hue: forest */
+    :root { color-scheme:light; --font-body:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --ink:#151719; --muted:#6f7479; --line:#d8dcdf; --panel:#f3f4f2; --surface:#fff; --accent:#323842; --success:#16794b; --success-soft:#eaf7f0; --success-line:#a8ddc1; --success-halo:rgba(22,121,75,.05); --success-dot-halo:rgba(22,121,75,.12); --focus:#2368d1; --error:#8c1d18; --shadow:rgba(22,27,29,.08); --radius-sm:8px; --radius-md:10px; --radius-lg:14px; }
     * { box-sizing:border-box; }
-    body { margin:0; min-height:100svh; display:grid; place-items:center; padding:24px; background:#f3f4f2; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    main { width:min(100%,520px); padding:34px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 18px 55px rgba(22,27,29,.08); }
+    html, body { overflow-x:clip; }
+    body { margin:0; min-height:100svh; display:grid; place-items:center; padding:24px; background:var(--panel); color:var(--ink); font-family:var(--font-body); }
+    main { width:min(100%,520px); padding:34px; border:1px solid var(--line); border-radius:var(--radius-lg); background:var(--surface); box-shadow:0 18px 55px var(--shadow); }
     .brand { display:flex; align-items:center; gap:10px; margin-bottom:34px; font-weight:800; letter-spacing:-.02em; }
-    .mark { display:grid; place-items:center; width:30px; height:30px; border-radius:8px; color:#fff; background:var(--accent); }
-    h1 { margin:0; font-size:28px; letter-spacing:-.04em; }
+    .mark { display:grid; place-items:center; width:30px; height:30px; border-radius:var(--radius-sm); color:var(--surface); background:var(--accent); }
+    h1 { min-width:0; margin:0; font-size:28px; letter-spacing:-.04em; overflow-wrap:anywhere; }
     p { color:var(--muted); line-height:1.55; }
-    .code { margin:24px 0; padding:18px; border:1px solid var(--line); border-radius:10px; background:var(--panel); text-align:center; font:700 24px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; }
+    .code { margin:24px 0; padding:18px; border:1px solid var(--line); border-radius:var(--radius-md); background:var(--panel); text-align:center; font:700 24px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; }
     .identity { margin:20px 0; padding:12px 14px; border-left:3px solid var(--accent); background:var(--panel); font-size:14px; }
-    button { width:100%; min-height:46px; border:1px solid var(--accent); border-radius:8px; background:var(--accent); color:#fff; font:700 14px inherit; cursor:pointer; }
+    button { width:100%; min-height:46px; border:1px solid var(--accent); border-radius:var(--radius-sm); background:var(--accent); color:var(--surface); font:700 14px var(--font-body); white-space:nowrap; cursor:pointer; }
+    button:hover:not(:disabled) { background:var(--ink); }
+    button:active:not(:disabled) { transform:translateY(1px); }
+    button:focus-visible { outline:3px solid var(--focus); outline-offset:3px; }
     button:disabled { opacity:.55; cursor:wait; }
     .warning { font-size:12px; }
-    .error { color:#8c1d18; }
+    .error { color:var(--error); }
     #result { margin-top:16px; font-size:14px; font-weight:650; }
+    [hidden] { display:none !important; }
+    .success-panel { text-align:center; outline:none; }
+    .success-icon { display:grid; place-items:center; width:72px; height:72px; margin:4px auto 22px; border:1px solid var(--success-line); border-radius:50%; background:var(--success-soft); color:var(--success); font-size:38px; font-weight:850; box-shadow:0 0 0 10px var(--success-halo); }
+    .success-kicker { display:inline-flex; align-items:center; gap:7px; margin-bottom:14px; color:var(--success); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .success-kicker::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 0 4px var(--success-dot-halo); }
+    .success-panel h1 { font-size:32px; }
+    .success-panel > p { margin:12px auto 24px; max-width:390px; }
+    .success-next { padding:18px; border:1px solid var(--success-line); border-radius:var(--radius-md); background:var(--success-soft); text-align:left; }
+    .success-next span { display:block; margin-bottom:6px; color:var(--success); font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .success-next strong { display:block; color:var(--ink); font-size:15px; line-height:1.45; }
+    .success-footnote { margin:18px 0 0; font-size:12px; }
+    @media (max-width:375px) { body { padding:12px; } main { padding:26px 20px; } .brand { margin-bottom:28px; } .success-panel h1 { font-size:28px; } }
+    @media (prefers-reduced-motion:reduce) { button:active:not(:disabled) { transform:none; } }
   </style>
 </head>
 <body>
   <main>
     <div class="brand"><span class="mark">AR</span><span>AgentRouter</span></div>
-    <h1>${title}</h1>
     ${authorization ? `
-      <p>This allows the agent to use your prepaid AgentRouter credits. It cannot see provider credentials or your GitHub password.</p>
-      <div class="code">${escapeHtml(code)}</div>
-      <div class="identity">Signed in as <strong>${escapeHtml(user?.name || user?.handle || "AgentRouter user")}</strong></div>
-      <button id="approve" type="button">Approve connection</button>
-      <p class="warning">Only approve if you started this connection from your own AI client.</p>
-      <div id="result" role="status"></div>
+      <section id="request-panel">
+        <h1>${title}</h1>
+        <p>This allows the agent to use your prepaid AgentRouter credits. It cannot see provider credentials or your GitHub password.</p>
+        <div class="code">${escapeHtml(code)}</div>
+        <div class="identity">Signed in as <strong>${escapeHtml(user?.name || user?.handle || "AgentRouter user")}</strong></div>
+        <button id="approve" type="button">Approve connection</button>
+        <p class="warning">Only approve if you started this connection from your own AI client.</p>
+        <div id="result" role="status" aria-live="polite"></div>
+      </section>
+      <section id="success-panel" class="success-panel" hidden role="status" aria-live="polite" aria-labelledby="success-title" tabindex="-1">
+        <div class="success-icon" aria-hidden="true">✓</div>
+        <div class="success-kicker">Authorization complete</div>
+        <h1 id="success-title">Connection approved</h1>
+        <p><strong>${clientName} is now connected.</strong> Your AgentRouter credentials remain private on this device.</p>
+        <div class="success-next">
+          <span>What happens next</span>
+          <strong>Your AI client will continue automatically.</strong>
+        </div>
+        <p class="success-footnote">You can safely close this tab and return to ${clientName}.</p>
+      </section>
       <script>
         document.getElementById("approve").addEventListener("click", async function () {
           this.disabled = true;
+          this.textContent = "Approving…";
           const result = document.getElementById("result");
+          result.className = "";
+          result.textContent = "Approving connection…";
           try {
             const response = await fetch("/auth/device/approve", {
               method: "POST",
@@ -2591,14 +2627,19 @@ function deviceConnectHtml({ authorization, user = null, error = "" }) {
             });
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error?.message || payload.error || "Approval failed");
-            result.textContent = "Connected. You can return to your AI client.";
+            document.getElementById("request-panel").hidden = true;
+            const successPanel = document.getElementById("success-panel");
+            successPanel.hidden = false;
+            document.title = "Connection approved · AgentRouter";
+            successPanel.focus();
           } catch (error) {
             result.className = "error";
             result.textContent = error.message;
             this.disabled = false;
+            this.textContent = "Try again";
           }
         });
-      </script>` : `<p class="error">${escapeHtml(error || "This connection request is unavailable.")}</p>`}
+      </script>` : `<h1>${title}</h1><p class="error">${escapeHtml(error || "This connection request is unavailable.")}</p>`}
   </main>
 </body>
 </html>`;
