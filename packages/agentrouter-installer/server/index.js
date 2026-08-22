@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,6 +9,61 @@ const DEFAULT_AGENT_ROUTER_URL = "https://agentrouter.network";
 const MCP_PACKAGE = "@agentrouternetwork/mcp@latest";
 const OPENCLI_PACKAGE = "@jackwener/opencli";
 const INSTALLER_VERSION = "0.10.0";
+
+export async function connectAgentRouter(options = {}) {
+  const home = options.home || os.homedir();
+  const origin = trimTrailingSlash(options.agentRouterUrl || process.env.AGENT_ROUTER_URL || DEFAULT_AGENT_ROUTER_URL);
+  const clientName = String(options.clientName || "AI agent").trim().slice(0, 120) || "AI agent";
+  const fetchImpl = options.fetchImpl || fetch;
+  const wait = options.delay || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const openBrowser = options.openBrowser || openBrowserUrl;
+  const started = await postDeviceJson(fetchImpl, `${origin}/auth/device/start`, { client_name: clientName });
+  if (!started.device_code || !started.verification_uri_complete) {
+    throw new Error("AgentRouter returned an invalid device authorization response.");
+  }
+
+  const authorization = {
+    status: "authorization_required",
+    user_code: started.user_code,
+    verification_uri: started.verification_uri,
+    verification_uri_complete: started.verification_uri_complete,
+    expires_in: started.expires_in
+  };
+  options.onAuthorization?.(authorization);
+  const browserOpened = await openBrowser(started.verification_uri_complete).then(
+    (value) => value !== false,
+    () => false
+  );
+  let intervalSeconds = Math.max(1, Number(started.interval) || 3);
+  const maxPolls = Math.max(1, Math.ceil((Number(started.expires_in) || 600) / intervalSeconds));
+  for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+    await wait(intervalSeconds * 1000);
+    const token = await postDeviceJson(fetchImpl, `${origin}/auth/device/token`, {
+      device_code: started.device_code
+    }, { acceptErrors: true });
+    if (token.access_token) {
+      const credentialPath = options.credentialPath
+        || process.env.AGENT_ROUTER_CREDENTIALS_FILE
+        || path.join(home, ".agentrouter", "credentials.json");
+      await writeDeviceCredential({ credentialPath, origin, token, clientName });
+      return {
+        status: "connected",
+        auth_method: "device",
+        origin,
+        client_name: clientName,
+        credential_path: credentialPath,
+        browser_opened: browserOpened
+      };
+    }
+    if (token.error === "slow_down") {
+      intervalSeconds = Math.max(intervalSeconds + 1, Number(token.interval) || 0);
+      continue;
+    }
+    if (token.error === "authorization_pending") continue;
+    throw new Error(token.error_description || token.error || "AgentRouter account authorization failed.");
+  }
+  throw new Error("AgentRouter account authorization expired before approval.");
+}
 
 export async function installAgentRouter(options = {}) {
   const home = options.home || os.homedir();
@@ -191,8 +247,8 @@ export function formatInstallResult(result) {
         `MCP client: ${result.configured_clients.map((client) => client.name).join(", ")}`,
         `Remote MCP tools verified: ${result.mcp_tools.join(", ")}`,
         "Account authorization is separate from installation: call agentrouter_connect to open the browser approval page.",
-        "If agentrouter_connect is already visible, use it now; reload the AI client only when the existing session has a stale tool list.",
-        "Reloading activates the configured MCP tools; it does not authorize the AgentRouter account."
+        "If agentrouter_connect is not visible, run: npx @agentrouternetwork/agentrouter connect --client-name \"<current client>\"",
+        "This opens browser approval without changing the existing MCP configuration."
       ].join("\n") + "\n";
     }
     const setupVerb = result.setup_action === "updated" ? "updated" : "installed";
@@ -219,6 +275,15 @@ export function formatInstallResult(result) {
   ].join("\n") + "\n";
 }
 
+export function formatConnectResult(result) {
+  return [
+    "AgentRouter account connected.",
+    `Client: ${result.client_name}`,
+    `Credential saved securely for: ${result.origin}`,
+    "Return to the original request and continue."
+  ].join("\n") + "\n";
+}
+
 function formatBrowserConnectorLines(connector) {
   if (!connector) return [];
   if (connector.installed) {
@@ -234,12 +299,14 @@ function formatBrowserConnectorLines(connector) {
 }
 
 export function parseInstallArgs(argv) {
-  const options = { full: true };
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+  const args = [...argv];
+  const command = args[0] === "connect" ? args.shift() : "install";
+  const options = command === "connect" ? { command } : { command, full: true };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === "install" || arg === "setup") continue;
     if (arg === "--url") {
-      options.agentRouterUrl = requireValue(argv[++index], "--url");
+      options.agentRouterUrl = requireValue(args[++index], "--url");
     } else if (arg.startsWith("--url=")) {
       options.agentRouterUrl = arg.slice("--url=".length);
     } else if (arg === "--json") {
@@ -251,13 +318,17 @@ export function parseInstallArgs(argv) {
     } else if (arg === "--no-browser-setup") {
       options.setupBrowserConnector = false;
     } else if (arg === "--config-path") {
-      options.configPath = requireValue(argv[++index], "--config-path");
+      options.configPath = requireValue(args[++index], "--config-path");
     } else if (arg.startsWith("--config-path=")) {
       options.configPath = arg.slice("--config-path=".length);
     } else if (arg === "--client") {
-      options.client = requireValue(argv[++index], "--client");
+      options.client = requireValue(args[++index], "--client");
     } else if (arg.startsWith("--client=")) {
       options.client = arg.slice("--client=".length);
+    } else if (arg === "--client-name") {
+      options.clientName = requireValue(args[++index], "--client-name");
+    } else if (arg.startsWith("--client-name=")) {
+      options.clientName = arg.slice("--client-name=".length);
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
@@ -269,6 +340,7 @@ export function parseInstallArgs(argv) {
 
 export function installUsage() {
   return `Usage:
+  npx @agentrouternetwork/agentrouter connect --client-name Codex
   npx @agentrouternetwork/agentrouter
   npx @agentrouternetwork/agentrouter --client claude-code
   npx @agentrouternetwork/agentrouter --client codex
@@ -282,12 +354,79 @@ export function installUsage() {
   npx @agentrouternetwork/agentrouter --json
   npx @agentrouternetwork/agentrouter --url https://agentrouter.network
 
+The connect command opens browser account authorization and writes only the
+shared device credential. It does not install a Skill or change MCP config.
+
 Installs the AgentRouter Skill, configures one detected current AI client with
 the local MCP bridge, verifies the hosted AgentRouter tools, and best-effort
 installs the OpenCLI browser connector used for free local X/social reads. Use
 --http-only to skip MCP configuration and --no-browser-setup to skip the
 OpenCLI install. Neither mode creates a local wallet.
 `;
+}
+
+async function postDeviceJson(fetchImpl, url, body, { acceptErrors = false } = {}) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch (error) {
+    throw new Error(`AgentRouter account authorization is unreachable at ${url}: ${error.message}`);
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`AgentRouter account authorization returned invalid JSON at ${url}.`);
+  }
+  if (!response.ok && !acceptErrors) {
+    throw new Error(payload?.error_description || payload?.error || `AgentRouter returned HTTP ${response.status}.`);
+  }
+  return payload;
+}
+
+async function writeDeviceCredential({ credentialPath, origin, token, clientName }) {
+  await fs.mkdir(path.dirname(credentialPath), { recursive: true, mode: 0o700 });
+  let payload = { version: 1, origins: {} };
+  try {
+    const current = JSON.parse(await fs.readFile(credentialPath, "utf8"));
+    if (current && typeof current === "object" && !Array.isArray(current)) payload = current;
+  } catch (error) {
+    if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+  if (!payload.origins || typeof payload.origins !== "object" || Array.isArray(payload.origins)) payload.origins = {};
+  payload.version = 1;
+  payload.origins[origin] = {
+    access_token: String(token.access_token),
+    key_id: token.key_id || null,
+    client_name: clientName,
+    connected_at: new Date().toISOString()
+  };
+  const temporaryPath = `${credentialPath}.tmp.${process.pid}.${crypto.randomBytes(6).toString("hex")}`;
+  await fs.writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+  await fs.rename(temporaryPath, credentialPath);
+  await fs.chmod(credentialPath, 0o600);
+}
+
+function openBrowserUrl(url) {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  return new Promise((resolve) => {
+    let settled = false;
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.once("spawn", () => {
+      settled = true;
+      child.unref();
+      resolve(true);
+    });
+    child.once("error", () => {
+      if (!settled) resolve(false);
+    });
+  });
 }
 
 async function resolveCurrentClient({ home, env, preferredClient = "", customConfigPath = "" }) {
