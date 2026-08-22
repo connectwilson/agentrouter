@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Compile and deploy AgentRouterEvidenceAnchor to the configured settlement
-// chain, then print the address to put in ADN_ARC_ANCHOR_CONTRACT.
+// chain, then print the address to put in ADN_EVIDENCE_ANCHOR_CONTRACT.
 //
 // The contract is events only — no storage, no owner, nothing upgradeable — so
 // a deployment is disposable: losing this address costs the ability to read
@@ -8,7 +8,7 @@
 //
 //   ADN_SETTLEMENT_CHAIN=bsc \
 //   ADN_SETTLEMENT_RPC_URL=https://bsc-dataseed.binance.org \
-//   ADN_ARC_ANCHOR_PRIVATE_KEY=0x... \
+//   ADN_EVIDENCE_ANCHOR_PRIVATE_KEY=0x... \
 //   node scripts/deploy-evidence-anchor.js
 //
 // Pass --dry-run to compile and estimate gas without broadcasting.
@@ -64,9 +64,9 @@ if (reported !== chain.id) {
   throw new Error(`RPC reports chain ${reported} but ADN_SETTLEMENT_CHAIN expects ${chain.id}. Set ADN_SETTLEMENT_RPC_URL to an RPC for this chain.`);
 }
 
-const key = process.env.ADN_ARC_ANCHOR_PRIVATE_KEY || process.env.ADN_DEPLOYER_PRIVATE_KEY || "";
+const key = process.env.ADN_EVIDENCE_ANCHOR_PRIVATE_KEY || process.env.ADN_ARC_ANCHOR_PRIVATE_KEY || process.env.ADN_DEPLOYER_PRIVATE_KEY || "";
 if (!key) {
-  console.error("\nSet ADN_ARC_ANCHOR_PRIVATE_KEY to the deploying wallet's key and run again.");
+  console.error("\nSet ADN_EVIDENCE_ANCHOR_PRIVATE_KEY to the deploying wallet's key and run again.");
   console.error("Deploying costs gas on the target chain. Use a key you control and can afford to expose to this process.");
   process.exit(dryRun ? 0 : 1);
 }
@@ -98,4 +98,4 @@ if (receipt.status !== "success" || !receipt.contractAddress) {
 
 console.log(`\nDeployed to ${receipt.contractAddress}`);
 if (chain.explorer?.url) console.log(`${chain.explorer.url}/address/${receipt.contractAddress}`);
-console.log(`\nSet on the web service:\n  ADN_ARC_ANCHOR_CONTRACT=${receipt.contractAddress}`);
+console.log(`\nSet on the web service:\n  ADN_EVIDENCE_ANCHOR_CONTRACT=${receipt.contractAddress}`);

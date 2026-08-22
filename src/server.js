@@ -16,8 +16,8 @@ import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabi
 import { writePersistentServiceEvent } from "./persistence.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { isArcNetwork, verifyArcUsdcTransfer } from "./arc-payment.js";
-import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc } from "./arc-anchor.js";
-import { createErc8004AgentMetadata, submitErc8004Feedback } from "./erc8004.js";
+import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
+import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, submitErc8004Feedback, verifyErc8004FeedbackTransaction } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
@@ -1062,7 +1062,7 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname === "/agent-router/feedback/erc8004") {
     const body = await readJson(req);
-    const result = recordClientSubmittedErc8004Feedback(store, body);
+    const result = await recordClientSubmittedErc8004Feedback(store, body);
     sendJson(res, result.ok ? 200 : 422, result);
     return;
   }
@@ -3351,22 +3351,16 @@ async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "",
 }
 
 function createConsumerRequiredErc8004Feedback({ feedbackResult, record, providerId, baseUrl = "" }) {
-  const agentId =
-    record?.manifest?.registration?.erc8004?.agent_id ||
-    record?.manifest?.provider?.erc8004_agent_id ||
-    record?.manifest?.provider?.agent_id ||
-    null;
+  const descriptor = createErc8004FeedbackDescriptor({
+    requestId: feedbackResult.request_id,
+    serviceId: feedbackResult.service_id,
+    providerId,
+    manifest: record?.manifest,
+    feedback: feedbackResult.consumer_feedback,
+    baseUrl
+  });
   return {
-    standard: "ERC-8004",
-    registry_type: "reputation",
-    event_type: "AgentRouterConsumerFeedback",
-    network: settlementChain().network,
-    caip2: settlementChain().caip2,
-    chain_id: settlementChain().id,
-    agent_id: agentId ? String(agentId) : null,
-    service_id: feedbackResult.service_id,
-    provider_id: providerId,
-    request_id: feedbackResult.request_id,
+    ...descriptor,
     status: "consumer_submission_required",
     submitter: "consumer_wallet",
     reason: "ERC-8004 Reputation feedback must be submitted by the consumer wallet, not the provider/operator wallet.",
@@ -3375,7 +3369,7 @@ function createConsumerRequiredErc8004Feedback({ feedbackResult, record, provide
   };
 }
 
-function recordClientSubmittedErc8004Feedback(store, body = {}) {
+async function recordClientSubmittedErc8004Feedback(store, body = {}) {
   const serviceId = body.service_id || resolveFeedbackServiceId(store, body.request_id);
   const requestId = body.request_id;
   const erc8004 = body.erc8004;
@@ -3409,11 +3403,61 @@ function recordClientSubmittedErc8004Feedback(store, body = {}) {
       error: "No feedback event exists for this request_id."
     };
   }
-  event.consumer_feedback_erc8004 = erc8004;
+  const pending = event.consumer_feedback_erc8004;
+  if (
+    pending?.status !== "consumer_submission_required" ||
+    !pending.chain_id ||
+    !pending.registry_address ||
+    !pending.agent_id ||
+    !pending.feedback_hash
+  ) {
+    return {
+      ok: false,
+      status: "erc8004_feedback_not_prepared",
+      error: "No verifiable ERC-8004 feedback request exists for this request_id."
+    };
+  }
+  let verified;
+  if (process.env.ADN_ERC8004_MODE === "mock" && erc8004.mode === "mock") {
+    verified = {
+      ...pending,
+      status: "submitted",
+      mode: "mock",
+      tx_hash: erc8004.tx_hash,
+      block_number: String(erc8004.block_number || "0"),
+      feedback_account: erc8004.feedback_account || null
+    };
+  } else {
+    try {
+      verified = await verifyErc8004FeedbackTransaction({
+        txHash: erc8004.tx_hash,
+        expected: {
+          chainId: pending.chain_id,
+          registryAddress: pending.registry_address,
+          agentId: pending.agent_id,
+          feedbackHash: pending.feedback_hash,
+          value: pending.value,
+          valueDecimals: pending.value_decimals,
+          tag1: pending.tag1,
+          tag2: pending.tag2,
+          endpoint: pending.endpoint,
+          feedbackUri: pending.feedback_uri
+        }
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        status: "erc8004_feedback_verification_failed",
+        code: error.code || "ERC8004_VERIFICATION_FAILED",
+        error: error.shortMessage || error.message
+      };
+    }
+  }
+  event.consumer_feedback_erc8004 = verified;
   event.consumer_feedback_trust_anchor = {
     ...(event.consumer_feedback_trust_anchor || {}),
     primary_standard: "ERC-8004",
-    erc8004,
+    erc8004: verified,
     updated_at: new Date().toISOString()
   };
   const globalConsumer = [...(store.feedbackEvents || [])].reverse().find((item) =>
@@ -3422,7 +3466,7 @@ function recordClientSubmittedErc8004Feedback(store, body = {}) {
     item.event_version === "agent_consumer_feedback_v1"
   );
   if (globalConsumer) {
-    globalConsumer.erc8004 = erc8004;
+    globalConsumer.erc8004 = verified;
     globalConsumer.trust_anchor = event.consumer_feedback_trust_anchor;
   }
   writePersistentServiceEvent({
@@ -3434,7 +3478,7 @@ function recordClientSubmittedErc8004Feedback(store, body = {}) {
       service_id: serviceId,
       provider_id: record?.manifest?.provider?.provider_id || erc8004.provider_id || null,
       request_id: requestId,
-      erc8004,
+      erc8004: verified,
       created_at: new Date().toISOString()
     }
   }).catch(() => {});
@@ -3443,7 +3487,7 @@ function recordClientSubmittedErc8004Feedback(store, body = {}) {
     status: "erc8004_feedback_attached",
     service_id: serviceId,
     request_id: requestId,
-    erc8004,
+    erc8004: verified,
     trust_anchor: event.consumer_feedback_trust_anchor
   };
 }
@@ -3654,8 +3698,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (!settlement.skipped) {
         console.log(`Settlement: ${settlement.chain} (chain ${settlement.chain_id}), ${settlement.asset} with ${settlement.decimals} decimals`);
       }
+      const evidenceAnchor = await assertEvidenceAnchorReady();
+      if (!evidenceAnchor.skipped) {
+        console.log(`Evidence anchor: ${evidenceAnchor.contract_address} on ${evidenceAnchor.chain}`);
+      }
     } catch (error) {
-      console.error(`Settlement preflight failed: ${error.message}`);
+      console.error(`On-chain preflight failed: ${error.message}`);
       process.exit(1);
     }
     await bootstrapServer(server, baseUrl);

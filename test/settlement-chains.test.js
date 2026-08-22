@@ -163,3 +163,28 @@ test("an agent's explorer link follows the chain it was registered on", async ()
   assert.equal(publicErc8004({ manifest: { registration: { erc8004: {} } } }), null);
   assert.equal(publicErc8004({}), null);
 });
+
+test("an Arc identity token id is never reused as a BSC feedback target", async () => {
+  await withChain("bsc", async () => {
+    const { createErc8004FeedbackDescriptor } = await import("../src/erc8004.js");
+    const staleArc = createErc8004FeedbackDescriptor({
+      serviceId: "svc",
+      manifest: {
+        registration: {
+          erc8004: { agent_id: "22914", network: "arc-testnet", chain_id: 5042002 }
+        }
+      }
+    });
+    assert.equal(staleArc.agent_id, null);
+
+    const onBsc = createErc8004FeedbackDescriptor({
+      serviceId: "svc",
+      manifest: {
+        registration: {
+          erc8004: { agent_id: "7", network: "bsc", chain_id: 56 }
+        }
+      }
+    });
+    assert.equal(onBsc.agent_id, "7");
+  });
+});

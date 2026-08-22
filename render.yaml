@@ -21,11 +21,15 @@ services:
         sync: false
       - key: ADN_ADMIN_API_TOKEN
         sync: false
-      - key: ADN_ARC_RPC_URL
-        value: https://rpc.testnet.arc.network
-      - key: ADN_ARC_ANCHOR_CONTRACT
-        value: 0x65274c73f39bf1654f9aaf261ea16d0b08fdb8d0
-      - key: ADN_ARC_ANCHOR_PRIVATE_KEY
+      - key: ADN_SETTLEMENT_CHAIN
+        value: bsc
+      - key: ADN_SETTLEMENT_RPC_URL
+        value: https://bsc-dataseed.binance.org
+      - key: ADN_SETTLEMENT_ASSET
+        value: USDC
+      - key: ADN_EVIDENCE_ANCHOR_CONTRACT
+        sync: false
+      - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
         sync: false
   - type: web
     name: agentrouter-markets-sg
@@ -56,11 +60,15 @@ services:
         sync: false
       - key: ADN_ADMIN_API_TOKEN
         sync: false
-      - key: ADN_ARC_RPC_URL
-        value: https://rpc.testnet.arc.network
-      - key: ADN_ARC_ANCHOR_CONTRACT
-        value: 0x65274c73f39bf1654f9aaf261ea16d0b08fdb8d0
-      - key: ADN_ARC_ANCHOR_PRIVATE_KEY
+      - key: ADN_SETTLEMENT_CHAIN
+        value: bsc
+      - key: ADN_SETTLEMENT_RPC_URL
+        value: https://bsc-dataseed.binance.org
+      - key: ADN_SETTLEMENT_ASSET
+        value: USDC
+      - key: ADN_EVIDENCE_ANCHOR_CONTRACT
+        sync: false
+      - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
         sync: false
   - type: worker
     name: binance-futures-delist-monitor

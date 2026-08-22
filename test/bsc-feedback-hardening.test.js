@@ -88,7 +88,13 @@ const expected = {
   chainId: 56,
   registryAddress: BSC_REPUTATION_REGISTRY,
   agentId: "22914",
-  feedbackHash: FEEDBACK_HASH
+  feedbackHash: FEEDBACK_HASH,
+  value: 9500,
+  valueDecimals: 2,
+  tag1: "data_quality",
+  tag2: "intent_fit",
+  endpoint: "",
+  feedbackUri: "https://agentrouter.network/agent-router/feedback?request_id=req_1"
 };
 
 test("ERC-8004 client feedback is accepted only after authoritative on-chain verification", async () => {
@@ -125,10 +131,19 @@ test("ERC-8004 client feedback rejects fake, reverted, foreign-chain and mismatc
   const wrongHashInput = encodeFunctionData({
     abi: ERC8004_REPUTATION_ABI,
     functionName: "giveFeedback",
-    args: [22914n, 9500n, 2, "data_quality", "intent_fit", "", "", `0x${"c".repeat(64)}`]
+    args: [22914n, 9500n, 2, "data_quality", "intent_fit", "", expected.feedbackUri, `0x${"c".repeat(64)}`]
   });
   await assert.rejects(
     verifyErc8004FeedbackTransaction({ txHash: TX_HASH, expected, publicClient: publicClient({ getTransaction: async () => ({ chainId: 56, to: BSC_REPUTATION_REGISTRY, input: wrongHashInput }) }) }),
     (error) => error.code === "ERC8004_FEEDBACK_HASH_MISMATCH"
+  );
+  const wrongValueInput = encodeFunctionData({
+    abi: ERC8004_REPUTATION_ABI,
+    functionName: "giveFeedback",
+    args: [22914n, 100n, 2, "data_quality", "intent_fit", "", expected.feedbackUri, FEEDBACK_HASH]
+  });
+  await assert.rejects(
+    verifyErc8004FeedbackTransaction({ txHash: TX_HASH, expected, publicClient: publicClient({ getTransaction: async () => ({ chainId: 56, to: BSC_REPUTATION_REGISTRY, input: wrongValueInput }) }) }),
+    (error) => error.code === "ERC8004_FEEDBACK_VALUE_MISMATCH"
   );
 });

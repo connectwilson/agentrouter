@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, http } from "viem";
+import { createPublicClient, createWalletClient, decodeFunctionData, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
 import { erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl, settlementChain } from "./chains.js";
@@ -65,16 +65,34 @@ export function erc8004Configured({ serviceId, manifest } = {}) {
 }
 
 export function resolveErc8004AgentId({ serviceId, manifest } = {}) {
-  const fromManifest =
-    manifest?.registration?.erc8004?.agent_id ||
-    manifest?.provider?.erc8004_agent_id ||
-    manifest?.provider?.agent_id ||
-    manifest?.erc8004?.agent_id;
-  if (fromManifest != null && fromManifest !== "") return String(fromManifest);
+  const registration = manifest?.registration?.erc8004;
+  if (registration?.agent_id != null && registration.agent_id !== "" && registrationMatchesSettlementChain(registration)) {
+    return String(registration.agent_id);
+  }
 
   const serviceEnvName = serviceId ? `ADN_ERC8004_AGENT_ID_${envKey(serviceId)}` : "";
   if (serviceEnvName && process.env[serviceEnvName]) return process.env[serviceEnvName];
-  return process.env.ADN_ERC8004_AGENT_ID || "";
+  if (process.env.ADN_ERC8004_AGENT_ID) return process.env.ADN_ERC8004_AGENT_ID;
+
+  // Legacy manifests sometimes stored only a token id under provider. Accept
+  // those only when there is no explicit cross-chain registration proving the
+  // id belongs elsewhere; token ids are local to a registry and chain.
+  if (registration?.agent_id != null && registration.agent_id !== "") return "";
+  const legacy = manifest?.provider?.erc8004_agent_id || manifest?.provider?.agent_id || manifest?.erc8004?.agent_id;
+  return legacy != null && legacy !== "" ? String(legacy) : "";
+}
+
+function registrationMatchesSettlementChain(registration = {}) {
+  const chain = settlementChain();
+  if (registration.chain_id != null && registration.chain_id !== "") {
+    return Number(registration.chain_id) === chain.id;
+  }
+  if (registration.caip2) return String(registration.caip2).toLowerCase() === chain.caip2.toLowerCase();
+  if (registration.network) {
+    const network = String(registration.network).toLowerCase();
+    return network === chain.network.toLowerCase() || network === String(chain.id) || network === chain.caip2.toLowerCase();
+  }
+  return true;
 }
 
 export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
@@ -282,43 +300,14 @@ export async function submitErc8004Feedback({
   privateKey = "",
   submitter = "server"
 } = {}) {
-  const agentId = resolveErc8004AgentId({ serviceId, manifest });
-  const registry = reputationRegistryAddress();
+  const base = createErc8004FeedbackDescriptor({ requestId, serviceId, providerId, manifest, feedback, baseUrl });
+  const agentId = base.agent_id;
+  const registry = base.registry_address;
   const value = feedbackValue(feedback);
-  const valueDecimals = 2;
-  const endpoint = endpointFor(baseUrl, requestId);
-  const feedbackURI = endpoint;
-  const feedbackHash = keccakHashJson({
-    standard: "ERC-8004",
-    request_id: requestId || null,
-    service_id: serviceId || null,
-    provider_id: providerId || null,
-    feedback: feedback || null
-  });
-  const base = {
-    standard: "ERC-8004",
-    registry_type: "reputation",
-    event_type: "AgentRouterConsumerFeedback",
-    network: ARC_TESTNET.network,
-    caip2: ARC_TESTNET.caip2,
-    chain_id: ARC_TESTNET.id,
-    registry_address: registry || null,
-    identity_registry_address: erc8004Registries().identityRegistry,
-    validation_registry_address: erc8004Registries().validationRegistry,
-    agent_id: agentId || null,
-    function_name: "giveFeedback",
-    value,
-    value_decimals: valueDecimals,
-    tag1: "data_quality",
-    tag2: "intent_fit",
-    endpoint,
-    feedback_uri: feedbackURI,
-    feedback_hash: feedbackHash,
-    request_id: requestId || null,
-    service_hash: hashJson(serviceId || ""),
-    provider_hash: hashJson(providerId || ""),
-    created_at: new Date().toISOString()
-  };
+  const valueDecimals = base.value_decimals;
+  const endpoint = base.endpoint;
+  const feedbackURI = base.feedback_uri;
+  const feedbackHash = base.feedback_hash;
 
   if (process.env.ADN_ERC8004_MODE === "mock") {
     return {
@@ -384,8 +373,6 @@ export async function submitErc8004Feedback({
       account
     });
     if (unsupported) {
-      // Off-chain reputation already recorded the rating; only the on-chain
-      // mirror is unavailable, so say which and keep the feedback.
       return {
         ...base,
         status: "registry_unavailable",
@@ -404,7 +391,7 @@ export async function submitErc8004Feedback({
     const receipt = await publicClient.waitForTransactionReceipt({
       hash: txHash,
       confirmations: 1,
-      timeout: Number(process.env.ADN_ARC_RECEIPT_TIMEOUT_MS || 60000)
+      timeout: Number(process.env.ADN_ERC8004_RECEIPT_TIMEOUT_MS || process.env.ADN_ARC_RECEIPT_TIMEOUT_MS || 60000)
     });
     return {
       ...base,
@@ -425,6 +412,116 @@ export async function submitErc8004Feedback({
       error: error.shortMessage || error.message
     };
   }
+}
+
+export function createErc8004FeedbackDescriptor({ requestId, serviceId, providerId, manifest, feedback, baseUrl = "" } = {}) {
+  const agentId = resolveErc8004AgentId({ serviceId, manifest });
+  const registry = reputationRegistryAddress();
+  const endpoint = endpointFor(baseUrl, requestId);
+  return {
+    standard: "ERC-8004",
+    registry_type: "reputation",
+    event_type: "AgentRouterConsumerFeedback",
+    network: ARC_TESTNET.network,
+    caip2: ARC_TESTNET.caip2,
+    chain_id: ARC_TESTNET.id,
+    registry_address: registry || null,
+    identity_registry_address: erc8004Registries().identityRegistry,
+    validation_registry_address: erc8004Registries().validationRegistry,
+    agent_id: agentId || null,
+    function_name: "giveFeedback",
+    value: feedbackValue(feedback),
+    value_decimals: 2,
+    tag1: "data_quality",
+    tag2: "intent_fit",
+    endpoint,
+    feedback_uri: endpoint,
+    feedback_hash: keccakHashJson({
+      standard: "ERC-8004",
+      request_id: requestId || null,
+      service_id: serviceId || null,
+      provider_id: providerId || null,
+      feedback: feedback || null
+    }),
+    request_id: requestId || null,
+    service_hash: hashJson(serviceId || ""),
+    provider_hash: hashJson(providerId || ""),
+    created_at: new Date().toISOString()
+  };
+}
+
+export async function verifyErc8004FeedbackTransaction({ txHash, expected = {}, publicClient } = {}) {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(txHash || ""))) {
+    throw erc8004VerificationError("ERC8004_INVALID_TX_HASH", "A valid transaction hash is required.");
+  }
+  const chain = settlementChain();
+  const client = publicClient || createPublicClient({ chain, transport: http(chain.rpcUrls.default.http[0]) });
+  const receipt = await client.getTransactionReceipt({ hash: txHash }).catch(() => null);
+  if (!receipt) throw erc8004VerificationError("ERC8004_RECEIPT_NOT_FOUND", "The ERC-8004 transaction receipt was not found.");
+  if (receipt.status !== "success") throw erc8004VerificationError("ERC8004_TRANSACTION_REVERTED", "The ERC-8004 transaction reverted.");
+  const reportedChainId = await client.getChainId();
+  if (Number(reportedChainId) !== Number(expected.chainId)) {
+    throw erc8004VerificationError("ERC8004_CHAIN_MISMATCH", `Transaction is on chain ${reportedChainId}, expected ${expected.chainId}.`);
+  }
+  const transaction = await client.getTransaction({ hash: txHash }).catch(() => null);
+  if (!transaction) throw erc8004VerificationError("ERC8004_TRANSACTION_NOT_FOUND", "The ERC-8004 transaction was not found.");
+  if (transaction.chainId != null && Number(transaction.chainId) !== Number(expected.chainId)) {
+    throw erc8004VerificationError("ERC8004_CHAIN_MISMATCH", `Transaction declares chain ${transaction.chainId}, expected ${expected.chainId}.`);
+  }
+  if (String(transaction.to || "").toLowerCase() !== String(expected.registryAddress || "").toLowerCase()) {
+    throw erc8004VerificationError("ERC8004_REGISTRY_MISMATCH", "Transaction target is not the expected ERC-8004 Reputation Registry.");
+  }
+  let decoded;
+  try {
+    decoded = decodeFunctionData({ abi: ERC8004_REPUTATION_ABI, data: transaction.input || transaction.data });
+  } catch {
+    throw erc8004VerificationError("ERC8004_CALL_INVALID", "Transaction does not contain a valid ERC-8004 Reputation call.");
+  }
+  if (decoded.functionName !== "giveFeedback") {
+    throw erc8004VerificationError("ERC8004_CALL_INVALID", "Transaction did not call giveFeedback.");
+  }
+  if (String(decoded.args[0]) !== String(expected.agentId)) {
+    throw erc8004VerificationError("ERC8004_AGENT_MISMATCH", "Transaction feedback targets a different agent.");
+  }
+  if (String(decoded.args[1]) !== String(expected.value) || Number(decoded.args[2]) !== Number(expected.valueDecimals)) {
+    throw erc8004VerificationError("ERC8004_FEEDBACK_VALUE_MISMATCH", "Transaction feedback score does not match the recorded feedback.");
+  }
+  if (
+    String(decoded.args[3]) !== String(expected.tag1) ||
+    String(decoded.args[4]) !== String(expected.tag2) ||
+    String(decoded.args[5]) !== String(expected.endpoint) ||
+    String(decoded.args[6]) !== String(expected.feedbackUri)
+  ) {
+    throw erc8004VerificationError("ERC8004_FEEDBACK_METADATA_MISMATCH", "Transaction feedback metadata does not match the prepared call.");
+  }
+  if (String(decoded.args[7]).toLowerCase() !== String(expected.feedbackHash || "").toLowerCase()) {
+    throw erc8004VerificationError("ERC8004_FEEDBACK_HASH_MISMATCH", "Transaction feedback hash does not match the recorded feedback.");
+  }
+  if (expected.submitter && String(transaction.from || "").toLowerCase() !== String(expected.submitter).toLowerCase()) {
+    throw erc8004VerificationError("ERC8004_SUBMITTER_MISMATCH", "Transaction sender does not match the consumer wallet.");
+  }
+  return {
+    standard: "ERC-8004",
+    registry_type: "reputation",
+    status: "submitted",
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: Number(expected.chainId),
+    registry_address: expected.registryAddress,
+    agent_id: String(expected.agentId),
+    feedback_hash: expected.feedbackHash,
+    feedback_account: transaction.from || null,
+    tx_hash: txHash,
+    block_number: receipt.blockNumber?.toString?.() || null,
+    explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`,
+    verified_at: new Date().toISOString()
+  };
+}
+
+function erc8004VerificationError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function reputationRegistryAddress() {

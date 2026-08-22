@@ -63,11 +63,59 @@ export const AGENT_ROUTER_EVIDENCE_ANCHOR_ABI = [
   }
 ];
 
+export function evidenceAnchorConfig(env = process.env) {
+  return {
+    contractAddress: env.ADN_EVIDENCE_ANCHOR_CONTRACT || env.ADN_ARC_ANCHOR_CONTRACT || "",
+    privateKey: env.ADN_EVIDENCE_ANCHOR_PRIVATE_KEY || env.ADN_ARC_ANCHOR_PRIVATE_KEY || "",
+    mode: env.ADN_EVIDENCE_ANCHOR_MODE || env.ADN_ARC_ANCHOR_MODE || "",
+    receiptTimeoutMs: Number(env.ADN_EVIDENCE_ANCHOR_RECEIPT_TIMEOUT_MS || env.ADN_ARC_RECEIPT_TIMEOUT_MS || 60000)
+  };
+}
+
 export function arcAnchorConfigured() {
-  return Boolean(process.env.ADN_ARC_ANCHOR_CONTRACT && process.env.ADN_ARC_ANCHOR_PRIVATE_KEY);
+  const config = evidenceAnchorConfig();
+  return Boolean(config.contractAddress && config.privateKey);
+}
+
+export async function assertEvidenceAnchorReady({ fetchImpl = globalThis.fetch } = {}) {
+  const config = evidenceAnchorConfig();
+  if (!config.contractAddress && !config.privateKey) return { ok: true, skipped: true, reason: "not_configured" };
+  if (!config.contractAddress || !config.privateKey) {
+    throw anchorConfigError("EVIDENCE_ANCHOR_INCOMPLETE", "Evidence anchor contract and private key must be configured together.");
+  }
+  if (!isEvmAddress(config.contractAddress)) {
+    throw anchorConfigError("EVIDENCE_ANCHOR_INVALID_ADDRESS", "Evidence anchor contract must be a valid EVM address.");
+  }
+  const chain = settlementChain();
+  const rpc = async (method, params) => {
+    const response = await fetchImpl(chain.rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+    });
+    const payload = await response.json();
+    if (payload.error) throw new Error(`${method} failed: ${payload.error.message}`);
+    return payload.result;
+  };
+  const reportedChainId = Number(await rpc("eth_chainId", []));
+  if (reportedChainId !== chain.id) {
+    throw anchorConfigError(
+      "EVIDENCE_ANCHOR_CHAIN_MISMATCH",
+      `Evidence anchor RPC reports chain ${reportedChainId}, expected ${chain.id}.`
+    );
+  }
+  const code = await rpc("eth_getCode", [config.contractAddress, "latest"]);
+  if (!code || code === "0x") {
+    throw anchorConfigError(
+      "EVIDENCE_ANCHOR_NOT_DEPLOYED",
+      `No evidence anchor contract is deployed at ${config.contractAddress} on ${chain.network}.`
+    );
+  }
+  return { ok: true, chain: chain.network, chain_id: chain.id, contract_address: config.contractAddress };
 }
 
 export function createUnconfiguredArcAnchor(evidence = {}) {
+  const config = evidenceAnchorConfig();
   return {
     anchor_version: "agent_router_arc_anchor_v1",
     network: ARC_TESTNET.network,
@@ -80,36 +128,37 @@ export function createUnconfiguredArcAnchor(evidence = {}) {
     result_hash: evidence.result_hash || null,
     verification_hash: evidence.verification_hash || null,
     request_id: evidence.request_id || null,
-    contract_address: process.env.ADN_ARC_ANCHOR_CONTRACT || null,
+    contract_address: config.contractAddress || null,
     created_at: new Date().toISOString()
   };
 }
 
 export async function anchorEvidenceOnArc(evidence = {}) {
-  if (process.env.ADN_ARC_ANCHOR_MODE === "mock") {
+  const config = evidenceAnchorConfig();
+  if (config.mode === "mock") {
     return {
       ...baseAnchor(evidence),
       status: "anchored",
       mode: "mock",
       tx_hash: `0x${"b".repeat(64)}`,
       block_number: "0",
-      contract_address: process.env.ADN_ARC_ANCHOR_CONTRACT || `0x${"c".repeat(40)}`,
+      contract_address: config.contractAddress || `0x${"c".repeat(40)}`,
       explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/0x${"b".repeat(64)}`
     };
   }
   if (!arcAnchorConfigured()) {
     return createUnconfiguredArcAnchor(evidence);
   }
-  const contractAddress = process.env.ADN_ARC_ANCHOR_CONTRACT;
+  const contractAddress = config.contractAddress;
   if (!isEvmAddress(contractAddress)) {
     return {
       ...createUnconfiguredArcAnchor(evidence),
       status: "invalid_config",
-      error: "ADN_ARC_ANCHOR_CONTRACT must be a valid EVM address."
+      error: "ADN_EVIDENCE_ANCHOR_CONTRACT must be a valid EVM address."
     };
   }
   try {
-    const account = privateKeyToAccount(normalizePrivateKey(process.env.ADN_ARC_ANCHOR_PRIVATE_KEY));
+    const account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
     const client = createWalletClient({
       account,
       chain: ARC_TESTNET,
@@ -137,7 +186,7 @@ export async function anchorEvidenceOnArc(evidence = {}) {
     const receipt = await publicClient.waitForTransactionReceipt({
       hash: txHash,
       confirmations: 1,
-      timeout: Number(process.env.ADN_ARC_RECEIPT_TIMEOUT_MS || 60000)
+      timeout: config.receiptTimeoutMs
     });
     return {
       ...baseAnchor(evidence),
@@ -161,6 +210,7 @@ export async function anchorEvidenceOnArc(evidence = {}) {
 }
 
 export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, providerId, feedback } = {}) {
+  const config = evidenceAnchorConfig();
   const feedbackHashValue = hashJson(feedback || null);
   const base = {
     anchor_version: "agent_router_feedback_arc_anchor_v1",
@@ -175,14 +225,14 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     provider_hash: hashJson(providerId || ""),
     created_at: new Date().toISOString()
   };
-  if (process.env.ADN_ARC_ANCHOR_MODE === "mock") {
+  if (config.mode === "mock") {
     return {
       ...base,
       status: "anchored",
       mode: "mock",
       tx_hash: `0x${"d".repeat(64)}`,
       block_number: "0",
-      contract_address: process.env.ADN_ARC_ANCHOR_CONTRACT || `0x${"c".repeat(40)}`,
+      contract_address: config.contractAddress || `0x${"c".repeat(40)}`,
       explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/0x${"d".repeat(64)}`
     };
   }
@@ -190,20 +240,20 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     return {
       ...base,
       status: "not_configured",
-      contract_address: process.env.ADN_ARC_ANCHOR_CONTRACT || null
+      contract_address: config.contractAddress || null
     };
   }
-  const contractAddress = process.env.ADN_ARC_ANCHOR_CONTRACT;
+  const contractAddress = config.contractAddress;
   if (!isEvmAddress(contractAddress)) {
     return {
       ...base,
       status: "invalid_config",
       contract_address: contractAddress || null,
-      error: "ADN_ARC_ANCHOR_CONTRACT must be a valid EVM address."
+      error: "ADN_EVIDENCE_ANCHOR_CONTRACT must be a valid EVM address."
     };
   }
   try {
-    const account = privateKeyToAccount(normalizePrivateKey(process.env.ADN_ARC_ANCHOR_PRIVATE_KEY));
+    const account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
     const client = createWalletClient({
       account,
       chain: ARC_TESTNET,
@@ -227,7 +277,7 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
     const receipt = await publicClient.waitForTransactionReceipt({
       hash: txHash,
       confirmations: 1,
-      timeout: Number(process.env.ADN_ARC_RECEIPT_TIMEOUT_MS || 60000)
+      timeout: config.receiptTimeoutMs
     });
     return {
       ...base,
@@ -267,6 +317,12 @@ function baseAnchor(evidence) {
     payment_tx_hash: paymentHash(evidence),
     created_at: new Date().toISOString()
   };
+}
+
+function anchorConfigError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function bytes32(value) {
