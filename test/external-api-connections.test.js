@@ -193,7 +193,14 @@ test("agentrouter_fetch dispatches connected Exa for natural and structured requ
     assert.equal(structured.ok, true);
     assert.equal(structured.status, "data_returned");
     assert.equal(structured.results[0].result.count, 1);
-    assert.deepEqual(receivedQueries, ["AgentRouter", "AgentRouter"]);
+
+    const empiricalResearch = await fetchViaMcp({ task: "研究同类量化策略过去一年的实证表现。" });
+    assert.equal(empiricalResearch.status, "data_returned");
+    assert.equal(empiricalResearch.research_plans[0].strategy, "web_evidence_then_specialist_data");
+    assert.equal(empiricalResearch.research_plans[0].supplemental_requirements[0].capability, "service_discovery");
+    assert.equal(empiricalResearch.results[0].source.source, "exa");
+    assert.equal(empiricalResearch.results[0].request.params.research_plan, undefined);
+    assert.deepEqual(receivedQueries, ["AgentRouter", "AgentRouter", "同类量化策略过去一年的实证表现。"]);
 
     const connectionRequired = await fetchViaMcp(
       { task: "Use my connected Exa source to search for AgentRouter" },

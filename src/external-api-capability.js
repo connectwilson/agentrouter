@@ -369,7 +369,7 @@ function intentScore(text, intent) {
 const WEB_SEARCH_SOURCES = ["exa", "tavily", "brave_search", "serper", "perplexity", "firecrawl", "jina"];
 const WEB_SEARCH_PATTERN = termPattern(
   "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?|research|investigate|evidence|benchmark",
-  "招聘|岗位|崗位|职位|職位|最新|查一下|搜一下|了解|怎么|怎樣|研究|调研|調研|实证|實證|竞品|競品"
+  "招聘|岗位|崗位|职位|職位|最新|最近|查一下|搜一下|查找|了解|怎么|怎樣|研究|调研|調研|实证|實證|竞品|競品|公开讨论|公開討論|行业报告|行業報告"
 );
 
 // A question is a lookup even when it uses none of those verbs. "How does
@@ -419,9 +419,7 @@ export function inferExternalApiRequest(task, { connectedSources = [], tier = "a
   if (tier === "web") {
     if (!asksAboutSomething(text)) return null;
     const source = pickAvailableSource(WEB_SEARCH_SOURCES, connected, "search");
-    return source
-      ? { capability: "external_api_query", params: { source: source.source, operation: "search", query: extractSearchQuery(text), limit: 10 } }
-      : null;
+    return source ? externalApiRequest(source, "search", text) : null;
   }
   let definition = SOURCE_CATALOG.find((item) =>
     item.implementation_status === "available"
@@ -445,15 +443,79 @@ export function inferExternalApiRequest(task, { connectedSources = [], tier = "a
   }
   if (!definition) return null;
   if (!definition.operations.includes(operation)) operation = definition.operations[0] || "search";
+  return externalApiRequest(definition, operation, text);
+}
+
+function externalApiRequest(definition, operation, text) {
+  const params = {
+    source: definition.source,
+    operation,
+    query: extractSearchQuery(text),
+    limit: 10,
+    ...(definition.source === "amadeus" ? inferFlightParams(text) : {})
+  };
+  const researchPlan = inferResearchPlan(text, params);
   return {
     capability: "external_api_query",
-    params: {
-      source: definition.source,
-      operation,
-      query: extractSearchQuery(text),
-      limit: 10
-    }
+    params,
+    ...(researchPlan ? { research_plan: researchPlan } : {})
   };
+}
+
+function inferResearchPlan(text, primaryParams) {
+  const empiricalStrategy = /量化|quant(?:itative)?|trading strategy|systematic strategy/i.test(text)
+    && /实证|實證|表现|表現|performance|backtests?|过去一年|過去一年/i.test(text);
+  if (!empiricalStrategy) return null;
+  return {
+    strategy: "web_evidence_then_specialist_data",
+    primary_requirement: { capability: "external_api_query", params: primaryParams },
+    supplemental_requirements: [{
+      capability: "service_discovery",
+      constraints: {
+        categories: ["financial", "market_data", "quantitative_data"],
+        purpose: "Validate claimed strategy performance with specialist datasets after identifying the exact strategy, assets, and benchmark."
+      }
+    }],
+    merge_policy: "Keep web claims and specialist measurements separately attributed; do not invent a backtest when no matching dataset exists."
+  };
+}
+
+const FLIGHT_CITY_CODES = [
+  [/台北|臺北|taipei/i, "TPE"],
+  [/东京|東京|tokyo/i, "TYO"],
+  [/香港|hong kong/i, "HKG"],
+  [/新加坡|singapore/i, "SIN"],
+  [/纽约|紐約|new york/i, "NYC"],
+  [/伦敦|倫敦|london/i, "LON"]
+];
+
+function inferFlightParams(text) {
+  const mentioned = FLIGHT_CITY_CODES
+    .map(([pattern, code]) => ({ index: text.search(pattern), code }))
+    .filter((item) => item.index >= 0)
+    .sort((a, b) => a.index - b.index);
+  const explicitDate = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/)?.[1];
+  return {
+    ...(mentioned[0] ? { origin: mentioned[0].code } : {}),
+    ...(mentioned[1] ? { destination: mentioned[1].code } : {}),
+    ...(explicitDate ? { departure_date: explicitDate } : nextWeekdayDate(text)),
+    ...(/直飞|直飛|non[ -]?stop|direct flight/i.test(text) ? { non_stop: true } : {})
+  };
+}
+
+function nextWeekdayDate(text) {
+  const weekday = [
+    [/下周一|下週一|next monday/i, 1], [/下周二|下週二|next tuesday/i, 2],
+    [/下周三|下週三|next wednesday/i, 3], [/下周四|下週四|next thursday/i, 4],
+    [/下周五|下週五|next friday/i, 5], [/下周六|下週六|next saturday/i, 6],
+    [/下周日|下週日|下周天|下週天|next sunday/i, 7]
+  ].find(([pattern]) => pattern.test(text))?.[1];
+  if (!weekday) return {};
+  const now = new Date();
+  const current = now.getUTCDay() || 7;
+  const daysUntilNextMonday = 8 - current;
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntilNextMonday + weekday - 1));
+  return { departure_date: date.toISOString().slice(0, 10) };
 }
 
 // Callers asking for more results should get them; 10 was only ever a default.
@@ -863,6 +925,7 @@ function buildRequest(sourceId, context) {
     url.searchParams.set("destinationLocationCode", destination);
     url.searchParams.set("departureDate", departureDate);
     url.searchParams.set("adults", String(Math.max(Number(params.adults) || 1, 1)));
+    if (params.non_stop === true) url.searchParams.set("nonStop", "true");
     url.searchParams.set("max", String(limit));
     return get(url, { authorization: `Bearer ${secret}`, accept: "application/json" });
   }

@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.7.2"
+  version: "0.7.3"
 ---
 
 # AgentRouter
@@ -16,6 +16,10 @@ Important: this AgentRouter skill is not a software-development workflow router,
 Use AgentRouter when the task needs external API/data capabilities such as market data, on-chain intelligence, provider-specific datasets, real-time or recent data, paid data, data with evidence/verification, or discovery of which data provider/tool can answer the query.
 
 Do not require the user to mention AgentRouter. If AgentRouter is installed and the user asks a data/API question, first check whether AgentRouter can discover or route a suitable capability. Use generic web search only for broad public web lookup, news/articles/pages, or when the user explicitly asks for web search. If AgentRouter cannot be reached from the current environment, say that the AgentRouter data tool is not connected/reachable and give the shortest connection step; do not silently substitute another data source for the AgentRouter path.
+
+Generic words such as `research`, `研究`, `调研`, or `实证` do not by themselves mean scholarly literature. Route broad product, market, competitor, and public-web research to the general research source. Route to a scholarly source only when the request explicitly asks for papers, publications, DOI, citations, authors, journals, peer review, arXiv, 论文, or 文献. When the user asks to research only “this thing” or another unresolved reference, ask what the research subject is before invoking any source.
+
+When the user explicitly names Reddit, Xiaohongshu, X, YouTube, Bilibili, Zhihu, or Weibo in a keyword-research task, the local MCP bridge should use that platform's read-only OpenCLI connector first. If the returned `coverage.status` is `insufficient`, follow the returned `supplemental_request` for general-web context while keeping platform-native evidence separately attributed. A returned `research_plan` likewise describes ordered multi-source requirements; do not collapse it into its first source or silently add OpenAlex.
 
 ## Payment Gate
 

@@ -505,17 +505,25 @@ test("keyword search runs locally so it works without a platform API token", asy
   const { localSocialSearchRequest, runLocalSocialSearch, normalizeSearchPlatform } =
     await import("../packages/agentrouter-mcp/server/local-social-search.js");
 
-  // Structured search calls are intercepted; natural language is not, because
-  // the hosted router knows about paid services the bridge cannot see.
+  // Structured searches and natural-language tasks that explicitly name a
+  // local social platform are intercepted. Other natural-language tasks still
+  // stay with the hosted router, which knows about paid services.
   const intercepted = localSocialSearchRequest({
     method: "tools/call",
     params: { name: "agentrouter_request", arguments: { capability: "social_search", params: { platform: "x", query: "crypto pm jobs", limit: 5 } } }
   });
   assert.equal(intercepted.platform, "x");
   assert.equal(intercepted.query, "crypto pm jobs");
-  assert.equal(localSocialSearchRequest({
+  const natural = localSocialSearchRequest({
     method: "tools/call",
     params: { name: "agentrouter_fetch", arguments: { task: "search X for crypto pm jobs" } }
+  });
+  assert.equal(natural.platform, "x");
+  assert.equal(natural.query, "crypto pm jobs");
+  assert.equal(natural.supplement_on_insufficient, true);
+  assert.equal(localSocialSearchRequest({
+    method: "tools/call",
+    params: { name: "agentrouter_fetch", arguments: { task: "research crypto pm jobs" } }
   }), null);
 
   assert.equal(normalizeSearchPlatform("twitter"), "x");

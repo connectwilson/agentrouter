@@ -1756,6 +1756,9 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     requirements = [webSearch];
   }
 
+  const researchPlans = requirements
+    .map((requirement) => requirement?.research_plan)
+    .filter((plan) => plan && typeof plan === "object");
   const results = [];
   for (const requirement of requirements) {
     const request = requirementToCapabilityRequest(requirement, args, { maxPrice, currency });
@@ -1813,6 +1816,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     data_returned_count: successful.length,
     results,
     compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
+    ...(researchPlans.length ? { research_plans: researchPlans } : {}),
     feedback_required: feedbackRequired,
     next_required_action: connectionRequired?.action_required || (feedbackRequired
       ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
@@ -1821,7 +1825,16 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
 }
 
 function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice, currency }) {
-  const { capability, type, params, constraints, budget, consumer_context: consumerContext, ...inlineParams } = requirement;
+  const {
+    capability,
+    type,
+    params,
+    constraints,
+    budget,
+    consumer_context: consumerContext,
+    research_plan: _researchPlan,
+    ...inlineParams
+  } = requirement;
   const cleanInlineParams = {};
   for (const [key, value] of Object.entries(inlineParams)) {
     if (value !== undefined && value !== null) cleanInlineParams[key] = value;

@@ -34,10 +34,21 @@ export function normalizeSearchPlatform(value) {
   return PLATFORM_ALIASES[key] || null;
 }
 
-// Only structured calls are intercepted. Natural-language tasks stay with the
-// hosted router, which knows about paid services the bridge cannot see.
 export function localSocialSearchRequest(message) {
   if (message?.method !== "tools/call") return null;
+  if (message.params?.name === "agentrouter_fetch") {
+    const args = message.params?.arguments || {};
+    const task = String(args.task || args.query || "").trim();
+    const platform = explicitPlatformInTask(task);
+    if (!platform || !task) return null;
+    return {
+      platform,
+      query: socialQuery(task, platform),
+      limit: args.limit,
+      capability: "social_search",
+      supplement_on_insufficient: true
+    };
+  }
   if (message.params?.name !== "agentrouter_request") return null;
   const args = message.params?.arguments || {};
   const capability = String(args.capability || "");
@@ -50,7 +61,33 @@ export function localSocialSearchRequest(message) {
   return { platform, query, limit: params.limit, capability };
 }
 
-export async function runLocalSocialSearch({ platform, query, limit }, options = {}) {
+function explicitPlatformInTask(task) {
+  const patterns = [
+    [/\breddit\b/i, "reddit"],
+    [/小红书|xiaohongshu|rednote/i, "xiaohongshu"],
+    [/\byoutube\b/i, "youtube"],
+    [/\bbilibili\b|哔哩哔哩/i, "bilibili"],
+    [/知乎|\bzhihu\b/i, "zhihu"],
+    [/微博|\bweibo\b/i, "weibo"],
+    [/(?:在\s*x\s*上|\bsearch\s+x\s+for\b|\bx\.com\b|\btwitter\b)/i, "x"]
+  ];
+  return patterns.find(([pattern]) => pattern.test(task))?.[1] || null;
+}
+
+function socialQuery(task, platform) {
+  const labels = {
+    reddit: /(?:在\s*)?reddit(?:\s*上)?[，,:：]?/ig,
+    xiaohongshu: /(?:在|查找)?\s*(?:小红书|xiaohongshu|rednote)(?:上)?[，,:：]?/ig,
+    youtube: /(?:在|搜索)?\s*youtube(?:上)?[，,:：]?/ig,
+    bilibili: /(?:在|搜索)?\s*(?:bilibili|哔哩哔哩)(?:上)?[，,:：]?/ig,
+    zhihu: /(?:在|搜索)?\s*(?:知乎|zhihu)(?:上)?[，,:：]?/ig,
+    weibo: /(?:在|搜索)?\s*(?:微博|weibo)(?:上)?[，,:：]?/ig,
+    x: /(?:在\s*x\s*上|search\s+x\s+for|x\.com|twitter)[，,:：]?/ig
+  };
+  return task.replace(labels[platform], " ").replace(/\s+/g, " ").trim() || task;
+}
+
+export async function runLocalSocialSearch({ platform, query, limit, supplement_on_insufficient: supplementOnInsufficient = false }, options = {}) {
   const definition = PLATFORMS[platform];
   if (!definition) {
     return {
@@ -69,12 +106,12 @@ export async function runLocalSocialSearch({ platform, query, limit }, options =
 
   if (result.status === "completed") {
     const rows = normalizeRows(result.data).slice(0, bounded);
-    if (rows.length) return completed(platform, query, rows, attempts);
+    if (rows.length) return completed(platform, query, rows, attempts, { bounded, supplementOnInsufficient });
     // An empty result set is a real answer, not a connector failure, but only
     // when the session is actually usable — otherwise report the auth problem.
     const who = await runCommand("opencli", [platform === "x" ? "twitter" : platform, "whoami", "-f", "json"], { timeout: 30000 });
     attempts.push({ backend_id: `opencli-${platform}-whoami`, status: who.status, error: who.error || null });
-    if (who.status === "completed") return completed(platform, query, [], attempts);
+    if (who.status === "completed") return completed(platform, query, [], attempts, { bounded, supplementOnInsufficient });
     return authRequired(platform, query, attempts);
   }
   if (result.status === "auth_required") return authRequired(platform, query, attempts);
@@ -150,8 +187,10 @@ export function localFeedbackRequest(requestId, serviceId, context) {
   };
 }
 
-function completed(platform, query, rows, attempts) {
+function completed(platform, query, rows, attempts, { bounded = 10, supplementOnInsufficient = false } = {}) {
   const requestId = localRequestId(`search_${platform}`);
+  const minimumItems = Math.min(3, bounded);
+  const insufficient = rows.length < minimumItems;
   return {
     ok: true,
     status: rows.length ? "completed" : "no_results",
@@ -166,6 +205,24 @@ function completed(platform, query, rows, attempts) {
     },
     request: { capability: "social_search", params: { platform, query } },
     result: { items: rows, item_count: rows.length },
+    coverage: {
+      status: insufficient ? "insufficient" : "sufficient",
+      item_count: rows.length,
+      minimum_items: minimumItems
+    },
+    ...(insufficient && supplementOnInsufficient ? {
+      supplemental_request: {
+        capability: "external_api_query",
+        params: {
+          source: "exa",
+          operation: "search",
+          query,
+          limit: Math.max(5, bounded - rows.length)
+        },
+        trigger: "insufficient_local_social_evidence",
+        merge_policy: "Use web results only as supplemental context; keep platform-native evidence separately attributed."
+      }
+    } : {}),
     source: { backend_id: `opencli-${platform}`, attempts },
     consumer_feedback_request: localFeedbackRequest(requestId, `local_social_${platform}`, { platform, query, capability: "social_search" })
   };

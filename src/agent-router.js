@@ -62,6 +62,8 @@ export async function askAgentRouter(store, {
   }
   const clarification = detectClarification(task);
   if (clarification) return clarification;
+  const serviceDiscovery = discoverServiceOptions(store, task, maxPrice);
+  if (serviceDiscovery) return serviceDiscovery;
   const intent = inferIntent(task);
   const structuredRequest = intentToCapabilityRequest(intent, { max_price: maxPrice });
   if (structuredRequest) {
@@ -884,6 +886,20 @@ function extractDynamicSearchTerms(task) {
 
 function detectClarification(task) {
   const text = String(task || "").toLowerCase();
+  const asksForResearch = /研究|调研|調研|查找|搜索|research|investigate|look into/.test(text);
+  const vagueObject = /(?:这个|這個|那个|那個)(?:东西|東西|项目|項目|事情)?|\b(?:this|that)(?: thing| topic| project)?\b/.test(text);
+  const substantiveRemainder = text
+    .replace(/帮我|幫我|请|請|一下|研究|调研|調研|查找|搜索|research|investigate|look into|(?:这个|這個|那个|那個)(?:东西|東西|项目|項目|事情)?|\b(?:this|that)(?: thing| topic| project)?\b|[。.!！?？]/g, "")
+    .trim();
+  if (asksForResearch && vagueObject && substantiveRemainder.length < 3) {
+    return {
+      ok: false,
+      status: "needs_clarification",
+      question: "请说明具体的研究对象，以及你希望了解的问题或时间范围。",
+      missing_fields: ["research_subject"],
+      do_not_invoke_external_source: true
+    };
+  }
   const saysMaxPain = /最大痛点|max[\s-]?pain/.test(text);
   const saysLiquidation = /爆仓|清算|liquidation|perp|永续|合约/.test(text);
   const saysOptions = /期权|options?/.test(text);
@@ -911,6 +927,45 @@ function detectClarification(task) {
     };
   }
   return null;
+}
+
+function discoverServiceOptions(store, task, maxPrice) {
+  const text = String(task || "");
+  const asksForService = /(?:查询|查找|寻找|推荐|find|search|recommend).*(?:数据服务|資料服務|api 服务|api service|data service)/i.test(text);
+  if (!asksForService) return null;
+  const statedBudget = text.match(/(?:最多收费|最高收费|不超过|不超過|max(?:imum)?(?: price)?(?: of)?)[^\d]*(\d+(?:\.\d+)?)/i)?.[1];
+  const budget = Math.min(...[maxPrice, statedBudget].filter((value) => value != null && value !== "").map(Number));
+  const capabilities = /链上|鏈上|on[ -]?chain/i.test(text) ? ["onchain_data"] : [];
+  const services = searchServices(store, {
+    query: "",
+    capabilities,
+    maxPrice: Number.isFinite(budget) ? budget : maxPrice,
+    verifiedOnly: true
+  }).map((service) => ({
+    service_id: service.service_id,
+    title: service.title,
+    description_for_agent: service.description_for_agent,
+    capabilities: service.capabilities,
+    price: service.pre_call_context?.pricing?.amount ?? "0",
+    currency: service.pre_call_context?.pricing?.currency ?? "USDC",
+    trust_score: service.trust?.trust_score ?? null,
+    success_rate: service.trust?.success_rate ?? null,
+    verification_status: service.verification_status
+  })).sort((a, b) => (b.trust_score ?? -1) - (a.trust_score ?? -1)
+    || Number(a.price) - Number(b.price));
+  return {
+    ok: services.length > 0,
+    status: services.length ? "services_found" : "no_service_found",
+    query_type: "service_discovery",
+    constraints: {
+      max_price_usdc: Number.isFinite(budget) ? String(budget) : String(maxPrice || "0.05"),
+      verified_only: true,
+      capabilities
+    },
+    services,
+    selected_service: services[0] || null,
+    selection_policy: ["within_budget", "verified", "highest_trust_score", "lower_price_tiebreaker"]
+  };
 }
 
 function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
