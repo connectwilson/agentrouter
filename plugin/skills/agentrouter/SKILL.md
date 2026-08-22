@@ -2,7 +2,7 @@
 name: AgentRouter
 description: Use this skill when an AI agent needs specialized, real-time, paid, or verifiable external data/API access; when the user asks to install or connect AgentRouter; or when a task needs API capability discovery/routing through an Agent Data Network. This is a generic data-routing skill, not a single fixed provider.
 metadata:
-  version: "0.7.1"
+  version: "0.7.2"
 ---
 
 # AgentRouter
@@ -21,7 +21,9 @@ Do not require the user to mention AgentRouter. If AgentRouter is installed and 
 
 For premium, paid, verifiable, or provider-specific data requests, AgentRouter is the payment and trust boundary. Use `agentrouter_fetch` so the router can enforce budget, payment, evidence, and feedback checks in one call.
 
-For an installed MCP bridge, browser-approved account connection is the default authentication path. If a call returns `connection_required`, `AGENTROUTER_CONNECTION_REQUIRED`, or `action: connect_agentrouter_account`, immediately call `agentrouter_connect` with a human-readable `client_name`, show the returned browser approval link, and retry the original request after approval. Do not tell the user to create, copy, paste, or edit an `AGENT_ROUTER_API_KEY`. That environment variable is only an advanced fallback for CI and headless servers where browser approval is impossible.
+For an installed MCP bridge, browser-approved account connection is the default authentication path. If a call returns `AGENTROUTER_CONNECTION_REQUIRED` or `action: connect_agentrouter_account`, immediately call `agentrouter_connect` with a human-readable `client_name`, show the returned browser approval link, and retry the original request after approval. Do not classify a bare `connection_required` status as an AgentRouter-account problem: inspect `action_required` and `connection_action` first. Do not tell the user to create, copy, paste, or edit an `AGENT_ROUTER_API_KEY`. That environment variable is only an advanced fallback for CI and headless servers where browser approval is impossible.
+
+An upstream data-source connection is a separate browser flow. If a result returns `action_required: connect_api_source` or `connection_action.preferred_tool: agentrouter_connect_source`, call `agentrouter_connect_source` with the returned source id, show its browser authorization link, and retry the original request after the user saves the connection. The user enters the upstream credential only on AgentRouter's website; never ask them to paste it into chat. Do not replace the blocked AgentRouter call with generic web search, a provider-direct tool, or another source unless AgentRouter itself routes there or the user explicitly requests that fallback.
 
 If `AGENT_ROUTER_API_KEY` is configured, AgentRouter uses the user's prepaid credits account. Do not check or create an Arc wallet in this mode. The server validates the key and debits credits only for a successful paid invocation. If the response reports `CREDITS_REQUIRED` or `INSUFFICIENT_CREDITS`, stop and direct the user to the returned `account_url` to sign in or add credits.
 
@@ -37,6 +39,7 @@ When the user asks a data/API question that fits AgentRouter, or asks to use Age
 
 1. If MCP tools are already available, use them directly. This is the fastest and preferred path because the AgentRouter connection is already established. Do not open a terminal or run `npx` when these tools exist.
    - `agentrouter_fetch`: default path for normal user data questions. Use this once. It accepts either the user's natural-language `task` or a main-agent-parsed `data_requirements` array, then AgentRouter handles discovery, routing, quote, payment, invocation, verification, evidence, and feedback request internally.
+   - `agentrouter_connect_source`: browser authorization for the specific upstream source returned by `connect_api_source`. It is not the AgentRouter account connection tool. Call it, show the browser link, then call it again and retry the original request after the user saves the source connection.
    - `agentrouter_request`: advanced path for exactly one structured capability request. Use only when you already know the specific capability and want to bypass natural-language compatibility.
    - `agentrouter_capabilities`: integration/debug only; do not call this as a routine first step for normal data questions.
    - `agentrouter_quote`: integration/debug only; preview route + quote without invoking.

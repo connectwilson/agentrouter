@@ -63,6 +63,59 @@ function upstreamPrice(label, amount, model, sourceUrl, extra = {}) {
   });
 }
 
+const SOURCE_CAPABILITY_MANUALS = Object.freeze({
+  exa: Object.freeze({
+    best_for: [
+      "General web research across public websites",
+      "Product, market, company, and competitor research",
+      "Current web evidence when no specialist dataset is required"
+    ],
+    not_for: [
+      "DOI, citation-count, author, journal, or other scholarly bibliographic metadata",
+      "Tasks that explicitly require a specialist regulatory, market, weather, or security dataset"
+    ],
+    route_only_when: [
+      "The user asks for broad research, investigation, comparison, or current public-web evidence",
+      "No more specific source capability matches the requested data object"
+    ],
+    example_queries: [
+      "Research AgentRouter product positioning and competitors",
+      "Find current evidence about AI agent API marketplaces"
+    ]
+  }),
+  openalex: Object.freeze({
+    best_for: [
+      "Scholarly papers, publications, authors, journals, and institutions",
+      "DOI lookup, citation counts, and bibliographic metadata",
+      "Peer-reviewed or arXiv literature discovery"
+    ],
+    not_for: [
+      "General web research, product research, market research, or competitor research",
+      "A vague request to research a topic without asking for papers or scholarly metadata",
+      "Current news, company pages, blogs, or broad public-web evidence"
+    ],
+    route_only_when: [
+      "The request explicitly asks for papers, publications, DOI, citations, authors, journals, peer review, arXiv, 论文, or 文献",
+      "The requested output is scholarly metadata rather than a general research answer"
+    ],
+    example_queries: [
+      "Find peer-reviewed papers and DOI citations about agent routing",
+      "查找 AgentRouter 相关论文的 DOI 和引用次数"
+    ]
+  })
+});
+
+function capabilityManual(id, category, title, operations) {
+  if (SOURCE_CAPABILITY_MANUALS[id]) return SOURCE_CAPABILITY_MANUALS[id];
+  const operationList = operations.length ? operations.join(", ") : "listed operations";
+  return {
+    best_for: [`${title} ${category} data through its supported operations: ${operationList}`],
+    not_for: [`Requests outside ${title}'s ${category} domain or unsupported operations`],
+    route_only_when: [`The requested data object belongs to the ${category} domain and matches one of: ${operationList}`],
+    example_queries: []
+  };
+}
+
 const SOURCE_CATALOG = [
   source("brave_search", "搜索", "Brave Search", "available", "brave_api", ["search"]),
   source("tavily", "搜索", "Tavily", "available", "tavily_api", ["search"]),
@@ -147,6 +200,7 @@ export function getExternalApiServiceDetail(store, serviceId, ownerKey) {
     version: "1.0.0",
     title: sourceItem.title,
     description_for_agent: sourceItem.description_for_agent,
+    capability_manual: sourceItem.capability_manual,
     provider: { provider_id: sourceItem.provider_id },
     capabilities: sourceItem.capabilities,
     endpoint: { method: "POST", url: "/agent-router/request" },
@@ -314,8 +368,8 @@ function intentScore(text, intent) {
 // Anything else that is plainly a lookup goes to whichever web search is usable.
 const WEB_SEARCH_SOURCES = ["exa", "tavily", "brave_search", "serper", "perplexity", "firecrawl", "jina"];
 const WEB_SEARCH_PATTERN = termPattern(
-  "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?",
-  "招聘|岗位|崗位|职位|職位|最新|查一下|搜一下|了解|怎么|怎樣"
+  "jobs?|hiring|openings?|roles?|vacanc\\w*|careers?|search|find|look up|latest|what is|who is|how to|compare|reviews?|research|investigate|evidence|benchmark",
+  "招聘|岗位|崗位|职位|職位|最新|查一下|搜一下|了解|怎么|怎樣|研究|调研|調研|实证|實證|竞品|競品"
 );
 
 // A question is a lookup even when it uses none of those verbs. "How does
@@ -491,6 +545,16 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
             : `Connect ${definition.title} before invoking this source.`
         ),
         action_required: alternative ? "use_free_local_alternative" : "connect_api_source",
+        ...(!alternative ? {
+          connection_action: {
+            action: "connect_api_source",
+            preferred_tool: "agentrouter_connect_source",
+            tool_arguments: { source: sourceId },
+            instructions: "Call agentrouter_connect_source, open its browser authorization URL, then retry the original request. Never ask the user to paste the source API key into chat."
+          },
+          retry_original_request_after_connection: true,
+          do_not_fallback_outside_agentrouter: true
+        } : {}),
         ...(alternative ? { free_alternative: alternative } : {}),
         source: publicSource(definition)
       };
@@ -570,7 +634,7 @@ function externalApiService(definition, store) {
     service_id: serviceId,
     provider_id: providerId,
     display_title: definition.title,
-    description_for_agent: `Use ${definition.title} as a read-only ${(definition.hub_category || "data").toLowerCase()} source through AgentRouter.`,
+    description_for_agent: `Use ${definition.title} through AgentRouter for ${definition.capability_manual.best_for.join("; ")}. Do not use it for ${definition.capability_manual.not_for.join("; ")}.`,
     price: 0,
     price_label: upstreamPricing.label,
     price_scope: "upstream_api",
@@ -1311,6 +1375,7 @@ function source(id, category, title, implementationStatus, providerType, operati
     implementation_status: implementationStatus,
     provider_type: providerType,
     operations,
+    capability_manual: capabilityManual(id, category, title, operations),
     credential_field: credentialField,
     connection_required: connectionRequired,
     read_only: true

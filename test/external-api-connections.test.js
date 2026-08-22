@@ -46,6 +46,9 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(exa.total_calls, null);
   assert.equal(exa.connection_state, "unknown");
   assert.equal(exa.connected, null);
+  assert.ok(catalog.every((item) => item.capability_manual?.best_for?.length));
+  assert.ok(catalog.every((item) => item.capability_manual?.not_for?.length));
+  assert.ok(catalog.every((item) => item.capability_manual?.route_only_when?.length));
   assert.match(exa.capability_manual.best_for.join(" "), /general web research/i);
   const openalex = catalog.find((item) => item.source === "openalex");
   assert.match(openalex.capability_manual.best_for.join(" "), /DOI|citation/i);

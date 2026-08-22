@@ -96,6 +96,17 @@ const remoteMcpTools = [
     }
   },
   {
+    name: "agentrouter_connect_source",
+    description: "Open AgentRouter's browser authorization flow for one upstream API/data source after a result returns action_required: connect_api_source. This is distinct from agentrouter_connect, which connects the AI client to the AgentRouter account. Never ask the user to paste an upstream API key into chat. After the browser flow is complete, call this tool again and retry the original AgentRouter request.",
+    inputSchema: {
+      type: "object",
+      required: ["source"],
+      properties: {
+        source: { type: "string", description: "AgentRouter source id returned by the failed request, for example openalex or exa." }
+      }
+    }
+  },
+  {
     name: "agentrouter_request",
     description: "Advanced structured route call. Prefer agentrouter_fetch for normal user questions. Use this only when the caller intentionally wants to invoke exactly one structured capability request.",
     inputSchema: {
@@ -1563,6 +1574,50 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     return runRemoteAgentRouterFetch(store, args, {
       ...paymentContext
     });
+  }
+  if (name === "agentrouter_connect_source") {
+    if (!paymentContext.ownerKey) return agentRouterConnectionRequired();
+    const sourceId = String(args.source || "").trim().toLowerCase();
+    const definition = getExternalApiCatalog(store, paymentContext.ownerKey)
+      .find((item) => item.source === sourceId);
+    if (!definition) {
+      return {
+        ok: false,
+        status: "unsupported_source",
+        error: { code: "UNSUPPORTED_SOURCE", message: `Unknown source: ${sourceId || "(missing)"}` }
+      };
+    }
+    if (!definition.connection_required) {
+      return {
+        ok: true,
+        status: "connection_not_required",
+        source: sourceId,
+        retry_original_request: true,
+        message: `${definition.title} does not require an upstream account connection.`
+      };
+    }
+    if (definition.connected) {
+      return {
+        ok: true,
+        status: "connected",
+        source: sourceId,
+        retry_original_request: true,
+        message: `${definition.title} is connected. Retry the original AgentRouter request now.`
+      };
+    }
+    const authorizationUrl = new URL("/research", baseUrl || "https://agentrouter.network");
+    authorizationUrl.searchParams.set("connect_source", sourceId);
+    return {
+      ok: false,
+      status: "authorization_required",
+      action: "connect_api_source",
+      source: sourceId,
+      source_title: definition.title,
+      verification_uri: authorizationUrl.toString(),
+      retry_original_request: true,
+      do_not_fallback_outside_agentrouter: true,
+      message: `Open the authorization link to connect ${definition.title}. The credential is entered only on AgentRouter's website and must never be pasted into chat. After saving it, call this tool again and retry the original request.`
+    };
   }
   if (name === "agentrouter_request") {
     const request = {
