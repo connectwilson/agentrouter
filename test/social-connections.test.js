@@ -44,6 +44,25 @@ test("social connections are owner-scoped and never return credentials", async (
   assert.equal(secrets.values.size, 1);
 });
 
+test("XPOZ and SocialDataX credentials can be saved through AgentRouter without leaking them", async () => {
+  const store = createMemoryStore();
+  const secrets = memorySecretStore();
+
+  for (const [platform, providerType] of [["xpoz", "xpoz_api"], ["socialdatax", "socialdatax_api"]]) {
+    const token = `${platform}-secret`;
+    const created = await createSocialConnection(store, "github:user-a", {
+      platform,
+      provider_type: providerType,
+      credentials: { api_key: token }
+    }, secrets);
+    assert.equal(created.platform, platform);
+    assert.equal(created.has_credentials, true);
+    assert.equal(JSON.stringify(created).includes(token), false);
+  }
+
+  assert.equal(secrets.values.size, 2);
+});
+
 test("one user cannot delete another user's social connection", async () => {
   const store = createMemoryStore();
   const secrets = memorySecretStore();

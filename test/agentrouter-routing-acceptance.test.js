@@ -85,6 +85,37 @@ test("social-provider market research does not become a Reddit post search", () 
   assert.equal(request, null);
 });
 
+test("an explicitly named social vendor bypasses local platform interception and preserves every requested platform", async () => {
+  const cases = [
+    {
+      task: "使用 XPOZ 搜索最近一周 X、Reddit 和 TikTok 上对 AgentRouter 的讨论。",
+      source: "xpoz",
+      platforms: ["x", "reddit", "tiktok"]
+    },
+    {
+      task: "使用 SocialDataX 查找小红书、抖音和微博上对 Agent 交易的看法。",
+      source: "socialdatax",
+      platforms: ["xiaohongshu", "douyin", "weibo"]
+    }
+  ];
+
+  for (const entry of cases) {
+    const local = localSocialSearchRequest({
+      method: "tools/call",
+      params: { name: "agentrouter_fetch", arguments: { task: entry.task } }
+    });
+    assert.equal(local, null, `${entry.source} must reach the hosted router`);
+
+    const routed = sourceFor(entry.task, "specialized");
+    assert.equal(routed?.params.source, entry.source);
+    assert.deepEqual(routed?.params.platforms, entry.platforms);
+
+    const result = await runExternalApiQuery(createMemoryStore(), "acceptance-user", routed.params);
+    assert.equal(result.status, "connection_required");
+    assert.deepEqual(result.connection_action.tool_arguments, { source: entry.source });
+  }
+});
+
 test("flight language is normalized before Amadeus authorization", async () => {
   const routed = sourceFor(PROMPTS[21]);
   assert.equal(routed.params.source, "amadeus");
