@@ -67,6 +67,9 @@ test("XPOZ fans one routed request out across all requested platforms", async ()
   assert.ok(calls.every((call) => call.body.params.arguments.limit === 2));
   assert.deepEqual(result.result.items.map((item) => item.metadata.platform), ["x", "reddit", "tiktok"]);
   assert.deepEqual(result.coverage.failed_platforms, []);
+  assert.equal(result.coverage.status, "sufficient");
+  assert.equal(result.coverage.item_count, 3);
+  assert.deepEqual(result.coverage.evidence_platforms, ["x", "reddit", "tiktok"]);
 });
 
 test("SocialDataX uses each platform's official MCP endpoint and merges the evidence", async () => {
@@ -108,4 +111,34 @@ test("SocialDataX uses each platform's official MCP endpoint and merges the evid
   assert.ok(calls.every((call) => call.headers.authorization === "Bearer sdx-token"));
   assert.deepEqual(result.result.items.map((item) => item.metadata.platform), ["xiaohongshu", "douyin", "weibo"]);
   assert.deepEqual(result.coverage.completed_platforms, ["xiaohongshu", "douyin", "weibo"]);
+  assert.equal(result.coverage.status, "sufficient");
+});
+
+test("a successful vendor response with an empty platform stays coverage-insufficient", async () => {
+  const store = createMemoryStore();
+  const secrets = secretStore();
+  await createSocialConnection(store, "github:user-a", {
+    platform: "xpoz",
+    provider_type: "xpoz_api",
+    credentials: { api_key: "xpoz-token" }
+  }, secrets);
+
+  const result = await runExternalApiQuery(store, "github:user-a", {
+    source: "xpoz",
+    operation: "search",
+    query: "AgentRouter",
+    platforms: ["x", "reddit"],
+    limit: 4
+  }, {
+    ...secrets,
+    fetchImpl: async (_url, options) => {
+      const tool = JSON.parse(options.body).params.name;
+      return mcpResponse({ data: tool.includes("Twitter") ? [{ id: "x-1", text: "AgentRouter" }] : [] });
+    }
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.coverage.status, "insufficient");
+  assert.deepEqual(result.coverage.empty_platforms, ["reddit"]);
+  assert.deepEqual(result.coverage.evidence_platforms, ["x"]);
 });

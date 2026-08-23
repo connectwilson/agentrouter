@@ -9,6 +9,17 @@ import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.j
 // route already infers an API source, so the HTTP ask route has to as well or
 // the same question succeeds on one entry point and dead-ends on the other.
 function suggestAlternativeRoute(task) {
+  // A provider named by the user is an execution constraint. Resolve it before
+  // inspecting platform words, otherwise "use XPOZ for Reddit" silently turns
+  // into a free local Reddit search and loses both the vendor and fan-out plan.
+  const explicitExternal = inferExternalApiRequest(task, { tier: "specialized" });
+  if (explicitExternal?.routing_constraint?.type === "explicit_provider") {
+    return {
+      reason: "The user explicitly selected this external API source.",
+      capability: "external_api_query",
+      call: { capability: "external_api_query", params: explicitExternal.params }
+    };
+  }
   // A question that names a platform is best answered by reading that platform
   // through the user's own browser: free, and no API key to obtain. Only fall
   // back to a paid web-search source when no platform is named.

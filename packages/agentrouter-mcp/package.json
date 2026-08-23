@@ -1,6 +1,6 @@
 {
   "name": "@agentrouternetwork/mcp",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Public MCP bridge for AgentRouter with hosted routing and privacy-preserving local social reads.",
   "type": "module",
   "bin": {

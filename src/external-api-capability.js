@@ -545,6 +545,12 @@ function externalApiRequest(definition, operation, text, requirement) {
     capability: "external_api_query",
     params,
     data_requirement: requirement.public_contract,
+    routing_constraint: requirement.source_hint
+      ? {
+        type: NAMED_SOCIAL_AGGREGATORS.has(requirement.source_hint) ? "explicit_provider" : "explicit_source",
+        source: requirement.source_hint
+      }
+      : { type: "inferred_source" },
     ...(researchPlan ? { research_plan: researchPlan } : {})
   };
 }
@@ -975,8 +981,11 @@ async function invokeSocialVendorMcp(sourceId, context) {
   }));
   const succeeded = calls.filter((call) => call.response.ok);
   if (!succeeded.length) return calls[0]?.response || { ok: false, status: "provider_error", error: "No social platform call completed.", items: [] };
-  const groups = succeeded.map(({ platform, response }) =>
-    normalizeSocialMcpItems(sourceId, platform, response.payload).slice(0, perPlatformLimit));
+  const groupRecords = succeeded.map(({ platform, response }) => ({
+    platform,
+    items: normalizeSocialMcpItems(sourceId, platform, response.payload).slice(0, perPlatformLimit)
+  }));
+  const groups = groupRecords.map((group) => group.items);
   const items = [];
   for (let rowIndex = 0; items.length < context.limit; rowIndex += 1) {
     let found = false;
@@ -989,14 +998,21 @@ async function invokeSocialVendorMcp(sourceId, context) {
     }
     if (!found) break;
   }
+  const evidencePlatforms = groupRecords.filter((group) => group.items.length > 0).map((group) => group.platform);
+  const emptyPlatforms = groupRecords.filter((group) => group.items.length === 0).map((group) => group.platform);
+  const failedPlatforms = calls.filter((call) => !call.response.ok).map((call) => call.platform);
   return {
     ok: true,
     status: "completed",
     items,
     coverage: {
+      status: failedPlatforms.length || emptyPlatforms.length ? "insufficient" : "sufficient",
+      item_count: items.length,
       requested_platforms: selected,
       completed_platforms: succeeded.map((call) => call.platform),
-      failed_platforms: calls.filter((call) => !call.response.ok).map((call) => call.platform)
+      evidence_platforms: evidencePlatforms,
+      empty_platforms: emptyPlatforms,
+      failed_platforms: failedPlatforms
     }
   };
 }

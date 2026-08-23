@@ -50,6 +50,7 @@ export function localSocialSearchRequest(message) {
     return {
       platform,
       query: socialQuery(task, platform),
+      quality_context: task,
       limit: args.limit,
       capability: "social_search",
       supplement_on_insufficient: true
@@ -96,10 +97,21 @@ function socialQuery(task, platform) {
     weibo: /(?:在|搜索)?\s*(?:微博|weibo)(?:上)?[，,:：]?/ig,
     x: /(?:在\s*x\s*上|search\s+x\s+for|x\.com|twitter)[，,:：]?/ig
   };
-  return task.replace(labels[platform], " ").replace(/\s+/g, " ").trim() || task;
+  const cleaned = task
+    .replace(labels[platform], " ")
+    .replace(/^(?:请|請)?\s*(?:帮我|幫我)?\s*(?:搜索|搜尋|查找|查询|查詢|看看|分析|研究|调研|調研)\s*/i, "")
+    .replace(/(?:最近|过去|過去)\s*(?:一|1)?\s*(?:周|週|个月|個月|月|天|小时|小時)\s*/ig, "")
+    .replace(/(?:人们|人們|用户|用戶|大家)?\s*对\s*/ig, "")
+    .replace(/(?:的)?(?:看法|观点|觀點|评价|評價|意见|意見)[。.!！?？]*$/i, "")
+    .replace(/^(?:search|find|look\s+up|research)\s+(?:for\s+)?/i, "")
+    .replace(/\b(?:what\s+do\s+(?:people|users)\s+(?:think|say)\s+about|opinions?\s+(?:on|about)|views?\s+(?:on|about))\b/ig, "")
+    .replace(/[，,:：。.!！?？]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || task;
 }
 
-export async function runLocalSocialSearch({ platform, query, limit, supplement_on_insufficient: supplementOnInsufficient = false }, options = {}) {
+export async function runLocalSocialSearch({ platform, query, quality_context: qualityContext = query, limit, supplement_on_insufficient: supplementOnInsufficient = false }, options = {}) {
   const definition = PLATFORMS[platform];
   if (!definition) {
     return {
@@ -118,12 +130,12 @@ export async function runLocalSocialSearch({ platform, query, limit, supplement_
 
   if (result.status === "completed") {
     const rows = normalizeRows(result.data).slice(0, bounded);
-    if (rows.length) return completed(platform, query, rows, attempts, { bounded, supplementOnInsufficient });
+    if (rows.length) return completed(platform, query, rows, attempts, { bounded, supplementOnInsufficient, qualityContext });
     // An empty result set is a real answer, not a connector failure, but only
     // when the session is actually usable — otherwise report the auth problem.
     const who = await runCommand("opencli", [platform === "x" ? "twitter" : platform, "whoami", "-f", "json"], { timeout: 30000 });
     attempts.push({ backend_id: `opencli-${platform}-whoami`, status: who.status, error: who.error || null });
-    if (who.status === "completed") return completed(platform, query, [], attempts, { bounded, supplementOnInsufficient });
+    if (who.status === "completed") return completed(platform, query, [], attempts, { bounded, supplementOnInsufficient, qualityContext });
     return authRequired(platform, query, attempts);
   }
   if (result.status === "auth_required") return authRequired(platform, query, attempts);
@@ -199,10 +211,11 @@ export function localFeedbackRequest(requestId, serviceId, context) {
   };
 }
 
-function completed(platform, query, rows, attempts, { bounded = 10, supplementOnInsufficient = false } = {}) {
+function completed(platform, query, rows, attempts, { bounded = 10, supplementOnInsufficient = false, qualityContext = query } = {}) {
   const requestId = localRequestId(`search_${platform}`);
   const minimumItems = Math.min(3, bounded);
-  const insufficient = rows.length < minimumItems;
+  const quality = assessEvidenceQuality(query, qualityContext, rows, minimumItems);
+  const insufficient = quality.reasons.length > 0;
   return {
     ok: true,
     status: rows.length ? "completed" : "no_results",
@@ -220,7 +233,11 @@ function completed(platform, query, rows, attempts, { bounded = 10, supplementOn
     coverage: {
       status: insufficient ? "insufficient" : "sufficient",
       item_count: rows.length,
-      minimum_items: minimumItems
+      minimum_items: minimumItems,
+      relevant_item_count: quality.relevantItemCount,
+      timestamped_item_count: quality.timestampedItemCount,
+      substantive_item_count: quality.substantiveItemCount,
+      reasons: quality.reasons
     },
     ...(insufficient && supplementOnInsufficient ? {
       supplemental_request: {
@@ -238,6 +255,48 @@ function completed(platform, query, rows, attempts, { bounded = 10, supplementOn
     source: { backend_id: `opencli-${platform}`, attempts },
     consumer_feedback_request: localFeedbackRequest(requestId, `local_social_${platform}`, { platform, query, capability: "social_search" })
   };
+}
+
+const SEARCH_STOP_WORDS = new Set([
+  "about", "after", "before", "current", "find", "from", "latest", "people", "product",
+  "recent", "reddit", "search", "think", "users", "views", "what", "with", "x", "youtube"
+]);
+
+function assessEvidenceQuality(query, qualityContext, rows, minimumItems) {
+  const tokens = evidenceTokens(query);
+  const relevant = tokens.length
+    ? rows.filter((row) => tokens.some((token) => evidenceText(row).includes(token)))
+    : rows;
+  const timestampedItemCount = relevant.filter((row) => Boolean(row.published_at)).length;
+  const substantiveItemCount = relevant.filter((row) => clean(row.text, 4000).length >= 20).length;
+  const reasons = [];
+  if (rows.length < minimumItems) reasons.push(`item_count_below_minimum:${rows.length}/${minimumItems}`);
+  if (tokens.length && relevant.length < minimumItems) reasons.push(`relevant_items_below_minimum:${relevant.length}/${minimumItems}`);
+  if (requestsFreshEvidence(qualityContext) && relevant.length >= minimumItems && timestampedItemCount < minimumItems) {
+    reasons.push(`timestamped_items_below_minimum:${timestampedItemCount}/${minimumItems}`);
+  }
+  if (requestsUserOpinion(qualityContext) && relevant.length >= minimumItems && substantiveItemCount === 0) {
+    reasons.push("substantive_user_voice_missing");
+  }
+  return { relevantItemCount: relevant.length, timestampedItemCount, substantiveItemCount, reasons };
+}
+
+function evidenceTokens(query) {
+  const latin = String(query || "").toLowerCase().match(/[a-z0-9][a-z0-9._-]{2,}/g) || [];
+  const cjk = String(query || "").match(/[\u3400-\u9fff]{2,}/g) || [];
+  return [...new Set([...latin.filter((token) => !SEARCH_STOP_WORDS.has(token)), ...cjk])];
+}
+
+function evidenceText(row) {
+  return `${row.title || ""} ${row.text || ""}`.toLowerCase();
+}
+
+function requestsFreshEvidence(query) {
+  return /\b(?:recent|latest|today|last\s+(?:week|month|\d+\s+(?:hours?|days?)))\b|最近|最新|今天|过去|過去|近\s*\d+\s*(?:小时|小時|天|周|週|月)/i.test(query);
+}
+
+function requestsUserOpinion(query) {
+  return /\b(?:opinions?|views?|what\s+(?:people|users)\s+(?:think|say))\b|看法|观点|觀點|评价|評價|意见|意見|用户原声|用戶原聲/i.test(query);
 }
 
 function authRequired(platform, query, attempts) {
