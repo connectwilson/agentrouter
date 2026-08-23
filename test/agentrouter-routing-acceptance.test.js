@@ -72,6 +72,19 @@ test("natural-language Reddit and Xiaohongshu prompts run locally and plan Exa s
   assert.equal(result.supplemental_request.params.source, "exa");
 });
 
+test("social-provider market research does not become a Reddit post search", () => {
+  const request = localSocialSearchRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: {
+        task: "Research API providers that cover X, Instagram, TikTok, Reddit, YouTube and Xiaohongshu for AgentRouter integration."
+      }
+    }
+  });
+  assert.equal(request, null);
+});
+
 test("flight language is normalized before Amadeus authorization", async () => {
   const routed = sourceFor(PROMPTS[21]);
   assert.equal(routed.params.source, "amadeus");
