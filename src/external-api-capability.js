@@ -172,9 +172,9 @@ const SOURCE_CATALOG = [
   source("zhihu", "社交媒体", "知乎", "browser_only", "local_browser", ["post_read"]),
   source("weibo", "社交媒体", "微博", "browser_only", "local_browser", ["post_read"]),
   source("bilibili", "社交媒体", "Bilibili", "browser_only", "local_browser", ["search", "post_read"]),
-  source("xpoz", "社交媒体", "XPOZ", "requires_partner_api", "xpoz_api", ["search", "posts", "comments", "profiles"]),
+  source("xpoz", "社交媒体", "XPOZ", "available", "xpoz_api", ["search"]),
   source("socialcrawl", "社交媒体", "SocialCrawl", "requires_partner_api", "socialcrawl_api", ["search", "posts", "comments", "profiles", "transcripts"]),
-  source("socialdatax", "社交媒体", "SocialDataX", "requires_partner_api", "socialdatax_api", ["search", "posts", "comments", "profiles"]),
+  source("socialdatax", "社交媒体", "SocialDataX", "available", "socialdatax_api", ["search"]),
   source("largitdata", "社交媒体", "LargitData", "requires_partner_api", "largitdata_api", ["search", "posts", "comments", "channels"]),
   source("tushare", "金融", "Tushare", "available", "tushare_api", ["search"]),
   source("yahoo_finance", "金融", "Yahoo Finance", "available", null, ["search", "quote"]),
@@ -447,7 +447,7 @@ export function inferExternalApiRequest(task, { connectedSources = [], tier = "a
   const requirement = inferDataRequirement(text, { tier });
   if (!requirement) return null;
   let definition = requirement.source_hint
-    ? SOURCE_CATALOG.find((item) => item.source === requirement.source_hint && item.implementation_status === "available")
+    ? SOURCE_CATALOG.find((item) => item.source === requirement.source_hint)
     : pickAvailableSource(requirement.candidate_sources, connected, requirement.operation);
   if (!definition) return null;
   const operation = definition.operations.includes(requirement.operation)
@@ -461,8 +461,11 @@ export function inferDataRequirement(task, { tier = "all" } = {}) {
   if (!text || !asksAboutSomething(text)) return null;
   if (tier === "web") return buildDataRequirement(text, WEB_SEARCH_SOURCES, "search");
 
-  const explicit = SOURCE_CATALOG.find((item) =>
-    item.implementation_status === "available" && sourceMentioned(text, item));
+  const explicit = SOURCE_CATALOG
+    .filter((item) => sourceMentioned(text, item))
+    // A named aggregation vendor is the execution constraint; platform names
+    // in the same sentence describe its fan-out targets.
+    .sort((left, right) => explicitSourcePriority(right) - explicitSourcePriority(left))[0];
   if (explicit) {
     const operation = explicit.operations.includes("search") ? "search" : explicit.operations[0] || "search";
     return buildDataRequirement(text, [explicit.source], operation, explicit.source);
@@ -477,6 +480,12 @@ export function inferDataRequirement(task, { tier = "all" } = {}) {
     return buildDataRequirement(text, WEB_SEARCH_SOURCES, "search");
   }
   return null;
+}
+
+const NAMED_SOCIAL_AGGREGATORS = new Set(["xpoz", "socialcrawl", "socialdatax", "largitdata"]);
+
+function explicitSourcePriority(definition) {
+  return (NAMED_SOCIAL_AGGREGATORS.has(definition.source) ? 1000 : 0) + definition.source.length;
 }
 
 function buildDataRequirement(text, candidateSources, operation, sourceHint = null) {
@@ -526,7 +535,10 @@ function externalApiRequest(definition, operation, text, requirement) {
     operation,
     query: extractSearchQuery(text),
     limit: 10,
-    ...(definition.source === "amadeus" ? inferFlightParams(text) : {})
+    ...(definition.source === "amadeus" ? inferFlightParams(text) : {}),
+    ...(["xpoz", "socialdatax"].includes(definition.source)
+      ? { platforms: inferSocialPlatforms(text, definition.source) }
+      : {})
   };
   const researchPlan = inferResearchPlan(text, params);
   return {
@@ -535,6 +547,29 @@ function externalApiRequest(definition, operation, text, requirement) {
     data_requirement: requirement.public_contract,
     ...(researchPlan ? { research_plan: researchPlan } : {})
   };
+}
+
+const SOCIAL_PLATFORM_PATTERNS = {
+  xpoz: [
+    [/(?:在\s*x\s*上|\bx\.com\b|\btwitter\b|(?:^|[^a-z0-9])x(?:[^a-z0-9]|$))/i, "x"],
+    [/\binstagram\b|\binsta\b/i, "instagram"],
+    [/\breddit\b/i, "reddit"],
+    [/\btiktok\b/i, "tiktok"]
+  ],
+  socialdatax: [
+    [/小红书|xiaohongshu|rednote|\bxhs\b/i, "xiaohongshu"],
+    [/抖音|\bdouyin\b/i, "douyin"],
+    [/微博|\bweibo\b/i, "weibo"]
+  ]
+};
+
+function inferSocialPlatforms(text, sourceId) {
+  const matches = (SOCIAL_PLATFORM_PATTERNS[sourceId] || [])
+    .map(([pattern, platform]) => ({ index: text.search(pattern), platform }))
+    .filter((entry) => entry.index >= 0)
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.platform);
+  return [...new Set(matches.length ? matches : [sourceId === "xpoz" ? "x" : "xiaohongshu"])];
 }
 
 function inferResearchPlan(text, primaryParams) {
@@ -731,9 +766,19 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     // agent rate a result it was happy with, not only one that failed.
     request_id: invocation.requestId,
     service_id: invocation.serviceId,
-    request: { capability: "external_api_query", params: { source: sourceId, operation, query, limit } },
+    request: {
+      capability: "external_api_query",
+      params: {
+        source: sourceId,
+        operation,
+        query,
+        limit,
+        ...(Array.isArray(params.platforms) ? { platforms: params.platforms } : {})
+      }
+    },
     source: publicSource(definition),
     result: { items: response.items, count: response.items.length },
+    ...(response.coverage ? { coverage: response.coverage } : {}),
     consumer_feedback_request: consumerFeedbackRequest(invocation, { source: sourceId, operation, query }),
     ...(noResults ? {
       diagnostics: {
@@ -899,8 +944,192 @@ function validateSourceParams(sourceId, operation, params) {
   };
 }
 
+const SOCIAL_MCP_SEARCH = Object.freeze({
+  xpoz: Object.freeze({
+    x: { url: "https://mcp.xpoz.ai/mcp", tool: "getTwitterPostsByKeywords" },
+    instagram: { url: "https://mcp.xpoz.ai/mcp", tool: "getInstagramPostsByKeywords" },
+    reddit: { url: "https://mcp.xpoz.ai/mcp", tool: "getRedditPostsByKeywords" },
+    tiktok: { url: "https://mcp.xpoz.ai/mcp", tool: "getTiktokPostsByKeywords" }
+  }),
+  socialdatax: Object.freeze({
+    xiaohongshu: { url: "https://mcp.socialdatax.com/xhs/mcp", tool: "xhs_search_notes" },
+    douyin: { url: "https://mcp.socialdatax.com/douyin/mcp", tool: "douyin_search_videos" },
+    weibo: { url: "https://mcp.socialdatax.com/weibo/mcp", tool: "weibo_search_posts" }
+  })
+});
+
+async function invokeSocialVendorMcp(sourceId, context) {
+  const definitions = SOCIAL_MCP_SEARCH[sourceId];
+  const requested = Array.isArray(context.params.platforms) ? context.params.platforms : [];
+  const platforms = [...new Set(requested.map((value) => clean(value, 32).toLowerCase()))]
+    .filter((platform) => definitions[platform]);
+  const selected = platforms.length ? platforms : [sourceId === "xpoz" ? "x" : "xiaohongshu"];
+  const perPlatformLimit = Math.max(1, Math.ceil(context.limit / selected.length));
+  const calls = await Promise.all(selected.map(async (platform, index) => {
+    const definition = definitions[platform];
+    const args = sourceId === "xpoz"
+      ? { query: context.query, limit: perPlatformLimit, userPrompt: context.query, ...xpozDateRange(context.query) }
+      : socialDataXSearchArgs(platform, context.query);
+    const response = await callMcpTool(context.fetchImpl, definition.url, context.secret, definition.tool, args, index + 1);
+    return { platform, response };
+  }));
+  const succeeded = calls.filter((call) => call.response.ok);
+  if (!succeeded.length) return calls[0]?.response || { ok: false, status: "provider_error", error: "No social platform call completed.", items: [] };
+  const groups = succeeded.map(({ platform, response }) =>
+    normalizeSocialMcpItems(sourceId, platform, response.payload).slice(0, perPlatformLimit));
+  const items = [];
+  for (let rowIndex = 0; items.length < context.limit; rowIndex += 1) {
+    let found = false;
+    for (const group of groups) {
+      if (group[rowIndex]) {
+        items.push(group[rowIndex]);
+        found = true;
+        if (items.length === context.limit) break;
+      }
+    }
+    if (!found) break;
+  }
+  return {
+    ok: true,
+    status: "completed",
+    items,
+    coverage: {
+      requested_platforms: selected,
+      completed_platforms: succeeded.map((call) => call.platform),
+      failed_platforms: calls.filter((call) => !call.response.ok).map((call) => call.platform)
+    }
+  };
+}
+
+function xpozDateRange(query) {
+  const days = /最近(?:一|1)?天|过去(?:一|1)?天|last\s+(?:1\s+)?day/i.test(query) ? 1
+    : /最近(?:一|1)?周|过去(?:一|1)?周|最近7天|last\s+(?:7\s+days?|week)/i.test(query) ? 7
+      : /最近(?:一|1)?个月|過去(?:一|1)?個月|过去(?:一|1)?个月|last\s+(?:30\s+days?|month)/i.test(query) ? 30
+        : null;
+  if (!days) return {};
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
+  return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
+}
+
+function socialDataXSearchArgs(platform, query) {
+  const recentDay = /最近(?:一|1)?天|过去(?:一|1)?天|last\s+(?:1\s+)?day/i.test(query);
+  const recentWeek = /最近(?:一|1)?周|过去(?:一|1)?周|最近7天|last\s+(?:7\s+days?|week)/i.test(query);
+  const recentHalfYear = /最近半年|过去半年|last\s+(?:6\s+months?|half.year)/i.test(query);
+  const supportsTime = platform === "xiaohongshu" || platform === "douyin";
+  return {
+    keyword: query,
+    ...(supportsTime && (recentDay || recentWeek || recentHalfYear) ? {
+      publish_time_range: recentDay ? "day" : recentWeek ? "week" : "half_year",
+      sort_type: "time_descending"
+    } : {})
+  };
+}
+
+async function callMcpTool(fetchImpl, url, secret, toolName, args, id) {
+  let response;
+  let raw;
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        authorization: `Bearer ${secret}`
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: toolName, arguments: args } })
+    });
+    raw = await response.text();
+  } catch (error) {
+    return { ok: false, status: "provider_error", error: clean(error.message, 300), items: [] };
+  }
+  const envelope = parseMcpEnvelope(raw);
+  if (!response.ok || envelope?.error) {
+    const status = response.status === 401 || response.status === 403 ? "auth_required"
+      : response.status === 429 ? "rate_limited" : "provider_error";
+    return {
+      ok: false,
+      status,
+      error: clean(envelope?.error?.message || `Provider returned HTTP ${response.status}`, 300),
+      items: []
+    };
+  }
+  const result = envelope?.result || {};
+  if (result.isError) {
+    return { ok: false, status: "provider_error", error: clean(mcpContentText(result.content) || "MCP tool call failed.", 300), items: [] };
+  }
+  return { ok: true, status: "completed", payload: parseMcpContent(result.content), items: [] };
+}
+
+function parseMcpEnvelope(raw) {
+  const text = String(raw || "").trim();
+  const dataLines = text.split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .filter((line) => line && line !== "[DONE]");
+  const candidate = dataLines.at(-1) || text;
+  try { return JSON.parse(candidate); } catch { return null; }
+}
+
+function mcpContentText(content) {
+  return (Array.isArray(content) ? content : [])
+    .filter((entry) => entry?.type === "text")
+    .map((entry) => entry.text)
+    .join("\n");
+}
+
+function parseMcpContent(content) {
+  const text = mcpContentText(content);
+  try { return JSON.parse(text); } catch { return { text }; }
+}
+
+function normalizeSocialMcpItems(sourceId, platform, payload) {
+  const rows = socialRows(payload);
+  return rows.map((row) => {
+    const id = clean(row.id || row.note_id || row.aweme_id || row.post_id, 120);
+    const author = clean(row.authorUsername || row.username || row.user_name || row.author?.name || row.author?.nickname, 120);
+    const title = clean(row.title || row.name || row.caption || row.description || row.text || row.note_title, 300) || `${platform} result`;
+    const snippet = clean(row.text || row.selftext || row.caption || row.description || row.content || row.desc || title, 1200);
+    return item(
+      title,
+      socialRowUrl(platform, row, id, author),
+      snippet,
+      row.createdAtDate || row.created_at || row.publish_time || row.create_time,
+      { provider: sourceId, platform, source_id: id || null, author: author || null }
+    );
+  });
+}
+
+function socialRows(payload) {
+  if (Array.isArray(payload)) return payload.filter((row) => row && typeof row === "object");
+  if (!payload || typeof payload !== "object") return [];
+  for (const key of ["data", "items", "results", "notes", "videos", "posts", "list"]) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value.filter((row) => row && typeof row === "object");
+    if (value && typeof value === "object") {
+      const nested = socialRows(value);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+}
+
+function socialRowUrl(platform, row, id, author) {
+  const direct = clean(row.url || row.postUrl || row.post_url || row.note_url || row.share_url || row.permalink || row.codeUrl, 2048);
+  if (/^https?:\/\//i.test(direct)) return direct;
+  if (direct.startsWith("/r/")) return `https://www.reddit.com${direct}`;
+  if (platform === "x" && id) return `https://x.com/${encodeURIComponent(author || "i")}/status/${encodeURIComponent(id)}`;
+  if (platform === "reddit" && id) return `https://www.reddit.com/comments/${encodeURIComponent(id)}`;
+  if (platform === "tiktok" && id) return `https://www.tiktok.com/@${encodeURIComponent(author || "user")}/video/${encodeURIComponent(id)}`;
+  if (platform === "xiaohongshu" && id) return `https://www.xiaohongshu.com/explore/${encodeURIComponent(id)}`;
+  if (platform === "douyin" && id) return `https://www.douyin.com/video/${encodeURIComponent(id)}`;
+  if (platform === "weibo" && id) return `https://weibo.com/detail/${encodeURIComponent(id)}`;
+  return "";
+}
+
 async function invokeSource(sourceId, context) {
   try {
+    if (sourceId === "xpoz" || sourceId === "socialdatax") return invokeSocialVendorMcp(sourceId, context);
     if (sourceId === "open_meteo") return invokeOpenMeteo(context);
     if (sourceId === "geckoterminal") return invokeGeckoTerminal(context);
     if (sourceId === "sec_edgar") return invokeSecEdgar(context);

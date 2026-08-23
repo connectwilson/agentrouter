@@ -41,9 +41,9 @@ test("external API catalog separates callable connectors from planned sources", 
       category: catalog.find((item) => item.source === source)?.category
     })),
     [
-      { source: "xpoz", status: "requires_partner_api", category: "社交媒体" },
+      { source: "xpoz", status: "available", category: "社交媒体" },
       { source: "socialcrawl", status: "requires_partner_api", category: "社交媒体" },
-      { source: "socialdatax", status: "requires_partner_api", category: "社交媒体" },
+      { source: "socialdatax", status: "available", category: "社交媒体" },
       { source: "largitdata", status: "requires_partner_api", category: "社交媒体" }
     ]
   );
@@ -268,7 +268,7 @@ test("HTTP external API request accepts the connected account's API credential w
 test("AgentRouter capability schema and connection UI expose the expanded provider set", () => {
   const capability = getCapabilityCatalog().find((item) => item.capability === "external_api_query");
   const sources = capability.input_schema.properties.source.enum;
-  for (const sourceId of ["github", "gdelt", "sec_edgar", "open_meteo", "youtube", "virus_total", "google_places", "amadeus", "easy_post", "openalex"]) {
+  for (const sourceId of ["github", "gdelt", "sec_edgar", "open_meteo", "youtube", "virus_total", "google_places", "amadeus", "easy_post", "openalex", "xpoz", "socialdatax"]) {
     assert.ok(sources.includes(sourceId), sourceId);
   }
   for (const operation of ["search", "forecast", "filings", "inspect", "flight_search", "track"]) {
@@ -281,6 +281,8 @@ test("AgentRouter capability schema and connection UI expose the expanded provid
   assert.match(html, /Amadeus/);
   assert.match(html, /EasyPost/);
   assert.match(html, /OpenAlex/);
+  assert.match(html, /XPOZ/);
+  assert.match(html, /SocialDataX/);
   assert.match(html, /connect_source/);
 });
 

@@ -26,7 +26,9 @@ const PROVIDER_MATRIX = {
   tushare: new Set(["tushare_api"]),
   zhihu: new Set(["local_browser"]),
   weibo: new Set(["local_browser"]),
-  tiktok: new Set(["local_browser"])
+  tiktok: new Set(["local_browser"]),
+  xpoz: new Set(["xpoz_api"]),
+  socialdatax: new Set(["socialdatax_api"])
 };
 
 const REQUIRED_CREDENTIAL = {
@@ -47,7 +49,9 @@ const REQUIRED_CREDENTIAL = {
   fred_api: "api_key",
   finnhub_api: "api_key",
   perplexity_api: "api_key",
-  tushare_api: "api_key"
+  tushare_api: "api_key",
+  xpoz_api: "api_key",
+  socialdatax_api: "api_key"
 };
 
 export async function createSocialConnection(store, ownerKey, input = {}, options = {}) {

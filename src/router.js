@@ -41,17 +41,18 @@ const CAPABILITY_ALIASES = [
   {
     capability: "external_api_query",
     capabilities: ["external_api_query", "web_search", "web_scrape", "search_api", "data_service"],
-    keywords: ["search api", "搜索 API", "brave", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec edgar", "weather", "youtube", "virustotal", "places", "amadeus", "tracking", "openalex"],
+    keywords: ["search api", "搜索 API", "brave", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec edgar", "weather", "youtube", "virustotal", "places", "amadeus", "tracking", "openalex", "xpoz", "socialdatax"],
     agent_description: "Query a public or user-connected read-only external data provider through AgentRouter without exposing the user's credential.",
     not_for: ["social posting", "external writes", "credential management", "unconnected or unavailable sources"],
     input_schema: {
       type: "object",
       required: ["source", "operation", "query"],
       properties: {
-        source: { type: "string", enum: ["brave_search", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec_edgar", "open_meteo", "youtube", "virus_total", "google_places", "amadeus", "easy_post", "openalex"] },
+        source: { type: "string", enum: ["brave_search", "tavily", "serper", "exa", "firecrawl", "jina", "github", "gdelt", "sec_edgar", "open_meteo", "youtube", "virus_total", "google_places", "amadeus", "easy_post", "openalex", "xpoz", "socialdatax"] },
         operation: { type: "string", enum: ["search", "forecast", "filings", "inspect", "flight_search", "track"] },
         query: { type: "string" },
         limit: { type: "number" },
+        platforms: { type: "array", items: { type: "string" }, description: "Social platforms to query and merge for XPOZ or SocialDataX." },
         origin: { type: "string", description: "IATA origin code for Amadeus flight search." },
         destination: { type: "string", description: "IATA destination code for Amadeus flight search." },
         departure_date: { type: "string", description: "YYYY-MM-DD departure date for Amadeus flight search." },

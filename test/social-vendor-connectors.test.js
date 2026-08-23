@@ -64,7 +64,9 @@ test("XPOZ fans one routed request out across all requested platforms", async ()
   ]);
   assert.ok(calls.every((call) => call.url === "https://mcp.xpoz.ai/mcp"));
   assert.ok(calls.every((call) => call.headers.authorization === "Bearer xpoz-token"));
-  assert.deepEqual(result.items.map((item) => item.metadata.platform), ["x", "reddit", "tiktok"]);
+  assert.ok(calls.every((call) => call.body.params.arguments.limit === 2));
+  assert.deepEqual(result.result.items.map((item) => item.metadata.platform), ["x", "reddit", "tiktok"]);
+  assert.deepEqual(result.coverage.failed_platforms, []);
 });
 
 test("SocialDataX uses each platform's official MCP endpoint and merges the evidence", async () => {
@@ -104,5 +106,6 @@ test("SocialDataX uses each platform's official MCP endpoint and merges the evid
     "https://mcp.socialdatax.com/weibo/mcp"
   ]);
   assert.ok(calls.every((call) => call.headers.authorization === "Bearer sdx-token"));
-  assert.deepEqual(result.items.map((item) => item.metadata.platform), ["xiaohongshu", "douyin", "weibo"]);
+  assert.deepEqual(result.result.items.map((item) => item.metadata.platform), ["xiaohongshu", "douyin", "weibo"]);
+  assert.deepEqual(result.coverage.completed_platforms, ["xiaohongshu", "douyin", "weibo"]);
 });

@@ -29,6 +29,11 @@ const PLATFORM_ALIASES = {
   weibo: "weibo", 微博: "weibo"
 };
 
+// A named provider is a routing constraint, not another way to name a
+// platform. Let the hosted router preserve the provider and any multi-platform
+// plan instead of allowing this bridge to grab the first platform word.
+const EXPLICIT_SOCIAL_VENDOR = /\b(?:xpoz|social\s*data\s*x|socialdatax|social\s*crawl|socialcrawl|largit\s*data|largitdata)\b/i;
+
 export function normalizeSearchPlatform(value) {
   const key = String(value || "").trim().toLowerCase();
   return PLATFORM_ALIASES[key] || null;
@@ -39,7 +44,7 @@ export function localSocialSearchRequest(message) {
   if (message.params?.name === "agentrouter_fetch") {
     const args = message.params?.arguments || {};
     const task = String(args.task || args.query || "").trim();
-    if (isSocialProviderResearch(task)) return null;
+    if (isSocialProviderResearch(task) || EXPLICIT_SOCIAL_VENDOR.test(task)) return null;
     const platform = explicitPlatformInTask(task);
     if (!platform || !task) return null;
     return {
