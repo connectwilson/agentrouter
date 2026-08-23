@@ -116,6 +116,65 @@ test("an explicitly named social vendor bypasses local platform interception and
   }
 });
 
+test("the ask entry point honors an explicitly named vendor before local platform routing", async () => {
+  const cases = [
+    {
+      task: "使用 XPOZ 搜索最近一周 X、Reddit 和 TikTok 上对 AgentRouter 的讨论。",
+      source: "xpoz",
+      platforms: ["x", "reddit", "tiktok"]
+    },
+    {
+      task: "使用 SocialDataX 查找小红书、抖音和微博上对 Agent 交易的看法。",
+      source: "socialdatax",
+      platforms: ["xiaohongshu", "douyin", "weibo"]
+    }
+  ];
+
+  for (const entry of cases) {
+    const result = await askAgentRouter(createMemoryStore(), { task: entry.task, invoke: false });
+    assert.equal(result.status, "no_service_found");
+    assert.equal(result.handoff.request.capability, "external_api_query");
+    assert.equal(result.handoff.request.params.source, entry.source);
+    assert.deepEqual(result.handoff.request.params.platforms, entry.platforms);
+  }
+});
+
+test("local social search strips instruction chatter and rejects unrelated or undated evidence", async () => {
+  const request = localSocialSearchRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: { task: "在 Reddit 上，搜索最近一周人们对 Hyperliquid 前端产品的看法。" }
+    }
+  });
+  assert.equal(request.query, "Hyperliquid 前端产品");
+
+  const unrelated = await runLocalSocialSearch(request, {
+    runCommand: async () => ({ status: "completed", data: [
+      { id: "1", text: "Bitcoin market update", url: "https://reddit.com/1" },
+      { id: "2", text: "Solana validator news", url: "https://reddit.com/2" },
+      { id: "3", text: "Ethereum fees are down", url: "https://reddit.com/3" },
+      { id: "4", text: "A new DeFi protocol", url: "https://reddit.com/4" },
+      { id: "5", text: "General crypto discussion", url: "https://reddit.com/5" }
+    ] })
+  });
+  assert.equal(unrelated.coverage.status, "insufficient");
+  assert.equal(unrelated.coverage.relevant_item_count, 0);
+  assert.match(unrelated.coverage.reasons.join(" "), /relevant/i);
+  assert.equal(unrelated.supplemental_request.params.source, "exa");
+
+  const undated = await runLocalSocialSearch(request, {
+    runCommand: async () => ({ status: "completed", data: [
+      { id: "1", text: "Hyperliquid frontend is fast", url: "https://reddit.com/a" },
+      { id: "2", text: "Hyperliquid frontend navigation is confusing", url: "https://reddit.com/b" },
+      { id: "3", text: "Hyperliquid frontend needs better mobile UX", url: "https://reddit.com/c" }
+    ] })
+  });
+  assert.equal(undated.coverage.status, "insufficient");
+  assert.equal(undated.coverage.timestamped_item_count, 0);
+  assert.match(undated.coverage.reasons.join(" "), /timestamp/i);
+});
+
 test("flight language is normalized before Amadeus authorization", async () => {
   const routed = sourceFor(PROMPTS[21]);
   assert.equal(routed.params.source, "amadeus");
