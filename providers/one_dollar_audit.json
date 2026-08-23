@@ -1,0 +1,85 @@
+{
+  "provider_config_version": "adn_provider_config_v1",
+  "source": {
+    "type": "external_x402_async",
+    "upstream_url": "https://leftclaw.services/api/audit",
+    "upstream_method": "POST",
+    "status_url_template": "https://onedollaraudit.com/api/jobs/{jobId}",
+    "payment_protocol_version": 2,
+    "max_price_usdc": "1.00",
+    "summary": "One Dollar Audit creates a public asynchronous AI smart-contract audit job for one USDC on Base. Creation is paid once; status polling is free."
+  },
+  "manifest": {
+    "manifest_version": "agent_data_service_manifest_v1",
+    "manifest_type": "async_security_audit_service",
+    "version": "1.0.0",
+    "service_id": "one_dollar_audit",
+    "provider": {
+      "provider_id": "one_dollar_audit",
+      "agent_identity": {
+        "standard": "erc-8004",
+        "network": "ethereum",
+        "agent_id": "21548"
+      }
+    },
+    "title": "One Dollar Audit",
+    "description_for_agent": "Commission a public first-pass smart-contract security audit for exactly one USDC. Use only for verified contracts or public source code. The initial call creates an asynchronous job; persist job_id and poll the free status URL without paying again.",
+    "capabilities": ["security_audit", "smart_contract_audit", "solidity", "async_job"],
+    "not_for": ["private source code or secrets", "a substitute for a full manual audit", "general web security scanning", "high-TVL assurance without additional review"],
+    "input_schema": {
+      "type": "object",
+      "required": ["description"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1, "maxLength": 12000, "description": "Verified contract address, public source URL, or short public source code." },
+        "callbackUrl": { "type": "string", "format": "uri", "pattern": "^https://" }
+      },
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "required": ["schema_version", "service_id", "request_id", "status", "query", "data", "metadata"],
+      "properties": {
+        "schema_version": { "type": "string" },
+        "service_id": { "type": "string" },
+        "request_id": { "type": "string" },
+        "status": { "type": "string" },
+        "query": { "type": "object" },
+        "data": { "type": "object" },
+        "metadata": { "type": "object" }
+      }
+    },
+    "sample_request": { "description": "Audit verified contract 0x1111111111111111111111111111111111111111 on Base." },
+    "sample_response": {
+      "schema_version": "agent_data_envelope_v1",
+      "service_id": "one_dollar_audit",
+      "request_id": "sample_oda_job",
+      "status": "success",
+      "query": { "description": "Audit verified contract 0x1111111111111111111111111111111111111111 on Base." },
+      "data": { "job_id": "sample_job", "job_url": "https://onedollaraudit.com/jobs/sample_job", "status": "pending", "status_url": "https://onedollaraudit.com/api/jobs/sample_job", "status_polling_price": "0" },
+      "metadata": { "data_sources": ["one_dollar_audit"], "generated_at": "2026-08-23T00:00:00.000Z", "freshness_seconds": 0, "is_estimated": true, "confidence": 1, "limitations": ["Preview only; no paid audit was created."] }
+    },
+    "pricing": {
+      "amount": "1.00",
+      "currency": "USDC",
+      "network": "base",
+      "protocol": "x402",
+      "protocol_version": 2,
+      "payment_timing": "once_on_job_creation",
+      "settlement_model": "agentrouter_upstream_x402_adapter"
+    },
+    "endpoint": { "url": "/provider/custom/one_dollar_audit", "method": "POST" },
+    "async_result": {
+      "job_id_required": true,
+      "terminal_statuses": ["complete", "declined", "cancelled", "reassigned"],
+      "status_polling": { "url_template": "https://onedollaraudit.com/api/jobs/{jobId}", "method": "GET", "price": "0", "payment_required": false }
+    },
+    "runtime_secrets": { "required": true, "names": ["ADN_UPSTREAM_X402_PRIVATE_KEY"], "custody": "platform_upstream_payment_wallet", "public": false },
+    "data_source_claim": { "source_type": "external_x402_service", "source_provenance_level": "direct_provider", "authorization_status": "public_x402", "redistribution_status": "report_link", "credential_custody": "none", "platform_stores_credentials": false },
+    "freshness": { "update_frequency": "async_job", "max_data_lag_seconds": 0 },
+    "routing": {
+      "good_for": ["audit this Solidity contract", "scan a verified smart contract for vulnerabilities", "one-dollar smart-contract audit"],
+      "not_for": ["audit a website", "research security news", "private code", "general token research"],
+      "required_signals": ["smart contract or Solidity", "audit or vulnerability review"]
+    }
+  }
+}

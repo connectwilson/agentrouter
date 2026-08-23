@@ -102,6 +102,30 @@ const SOURCE_CAPABILITY_MANUALS = Object.freeze({
       "Find peer-reviewed papers and DOI citations about agent routing",
       "查找 AgentRouter 相关论文的 DOI 和引用次数"
     ]
+  }),
+  xpoz: Object.freeze({
+    best_for: ["Normalized search across public X, Instagram, TikTok, and Reddit content", "Cross-platform social listening and public user-voice research"],
+    not_for: ["Chinese domestic platforms such as Xiaohongshu, Douyin, Weibo, or Bilibili", "Posting, messaging, or account actions"],
+    route_only_when: ["The task needs public content or engagement data from one or more of X, Instagram, TikTok, and Reddit"],
+    example_queries: ["Compare public discussion of AgentRouter across X, TikTok, and Reddit"]
+  }),
+  socialcrawl: Object.freeze({
+    best_for: ["Broad cross-platform public social data through one normalized REST API", "Profiles, posts, comments, transcripts, trends, and multi-platform monitoring"],
+    not_for: ["Private account data", "A platform-native write action", "Chinese platforms not explicitly listed in its live endpoint catalog"],
+    route_only_when: ["The task spans several mainstream global platforms or needs an endpoint SocialCrawl explicitly documents"],
+    example_queries: ["Collect public comments about a launch across YouTube, Reddit, X, LinkedIn, and TikTok"]
+  }),
+  socialdatax: Object.freeze({
+    best_for: ["Chinese social research across Xiaohongshu, Douyin, Kuaishou, Weibo, WeChat, Bilibili, and Zhihu", "Public content, creator, engagement, and comment data through MCP, Skills, or API"],
+    not_for: ["Account actions or publishing", "Assuming every platform supports every operation without checking the live capability listing"],
+    route_only_when: ["The requested source is a supported Chinese platform, or Chinese and global social evidence must be combined"],
+    example_queries: ["研究小红书、抖音和微博上用户对 AI Agent 交易的看法"]
+  }),
+  largitdata: Object.freeze({
+    best_for: ["Taiwan and Greater China social coverage, including PTT, Dcard, Mobile01, Xiaohongshu, Weibo, and Douyin", "Unified REST/JSON access for regional listening workflows"],
+    not_for: ["Private content", "Write operations", "Using regional coverage claims without confirming the needed endpoint and commercial rights"],
+    route_only_when: ["The task needs Taiwan or Greater China sources that global-only aggregators do not cover"],
+    example_queries: ["比较 PTT、Dcard 和小红书对同一消费品牌的讨论"]
   })
 });
 
@@ -148,6 +172,10 @@ const SOURCE_CATALOG = [
   source("zhihu", "社交媒体", "知乎", "browser_only", "local_browser", ["post_read"]),
   source("weibo", "社交媒体", "微博", "browser_only", "local_browser", ["post_read"]),
   source("bilibili", "社交媒体", "Bilibili", "browser_only", "local_browser", ["search", "post_read"]),
+  source("xpoz", "社交媒体", "XPOZ", "requires_partner_api", "xpoz_api", ["search", "posts", "comments", "profiles"]),
+  source("socialcrawl", "社交媒体", "SocialCrawl", "requires_partner_api", "socialcrawl_api", ["search", "posts", "comments", "profiles", "transcripts"]),
+  source("socialdatax", "社交媒体", "SocialDataX", "requires_partner_api", "socialdatax_api", ["search", "posts", "comments", "profiles"]),
+  source("largitdata", "社交媒体", "LargitData", "requires_partner_api", "largitdata_api", ["search", "posts", "comments", "channels"]),
   source("tushare", "金融", "Tushare", "available", "tushare_api", ["search"]),
   source("yahoo_finance", "金融", "Yahoo Finance", "available", null, ["search", "quote"]),
   source("fred", "金融", "FRED", "available", "fred_api", ["search"]),

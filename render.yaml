@@ -31,6 +31,8 @@ services:
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
         sync: false
+      - key: ADN_UPSTREAM_X402_PRIVATE_KEY
+        sync: false
   - type: web
     name: agentrouter-markets-sg
     runtime: docker
@@ -69,6 +71,8 @@ services:
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
+        sync: false
+      - key: ADN_UPSTREAM_X402_PRIVATE_KEY
         sync: false
   - type: worker
     name: binance-futures-delist-monitor

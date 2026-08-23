@@ -9,6 +9,7 @@ import { readJson, sendJson, sendNotFound } from "./http-utils.js";
 import { readProviderSecret } from "./provider-secrets.js";
 import { isRealX402ProviderEnabled, processProviderX402Payment, sendX402Response, settleProviderX402Payment } from "./real-x402-provider.js";
 import { accountSpendLimit, assertWithinSpendLimit, authenticateCreditRequest, creditPaymentRequired, debitCredits, refundCredits } from "./credits.js";
+import { executeOneDollarAudit } from "./one-dollar-audit.js";
 
 const issuedChallenges = new Map();
 const preflightResults = new Map();
@@ -139,12 +140,17 @@ export async function handleCustomProvider(req, res, serviceId, { store, baseUrl
     return;
   }
 
-  const result = payment.preflight?.result || await executeProviderConfig(config, input);
+  const result = reusablePreflight(config)
+    ? payment.preflight?.result || await executeProviderConfig(config, input)
+    : await executeProviderConfig(config, input, { allowPaidUpstream: true });
   await sendPaidResult({ res, payment, body: result.body, status: result.status, store });
 }
 
-export async function executeProviderConfig(config, input = {}) {
+export async function executeProviderConfig(config, input = {}, options = {}) {
   const serviceId = config.manifest?.service_id || "custom_provider";
+  if (config.source?.type === "external_x402_async") {
+    return executeOneDollarAudit(config, input, options);
+  }
   if (config.source?.type === "hosted_http") {
     const upstream = await callHostedHttpSource(config, input);
     if (upstream?.upstream_error) {
@@ -201,7 +207,7 @@ export async function executeProviderConfig(config, input = {}) {
       status: "error",
       error: {
         code: "UNSUPPORTED_PROVIDER_SOURCE",
-        message: "This MVP runtime currently supports static_json and hosted_http provider configs.",
+        message: "This runtime supports static_json, hosted_http, apify_actor, and external_x402_async provider configs.",
         retryable: false,
         suggested_action: "Use a supported provider config or add a source adapter."
       }
@@ -511,7 +517,11 @@ function shouldPreflightProviderConfig(config) {
   // Apify actors must preflight too: a failing or empty actor has to be caught
   // before the payment challenge, and the cached preflight result is reused for
   // the paid response so the actor runs exactly once.
-  return config.source?.type === "hosted_http" || config.source?.type === "apify_actor";
+  return config.source?.type === "hosted_http" || config.source?.type === "apify_actor" || config.source?.type === "external_x402_async";
+}
+
+function reusablePreflight(config) {
+  return config.source?.type !== "external_x402_async";
 }
 
 function isSuccessfulProviderResult(result) {

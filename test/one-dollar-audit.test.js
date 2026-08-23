@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
+import { encodePaymentRequiredHeader } from "@x402/core/http";
 
 import {
+  executeOneDollarAudit,
   inspectOneDollarAuditPayment,
   normalizeOneDollarAuditJob,
   readOneDollarAuditStatus,
@@ -93,4 +95,49 @@ test("missing upstream payer is a dry-run failure and never reuses the evidence 
     if (oldEvidence === undefined) delete process.env.ADN_EVIDENCE_ANCHOR_PRIVATE_KEY;
     else process.env.ADN_EVIDENCE_ANCHOR_PRIVATE_KEY = oldEvidence;
   }
+});
+
+test("paid execution revalidates the live terms and returns one durable job", async () => {
+  const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+  const paymentRequired = {
+    x402Version: 2,
+    resource: { url: config.source.upstream_url, description: "Audit", mimeType: "application/json" },
+    accepts: [{
+      scheme: "exact",
+      network: "eip155:8453",
+      amount: "1000000",
+      asset: "0x833589fCD6EDb6E08f4c7C32D4f71b54bdA02913",
+      payTo: "0xCfB32a7d01Ca2B4B538C83B2b38656D3502D76EA",
+      maxTimeoutSeconds: 300,
+      extra: {}
+    }]
+  };
+  let paidCalls = 0;
+  const result = await executeOneDollarAudit(config, config.manifest.sample_request, {
+    allowPaidUpstream: true,
+    privateKey: `0x${"2".repeat(64)}`,
+    fetchImpl: async () => new Response(null, {
+      status: 402,
+      headers: { "payment-required": encodePaymentRequiredHeader(paymentRequired) }
+    }),
+    invokePaid: async ({ paymentPolicy }) => {
+      paidCalls += 1;
+      assert.equal(paymentPolicy(2, paymentRequired.accepts).length, 1);
+      assert.equal(paymentPolicy(2, [{ ...paymentRequired.accepts[0], amount: "1000001" }]).length, 0);
+      return { payload: { jobId: "job_paid", jobUrl: "https://onedollaraudit.com/jobs/job_paid" }, payment_tx: "0xtx" };
+    }
+  });
+  assert.equal(paidCalls, 1);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.data.job_id, "job_paid");
+  assert.equal(result.body.data.payment_tx, "0xtx");
+});
+
+test("a just-created job may return retryable 404 without another payment", async () => {
+  const result = await readOneDollarAuditStatus("job_new", {
+    fetchImpl: async () => new Response(null, { status: 404, headers: { "retry-after": "7" } })
+  });
+  assert.equal(result.status, "success");
+  assert.equal(result.data.status, "pending");
+  assert.equal(result.retry_after_seconds, 7);
 });

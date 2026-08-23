@@ -4,7 +4,7 @@ export function isRealX402Enabled() {
   return currentPaymentBackend() === "x402";
 }
 
-export async function invokeWithRealX402({ url, method = "POST", headers = {}, body, wallet }) {
+export async function invokeWithRealX402({ url, method = "POST", headers = {}, body, wallet, fetchImpl = globalThis.fetch, paymentPolicy = null }) {
   const { wrapFetchWithPayment, x402Client, x402HTTPClient } = await import("@x402/fetch");
   const { ExactEvmScheme } = await import("@x402/evm/exact/client");
   const { privateKeyToAccount } = await import("viem/accounts");
@@ -16,9 +16,10 @@ export async function invokeWithRealX402({ url, method = "POST", headers = {}, b
   const account = privateKeyToAccount(wallet.private_key_hex);
   const client = new x402Client();
   client.register("eip155:*", new ExactEvmScheme(account));
+  if (paymentPolicy) client.registerPolicy(paymentPolicy);
 
   const httpClient = new x402HTTPClient(client);
-  const fetchWithPayment = wrapFetchWithPayment(fetch, client);
+  const fetchWithPayment = wrapFetchWithPayment(fetchImpl, client);
   const response = await fetchWithPayment(url, {
     method,
     headers: {

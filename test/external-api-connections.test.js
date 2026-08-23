@@ -34,6 +34,19 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(catalog.find((item) => item.source === "openalex").operations.includes("search"), true);
   assert.equal(catalog.find((item) => item.source === "linkedin").implementation_status, "requires_partner_api");
   assert.equal(catalog.find((item) => item.source === "xiaohongshu").implementation_status, "browser_only");
+  assert.deepEqual(
+    ["xpoz", "socialcrawl", "socialdatax", "largitdata"].map((source) => ({
+      source,
+      status: catalog.find((item) => item.source === source)?.implementation_status,
+      category: catalog.find((item) => item.source === source)?.category
+    })),
+    [
+      { source: "xpoz", status: "requires_partner_api", category: "社交媒体" },
+      { source: "socialcrawl", status: "requires_partner_api", category: "社交媒体" },
+      { source: "socialdatax", status: "requires_partner_api", category: "社交媒体" },
+      { source: "largitdata", status: "requires_partner_api", category: "社交媒体" }
+    ]
+  );
   assert.equal(catalog.find((item) => item.source === "exa").hub_category, "AI Search");
   assert.equal(catalog.find((item) => item.source === "openalex").hub_category, "AI Search");
   assert.equal(catalog.find((item) => item.source === "open_meteo").hub_category, null);

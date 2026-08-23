@@ -3,6 +3,7 @@
 agentrouter-skill-export/
 public-release/
 providers/*.json
+!providers/one_dollar_audit.json
 providers/*.local.json
 providers/*secret*.json
 node_modules/

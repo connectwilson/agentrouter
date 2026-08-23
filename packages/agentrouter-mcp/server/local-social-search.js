@@ -39,6 +39,7 @@ export function localSocialSearchRequest(message) {
   if (message.params?.name === "agentrouter_fetch") {
     const args = message.params?.arguments || {};
     const task = String(args.task || args.query || "").trim();
+    if (isSocialProviderResearch(task)) return null;
     const platform = explicitPlatformInTask(task);
     if (!platform || !task) return null;
     return {
@@ -59,6 +60,12 @@ export function localSocialSearchRequest(message) {
   const query = String(params.query || params.keyword || params.task || "").trim();
   if (!query) return null;
   return { platform, query, limit: params.limit, capability };
+}
+
+function isSocialProviderResearch(task) {
+  const providerIntent = /\b(?:api|mcp|providers?|vendors?|services?|integrations?|marketplace|catalog)\b|服务商|供應商|供应商|数据源|資料源|接口|接入|集成|整合/i;
+  const comparisonIntent = /\b(?:research|compare|comparison|cover|supports?|alternatives?|landscape)\b|研究|调研|調研|比较|比較|主流|哪些/i;
+  return providerIntent.test(task) && comparisonIntent.test(task);
 }
 
 function explicitPlatformInTask(task) {
