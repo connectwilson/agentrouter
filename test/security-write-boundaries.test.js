@@ -168,18 +168,71 @@ test("feedback requires an authenticated caller and a real invocation handle", a
         reason: "used in the answer"
       }
     };
-    const local = await postJson(
+    const unsignedLocal = await postJson(
       `${baseUrl}/agent-router/feedback`,
       localBody,
       "ar_session=owner-session"
     );
+    assert.equal(unsignedLocal.status, 404);
+    assert.equal((await unsignedLocal.json()).error.code, "LOCAL_FEEDBACK_GRANT_REQUIRED");
+
+    const grantResponse = await postJson(
+      `${baseUrl}/agent-router/feedback/grant`,
+      {
+        request_id: "local_read_user_posts_x_1786955108056_secure1",
+        service_id: "local_social_x",
+        operation: "read_user_posts",
+        capability: "social_user_voice_research",
+        result_status: "completed"
+      },
+      "ar_session=owner-session"
+    );
+    assert.equal(grantResponse.status, 201);
+    const grant = await grantResponse.json();
+    assert.match(grant.feedback_token, /^[A-Za-z0-9_-]{32,}$/);
+
+    const grantedBody = {
+      ...localBody,
+      request_id: "local_read_user_posts_x_1786955108056_secure1",
+      feedback_token: grant.feedback_token
+    };
+    const local = await postJson(
+      `${baseUrl}/agent-router/feedback`,
+      grantedBody,
+      "ar_session=owner-session"
+    );
     assert.equal(local.status, 200);
     const localEvent = server.store.feedbackEvents.find((event) => event.request_id === localBody.request_id);
-    assert.equal(localEvent.consumer_id, "github:security-owner");
+    assert.equal(localEvent, undefined, "the unsigned request must never create an event");
+    const grantedEvent = server.store.feedbackEvents.find((event) => event.request_id === grantedBody.request_id);
+    assert.equal(grantedEvent.consumer_id, "github:security-owner");
+
+    const replay = await postJson(
+      `${baseUrl}/agent-router/feedback`,
+      grantedBody,
+      "ar_session=owner-session"
+    );
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json()).status, "consumer_feedback_already_recorded");
+
+    const conflict = await postJson(
+      `${baseUrl}/agent-router/feedback`,
+      {
+        ...grantedBody,
+        feedback: { intent_fit: "no", answer_useful: "no", reason: "conflicting replay" }
+      },
+      "ar_session=owner-session"
+    );
+    assert.equal(conflict.status, 409);
+
+    const listed = await fetch(`${baseUrl}/agent-router/feedback?request_id=${grantedBody.request_id}`);
+    assert.equal(listed.status, 200);
+    const listedPayload = await listed.json();
+    assert.ok(listedPayload.events.some((event) => event.request_id === grantedBody.request_id));
 
     const hijack = await postJson(
       `${baseUrl}/agent-router/feedback`,
-      localBody,
+      grantedBody,
       "ar_session=stranger-session"
     );
     assert.equal(hijack.status, 403);

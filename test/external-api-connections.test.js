@@ -1068,7 +1068,7 @@ test("successful calls can be rated, not only failed ones", async () => {
 
   // The example must be copyable as-is: reason is required by the validator.
   assert.deepEqual(ok.consumer_feedback_request.required_fields, ["intent_fit", "answer_useful", "reason"]);
-  const recorded = recordConsumerFeedback(store, ok.consumer_feedback_request.example);
+  const recorded = await recordConsumerFeedback(store, ok.consumer_feedback_request.example);
   assert.equal(recorded.ok, true);
   assert.equal(recorded.service_id, "external_api_gdelt");
 
@@ -1087,7 +1087,7 @@ test("successful calls can be rated, not only failed ones", async () => {
 
   // Local connector runs execute on the device, so the server has no prior
   // event; the rating must still be accepted and create one.
-  const local = recordConsumerFeedback(store, {
+  const local = await recordConsumerFeedback(store, {
     request_id: "local_search_x_1786955108056_xsfutf3w",
     feedback: { intent_fit: "yes", answer_useful: "yes", reason: "used in the answer" }
   });
@@ -1095,7 +1095,7 @@ test("successful calls can be rated, not only failed ones", async () => {
   assert.equal(local.service_id, "local_social_x");
 
   // An id matching no known shape is still rejected rather than inventing a service.
-  assert.throws(
+  await assert.rejects(
     () => recordConsumerFeedback(store, { request_id: "bogus_id", feedback: { intent_fit: "yes", answer_useful: "yes", reason: "x" } }),
     (error) => error.statusCode === 404
   );

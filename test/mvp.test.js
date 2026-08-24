@@ -2505,7 +2505,7 @@ test("AgentRouter ask wrapper returns clarification for ambiguous max pain", asy
 });
 
 test("router routes ambiguous BTC liquidation task with explicit assumption and verifies result", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ server, baseUrl }) => {
     const connector = new DiscoveryConnector({ baseUrl });
     const routed = await connector.routeTask({
       task: "BTC 当前最大爆仓痛点是多少",
@@ -2523,6 +2523,9 @@ test("router routes ambiguous BTC liquidation task with explicit assumption and 
     assert.equal(routed.verification.freshness_valid, true);
     assert.equal(routed.verification.coverage_valid, true);
     assert.equal(routed.result.data.max_liquidation_pain_price, 103500);
+    const eventsForRequest = server.store.services.get(routed.selected_service.service_id).feedback_events
+      .filter((event) => event.request_id === routed.result.request_id);
+    assert.equal(eventsForRequest.length, 1, "one invocation must produce one operational feedback event");
   });
 });
 
