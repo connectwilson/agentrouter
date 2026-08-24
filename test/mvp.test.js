@@ -18,6 +18,8 @@ process.env.ADN_ARC_ANCHOR_MODE = "mock";
 process.env.ADN_ERC8004_MODE = "mock";
 process.env.ADN_ERC8004_AGENT_ID = "1001";
 process.env.ADN_PROVIDER_RECEIVE_ADDRESS = "0x2c4d600a04c0d3bbb1e3cc8a13e54e21c2b6c0bb";
+process.env.ADN_STUDIO_API_TOKEN = "test-provider-publish-token";
+process.env.ADN_ADMIN_API_TOKEN = "test-admin-token";
 
 const { createServer, publicApiAutomationOptions, seedDemoService } = await import("../src/server.js");
 const { loadProviderConfigs, registerService, searchServices } = await import("../src/registry.js");
@@ -73,13 +75,21 @@ async function withServer(fn, options = {}) {
     let parsed = null;
     try { parsed = new URL(requestUrl); } catch {}
     const isLocal = parsed?.origin === baseUrl;
+    const needsAdminAuth = isLocal && method === "POST" && (
+      /^\/services\/[^/]+\/(?:payout|validate|erc8004\/register)$/.test(parsed.pathname) ||
+      parsed.pathname === "/agent-router/health-check"
+    );
     const needsProviderAuth = isLocal && (
       (method !== "GET" && parsed.pathname.startsWith("/studio/")) ||
-      (method === "POST" && /^\/services\/[^/]+\/payout$/.test(parsed.pathname))
+      (method === "POST" && parsed.pathname === "/agent-router/feedback")
     );
-    if (!needsProviderAuth) return previousFetch(input, init);
+    if (!needsProviderAuth && !needsAdminAuth) return previousFetch(input, init);
     const headers = new Headers(init.headers || input?.headers || {});
-    if (!headers.has("cookie")) headers.set("cookie", authCookie);
+    if (needsAdminAuth && !headers.has("authorization")) {
+      headers.set("authorization", "Bearer test-admin-token");
+    } else if (!headers.has("cookie")) {
+      headers.set("cookie", authCookie);
+    }
     return previousFetch(input, { ...init, headers });
   };
   try {
@@ -2870,7 +2880,7 @@ test("Provider Studio can derive preview data from result data by default", asyn
 });
 
 test("consumer feedback updates trust and affects later routing", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ server, baseUrl }) => {
     for (const service of [
       {
         service_id: "alpha_signal_good_source",
@@ -2905,6 +2915,26 @@ test("consumer feedback updates trust and affects later routing", async () => {
         })
       });
       assert.equal(response.status, 201);
+    }
+
+    for (const [serviceId, requestId] of [
+      ["alpha_signal_good_source", "manual_eval_good"],
+      ["alpha_signal_weak_source", "manual_eval_weak"]
+    ]) {
+      const record = server.store.services.get(serviceId);
+      const event = {
+        event_version: "agent_service_feedback_v1",
+        request_id: requestId,
+        service_id: serviceId,
+        provider_id: record.manifest.provider.provider_id,
+        consumer_id: "agentrouter_consumer",
+        status: "success",
+        schema_valid: true,
+        verification: { coverage_valid: true, agent_friendly_score: 1 },
+        created_at: new Date().toISOString()
+      };
+      record.feedback_events.push(event);
+      server.store.feedbackEvents.push(event);
     }
 
     const goodFeedback = await fetch(`${baseUrl}/agent-router/feedback`, {

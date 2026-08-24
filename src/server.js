@@ -191,19 +191,22 @@ export function createServer({
   socialResearchRunner = runSocialResearchCapability,
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser,
-  publicApiPipelineOptions = {}
+  publicApiPipelineOptions = {},
+  writeRateLimit = {}
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
     ...publicApiPipelineOptions
   };
+  const writeRateLimiter = createWriteRateLimiter(writeRateLimit);
   const server = http.createServer(async (req, res) => {
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
         socialResearchRunner,
         socialConnectionOptions,
         socialProviderFactory,
-        publicApiPipelineOptions: resolvedPublicApiPipelineOptions
+        publicApiPipelineOptions: resolvedPublicApiPipelineOptions,
+        writeRateLimiter
       });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
@@ -225,7 +228,8 @@ async function routeRequest(req, res, store, baseUrl, {
   socialResearchRunner = runSocialResearchCapability,
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser,
-  publicApiPipelineOptions = {}
+  publicApiPipelineOptions = {},
+  writeRateLimiter
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
@@ -975,6 +979,8 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "POST" && url.pathname === "/services/register") {
+    if (!requireAuth(req, res, auth, url)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
     const manifest = await readJson(req);
     attachOwnerToManifest(manifest, auth.user);
     const record = registerService(store, manifest, baseUrl);
@@ -996,6 +1002,11 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname.startsWith("/services/") && url.pathname.endsWith("/erc8004/register")) {
     const serviceId = decodeURIComponent(url.pathname.split("/")[2] || "");
+    if (!requireAuth(req, res, auth, url)) return;
+    const record = store.services.get(serviceId);
+    if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
+    if (!requireServiceOwner(req, res, auth, record)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
     const body = await readJson(req).catch(() => ({}));
     const result = await registerServiceErc8004Identity(store, serviceId, {
       baseUrl,
@@ -1007,6 +1018,11 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname.startsWith("/services/") && url.pathname.endsWith("/validate")) {
     const serviceId = url.pathname.split("/")[2];
+    if (!requireAuth(req, res, auth, url)) return;
+    const record = store.services.get(serviceId);
+    if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
+    if (!requireServiceOwner(req, res, auth, record)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
     const result = await validateService(store, serviceId);
     sendJson(res, result.ok ? 200 : 422, result);
     return;
@@ -1046,11 +1062,25 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/feedback") {
+    const feedbackActorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    if (!feedbackActorKey) {
+      sendJson(res, 401, {
+        error: {
+          code: "AUTH_REQUIRED",
+          message: "An authenticated AgentRouter connection is required to submit feedback."
+        }
+      });
+      return;
+    }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, feedbackActorKey)) return;
     const body = await readJson(req);
     if (!body.service_id) {
       body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
     }
-    const result = recordConsumerFeedback(store, body);
+    const result = recordConsumerFeedback(store, body, {
+      actorKey: feedbackActorKey,
+      requireKnownInvocation: true
+    });
     const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
     result.arc_anchor = trustAnchor.arc_anchor;
     result.erc8004 = trustAnchor.erc8004;
@@ -1321,6 +1351,11 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname === "/agent-router/health-check") {
     const body = await readJson(req);
+    if (!requireAuth(req, res, auth, url)) return;
+    const record = store.services.get(body.service_id);
+    if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
+    if (!requireServiceOwner(req, res, auth, record)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
     const result = await runServiceHealthCheck(store, body.service_id);
     sendJson(res, result.ok === false ? 422 : 200, result);
     return;
@@ -1479,11 +1514,53 @@ function constantTimeEqual(a, b) {
 
 function requireServiceOwner(req, res, auth, record) {
   const ownerKey = record?.manifest?.registration?.owner?.user_key || "";
-  if (!ownerKey || ownerKey === authUserKey(auth.user)) return true;
+  if (auth.user?.role === "admin" || ownerKey === authUserKey(auth.user)) return true;
   sendJson(res, 403, {
     error: {
-      code: "FORBIDDEN_SERVICE_OWNER",
-      message: "This service belongs to another provider account."
+      code: ownerKey ? "FORBIDDEN_SERVICE_OWNER" : "ADMIN_REQUIRED_FOR_UNOWNED_SERVICE",
+      message: ownerKey
+        ? "This service belongs to another provider account."
+        : "Only an administrator can mutate an unowned built-in service."
+    }
+  });
+  return false;
+}
+
+function createWriteRateLimiter({ max = 60, windowMs = 60_000 } = {}) {
+  const safeMax = Math.max(1, Number(max) || 60);
+  const safeWindowMs = Math.max(1_000, Number(windowMs) || 60_000);
+  const buckets = new Map();
+  return {
+    consume(key, now = Date.now()) {
+      const existing = buckets.get(key);
+      const bucket = !existing || now >= existing.resetAt
+        ? { count: 0, resetAt: now + safeWindowMs }
+        : existing;
+      bucket.count += 1;
+      buckets.set(key, bucket);
+      if (buckets.size > 10_000) {
+        for (const [bucketKey, value] of buckets) {
+          if (now >= value.resetAt) buckets.delete(bucketKey);
+        }
+      }
+      return {
+        allowed: bucket.count <= safeMax,
+        retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - now) / 1_000))
+      };
+    }
+  };
+}
+
+function allowSensitiveWrite(req, res, limiter, actorKey = "") {
+  const socketAddress = req.socket?.remoteAddress || "unknown";
+  const key = actorKey ? `actor:${actorKey}` : `ip:${socketAddress}`;
+  const result = limiter.consume(key);
+  if (result.allowed) return true;
+  res.setHeader("retry-after", String(result.retryAfterSeconds));
+  sendJson(res, 429, {
+    error: {
+      code: "RATE_LIMITED",
+      message: "Too many security-sensitive writes. Retry after the indicated delay."
     }
   });
   return false;
@@ -1682,9 +1759,13 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     };
   }
   if (name === "agentrouter_feedback") {
+    if (!paymentContext.ownerKey) return agentRouterConnectionRequired();
     const body = { ...args };
     if (!body.service_id) body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
-    const result = recordConsumerFeedback(store, body);
+    const result = recordConsumerFeedback(store, body, {
+      actorKey: paymentContext.ownerKey,
+      requireKnownInvocation: true
+    });
     const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
     return {
       ...result,

@@ -139,6 +139,26 @@ test("feedback requires an authenticated caller and a real invocation handle", a
     assert.equal(invented.status, 404);
     assert.equal(server.store.services.get("feedback_security_service").feedback_events.length, 0);
 
+    const claimedInvocation = {
+      event_version: "agent_service_feedback_v1",
+      request_id: "real_but_foreign_request",
+      service_id: "feedback_security_service",
+      provider_id: "provider_feedback_security_service",
+      consumer_id: "github:security-stranger",
+      invocation_actor_key: "github:security-stranger",
+      status: "success",
+      schema_valid: true,
+      created_at: new Date().toISOString()
+    };
+    server.store.services.get("feedback_security_service").feedback_events.push(claimedInvocation);
+    server.store.feedbackEvents.push(claimedInvocation);
+    const foreignInvocation = await postJson(
+      `${baseUrl}/agent-router/feedback`,
+      { ...body, request_id: "real_but_foreign_request" },
+      "ar_session=owner-session"
+    );
+    assert.equal(foreignInvocation.status, 403);
+
     const localBody = {
       request_id: "local_search_reddit_1786955108056_secure1",
       consumer_id: "spoofed-client-value",

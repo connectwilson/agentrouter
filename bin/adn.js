@@ -353,9 +353,13 @@ function getArgValue(args, name) {
 }
 
 async function postJson(path, body) {
+  const publishToken = process.env.ADN_REMOTE_PUBLISH_TOKEN || process.env.ADN_STUDIO_API_TOKEN || "";
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(publishToken ? { authorization: `Bearer ${publishToken}` } : {})
+    },
     body: JSON.stringify(body)
   });
   const payload = await response.json();

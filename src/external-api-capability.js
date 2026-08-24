@@ -751,7 +751,10 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     secret,
     fetchImpl: options.fetchImpl || globalThis.fetch
   });
-  const invocation = recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, options);
+  const invocation = recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, {
+    ...options,
+    ownerKey
+  });
   if (!response.ok) {
     return {
       ok: false,
@@ -905,6 +908,8 @@ function recordExternalApiInvocation(store, definition, response, latencyMs, opt
     request_id: requestId,
     service_id: serviceId,
     provider_id: `provider_${definition.provider_type || definition.source}`,
+    consumer_id: options.ownerKey || "agentrouter_consumer",
+    invocation_actor_key: options.ownerKey || undefined,
     source: definition.source,
     status: successful ? "success" : "error",
     http_status: Number.isFinite(Number(response.http_status)) ? Number(response.http_status) : null,

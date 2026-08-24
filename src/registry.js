@@ -539,7 +539,8 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
     request_id: body.request_id || `req_${Date.now()}`,
     service_id: serviceId,
     provider_id: manifest.provider.provider_id,
-    consumer_id: "agentrouter_consumer",
+    consumer_id: options.ownerKey || "agentrouter_consumer",
+    invocation_actor_key: options.ownerKey || undefined,
     payment_backend: currentPaymentBackend(),
     payment_tx: paymentTx,
     payment_collected: paymentCollected,
@@ -710,7 +711,10 @@ export async function runServiceHealthCheck(store, serviceId) {
   return healthEvent;
 }
 
-export function recordConsumerFeedback(store, body = {}) {
+export function recordConsumerFeedback(store, body = {}, {
+  actorKey = "",
+  requireKnownInvocation = false
+} = {}) {
   const serviceId = body.service_id;
   const record = store.services.get(serviceId);
   const requestId = body.request_id || body.feedback?.request_id;
@@ -729,9 +733,14 @@ export function recordConsumerFeedback(store, body = {}) {
       .reverse()
       .find((event) => event.request_id === requestId && (!serviceId || event.service_id === serviceId));
     if (external) {
+      assertFeedbackActor(external, actorKey);
       const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);
       external.consumer_feedback = consumerFeedback;
       external.consumer_rating = consumerFeedback.consumer_score;
+      if (actorKey) {
+        external.consumer_feedback_actor_key = actorKey;
+        external.consumer_id = actorKey;
+      }
       external.updated_at = new Date().toISOString();
       return {
         ok: true,
@@ -753,7 +762,8 @@ export function recordConsumerFeedback(store, body = {}) {
         request_id: requestId,
         service_id: localServiceId,
         provider_id: "local_browser_connector",
-        consumer_id: body.consumer_id || "unknown_consumer_agent",
+        consumer_id: actorKey || body.consumer_id || "unknown_consumer_agent",
+        consumer_feedback_actor_key: actorKey || undefined,
         status: "success",
         schema_valid: true,
         execution_location: "user_device",
@@ -777,16 +787,28 @@ export function recordConsumerFeedback(store, body = {}) {
   const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);
   const targetEvent = [...(record.feedback_events || [])].reverse().find((event) => event.request_id === requestId);
   if (targetEvent) {
+    assertFeedbackActor(targetEvent, actorKey);
     targetEvent.consumer_feedback = consumerFeedback;
     targetEvent.consumer_rating = consumerFeedback.consumer_score;
+    if (actorKey) {
+      targetEvent.consumer_feedback_actor_key = actorKey;
+      targetEvent.consumer_id = actorKey;
+    }
     targetEvent.updated_at = new Date().toISOString();
   } else {
+    if (requireKnownInvocation) {
+      const error = new Error("INVOCATION_NOT_FOUND");
+      error.statusCode = 404;
+      error.code = "INVOCATION_NOT_FOUND";
+      throw error;
+    }
     record.feedback_events.push({
       event_version: "agent_service_feedback_v1",
       request_id: requestId,
       service_id: serviceId,
       provider_id: record.manifest.provider.provider_id,
-      consumer_id: body.consumer_id || "unknown_consumer_agent",
+      consumer_id: actorKey || body.consumer_id || "unknown_consumer_agent",
+      consumer_feedback_actor_key: actorKey || undefined,
       status: "consumer_feedback_only",
       schema_valid: null,
       latency_ms: null,
@@ -800,7 +822,8 @@ export function recordConsumerFeedback(store, body = {}) {
     service_id: serviceId,
     provider_id: record.manifest.provider.provider_id,
     request_id: requestId,
-    consumer_id: body.consumer_id || "unknown_consumer_agent",
+    consumer_id: actorKey || body.consumer_id || "unknown_consumer_agent",
+    consumer_feedback_actor_key: actorKey || undefined,
     consumer_feedback: consumerFeedback,
     created_at: new Date().toISOString()
   };
@@ -818,6 +841,23 @@ export function recordConsumerFeedback(store, body = {}) {
     consumer_feedback: consumerFeedback,
     trust: summarizeTrust(record)
   };
+}
+
+function assertFeedbackActor(event, actorKey) {
+  if (!actorKey) return;
+  const invocationActor = event.invocation_actor_key || "";
+  if (invocationActor && invocationActor !== actorKey) {
+    const error = new Error("Feedback can only be submitted by the account that made this invocation.");
+    error.statusCode = 403;
+    error.code = "FORBIDDEN_FEEDBACK_ACTOR";
+    throw error;
+  }
+  const existingActor = event.consumer_feedback_actor_key || "";
+  if (!existingActor || existingActor === actorKey) return;
+  const error = new Error("Feedback for this invocation was already claimed by another authenticated account.");
+  error.statusCode = 403;
+  error.code = "FORBIDDEN_FEEDBACK_ACTOR";
+  throw error;
 }
 
 export async function hydratePersistentServiceEvents(store) {
