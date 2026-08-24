@@ -213,3 +213,65 @@ test("sensitive writes are rate limited per authenticated actor", async () => {
     writeRateLimit: { max: 2, windowMs: 60_000 }
   });
 });
+
+test("quote feedback only accepts an issued quote and is idempotent", async () => {
+  await withSecurityServer(async ({ server, baseUrl }) => {
+    const registration = await postJson(
+      `${baseUrl}/services/register`,
+      manifest("quote_security_service"),
+      "ar_session=owner-session"
+    );
+    assert.equal(registration.status, 201);
+
+    const invented = await postJson(`${baseUrl}/agent-router/quote-feedback`, {
+      quote_id: "quote_not_issued",
+      service_id: "quote_security_service",
+      consumer_id: "spoofed-client-value",
+      decision: "not_invoked",
+      reason_code: "free_source_used",
+      reason: "attempted telemetry pollution"
+    });
+    assert.equal(invented.status, 404);
+    assert.equal(server.store.quoteFeedbackEvents.length, 0);
+
+    const quoteResponse = await postJson(`${baseUrl}/agent-router/quote`, {
+      capability: "fund_flow",
+      params: { chain: "base", days: 7 },
+      constraints: { max_price_usdc: "0.05" }
+    });
+    assert.equal(quoteResponse.status, 200);
+    const quote = await quoteResponse.json();
+    assert.match(quote.quote.quote_id, /^quote_[0-9a-f-]{36}$/);
+
+    const feedbackBody = {
+      quote_id: quote.quote.quote_id,
+      service_id: quote.selected_service.service_id,
+      consumer_id: "spoofed-client-value",
+      decision: "not_invoked",
+      reason_code: "free_source_used",
+      reason: "A public source was sufficient."
+    };
+    const first = await postJson(`${baseUrl}/agent-router/quote-feedback`, feedbackBody);
+    assert.equal(first.status, 200);
+    const firstPayload = await first.json();
+    assert.notEqual(firstPayload.event.consumer_id, "spoofed-client-value");
+
+    const replay = await postJson(`${baseUrl}/agent-router/quote-feedback`, feedbackBody);
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json()).status, "quote_feedback_already_recorded");
+    assert.equal(server.store.quoteFeedbackEvents.length, 1);
+  });
+});
+
+test("expensive anonymous write endpoints are rate limited", async () => {
+  await withSecurityServer(async ({ baseUrl }) => {
+    const first = await postJson(`${baseUrl}/agent-router/calls/complete`, {});
+    assert.equal(first.status, 422);
+
+    const blocked = await postJson(`${baseUrl}/agent-router/calls/complete`, {});
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
+  }, {
+    writeRateLimit: { max: 1, windowMs: 60_000 }
+  });
+});
