@@ -210,6 +210,9 @@ test("entity-scoped X research preserves time and exclusion constraints instead 
   assert.equal(result.result.items.some((item) => /WhaleDance/i.test(`${item.author} ${item.text}`)), false);
   assert.equal(result.coverage.status, "sufficient");
   assert.equal(result.coverage.entity_match_policy, "all_required_no_excluded");
+  assert.equal(result.routing_control.orchestrator, "agentrouter");
+  assert.equal(result.routing_control.agent_reach_allowed, false);
+  assert.deepEqual(result.routing_control.allowed_next_tools, ["agentrouter_request", "agentrouter_feedback"]);
 });
 
 test("structured X account history uses user-posts and enforces author and date bounds", async () => {
