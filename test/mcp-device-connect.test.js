@@ -30,6 +30,34 @@ test("the MCP bridge stores an origin-scoped credential in a private file", asyn
   assert.equal((await fs.stat(credentialPath)).mode & 0o777, 0o600);
 });
 
+test("the MCP bridge control plane initializes and lists tools without any remote network", async () => {
+  const primary = await unusedLocalOrigin();
+  const fallback = await unusedLocalOrigin();
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: primary,
+    AGENT_ROUTER_FALLBACK_URLS: fallback,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "1",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "250"
+  });
+  try {
+    const initialized = await client.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "offline-client", version: "1" }
+    });
+    assert.equal(initialized.serverInfo.name, "AgentRouter");
+
+    const listed = await client.request("tools/list", {});
+    const names = listed.tools.map((tool) => tool.name);
+    assert.ok(names.includes("agentrouter_fetch"));
+    assert.ok(names.includes("agentrouter_request"));
+    assert.ok(names.includes("agentrouter_connect"));
+    assert.deepEqual(await client.request("ping", {}), {});
+  } finally {
+    client.close();
+  }
+});
+
 test("agentrouter_connect completes browser approval and future MCP calls use the saved credential", async () => {
   let approved = false;
   let receivedAuthorization = "";
@@ -190,6 +218,54 @@ test("agentrouter_fetch turns an account-connection action into browser authoriz
   }
 });
 
+test("browser account authorization fails over when the canonical origin cannot resolve or connect", async () => {
+  const primary = await unusedLocalOrigin();
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/auth/device/start") {
+      response.writeHead(201);
+      response.end(JSON.stringify({
+        device_code: "ard_fallback",
+        user_code: "AR-FALLBACK",
+        verification_uri: "https://agentrouter.network/connect",
+        verification_uri_complete: "https://agentrouter.network/connect?user_code=AR-FALLBACK",
+        expires_in: 600,
+        interval: 1
+      }));
+      return;
+    }
+    if (request.url === "/auth/device/token") {
+      response.writeHead(400);
+      response.end(JSON.stringify({ error: "authorization_pending" }));
+      return;
+    }
+    response.writeHead(404);
+    response.end(JSON.stringify({ error: "not_found" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const fallback = `http://127.0.0.1:${server.address().port}`;
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: primary,
+    AGENT_ROUTER_FALLBACK_URLS: fallback,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "2",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "250"
+  });
+  try {
+    const result = await client.request("tools/call", {
+      name: "agentrouter_connect",
+      arguments: { client_name: "offline-client", wait_seconds: 0 }
+    });
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.status, "authorization_required");
+    assert.equal(payload.user_code, "AR-FALLBACK");
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("the MCP bridge retries an explicit transient upstream response", async () => {
   let attempts = 0;
   const server = http.createServer(async (request, response) => {
@@ -231,6 +307,70 @@ test("the MCP bridge retries an explicit transient upstream response", async () 
   } finally {
     client.close();
     if (server.listening) await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("the MCP bridge fails over, stays on the healthy origin, and probes the primary after cooldown", async () => {
+  let primaryHealthy = false;
+  let fallbackHealthy = true;
+  let primaryAttempts = 0;
+  let fallbackAttempts = 0;
+  const handler = (kind) => async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (kind === "primary") primaryAttempts += 1;
+    else fallbackAttempts += 1;
+    const healthy = kind === "primary" ? primaryHealthy : fallbackHealthy;
+    response.setHeader("content-type", "application/json");
+    if (!healthy) {
+      response.setHeader("x-agentrouter-retry-safe", "true");
+      response.writeHead(503);
+      response.end(JSON.stringify({ error: "temporarily_unavailable" }));
+      return;
+    }
+    response.end(JSON.stringify({
+      jsonrpc: "2.0",
+      id: body.id,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ ok: true, answer: `${kind}-result` }) }],
+        isError: false
+      }
+    }));
+  };
+  const primaryServer = http.createServer(handler("primary"));
+  const fallbackServer = http.createServer(handler("fallback"));
+  await new Promise((resolve) => primaryServer.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => fallbackServer.listen(0, "127.0.0.1", resolve));
+  const primary = `http://127.0.0.1:${primaryServer.address().port}`;
+  const fallback = `http://127.0.0.1:${fallbackServer.address().port}`;
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: primary,
+    AGENT_ROUTER_FALLBACK_URLS: fallback,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "2",
+    AGENT_ROUTER_REMOTE_RETRY_MS: "10",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "1000",
+    AGENT_ROUTER_REMOTE_COOLDOWN_MS: "100"
+  });
+  const request = { name: "agentrouter_fetch", arguments: { task: "research a product" } };
+  try {
+    const first = JSON.parse((await client.request("tools/call", request)).content[0].text);
+    const second = JSON.parse((await client.request("tools/call", request)).content[0].text);
+    assert.equal(first.answer, "fallback-result");
+    assert.equal(second.answer, "fallback-result");
+    assert.equal(primaryAttempts, 1, "the unhealthy primary stays out of the hot path during cooldown");
+    assert.equal(fallbackAttempts, 2);
+
+    primaryHealthy = true;
+    fallbackHealthy = false;
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    const recovered = JSON.parse((await client.request("tools/call", request)).content[0].text);
+    assert.equal(recovered.answer, "primary-result");
+    assert.equal(primaryAttempts, 2, "the primary is probed again after cooldown instead of remaining disabled forever");
+  } finally {
+    client.close();
+    await new Promise((resolve) => primaryServer.close(resolve));
+    await new Promise((resolve) => fallbackServer.close(resolve));
   }
 });
 
@@ -308,9 +448,11 @@ test("an exhausted remote outage returns a structured retry boundary instead of 
   await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
   const port = reservation.address().port;
   await new Promise((resolve) => reservation.close(resolve));
+  const fallback = await unusedLocalOrigin();
   const client = createMcpClient({
     AGENT_ROUTER_URL: `http://127.0.0.1:${port}`,
-    AGENT_ROUTER_REMOTE_ATTEMPTS: "1",
+    AGENT_ROUTER_FALLBACK_URLS: fallback,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "2",
     AGENT_ROUTER_REMOTE_TIMEOUT_MS: "250"
   });
   try {
@@ -323,11 +465,21 @@ test("an exhausted remote outage returns a structured retry boundary instead of 
     assert.equal(payload.error.code, "AGENTROUTER_REMOTE_UNAVAILABLE");
     assert.equal(payload.retry_original_request, true);
     assert.equal(payload.do_not_fallback_outside_agentrouter, true);
+    assert.equal(payload.error.failover_attempted, true);
+    assert.equal(payload.error.attempted_origins.length, 2);
     assert.equal(result.isError, false);
   } finally {
     client.close();
   }
 });
+
+async function unusedLocalOrigin() {
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.close(resolve));
+  return origin;
+}
 
 function createMcpClient(env) {
   const child = spawn(process.execPath, [path.join(process.cwd(), "packages/agentrouter-mcp/bin/agentrouter-mcp.js")], {
