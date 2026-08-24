@@ -78,6 +78,19 @@ const CAPABILITY_ALIASES = [
       properties: {
         question: { type: "string" },
         platforms: { type: "array", items: { type: "string", enum: ["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"] } },
+        platform: { type: "string", enum: ["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"] },
+        operation: { type: "string", enum: ["search", "read_user_posts"] },
+        handle: { type: "string", description: "Exact public account handle for read_user_posts; omit the leading @ when possible." },
+        from: { type: "string", description: "Inclusive YYYY-MM-DD lower time bound." },
+        to: { type: "string", description: "Inclusive YYYY-MM-DD upper time bound." },
+        entity: {
+          type: "object",
+          description: "Strict entity constraints used to prevent lookalike-name contamination.",
+          properties: {
+            required_terms: { type: "array", items: { type: "string" } },
+            excluded_terms: { type: "array", items: { type: "string" } }
+          }
+        },
         language: { type: "string", enum: ["zh", "en"] },
         location: { type: "string" },
         limit: { type: "number" }

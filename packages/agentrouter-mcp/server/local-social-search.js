@@ -47,12 +47,16 @@ export function localSocialSearchRequest(message) {
     if (isSocialProviderResearch(task) || EXPLICIT_SOCIAL_VENDOR.test(task)) return null;
     const platform = explicitPlatformInTask(task);
     if (!platform || !task) return null;
+    const naturalConstraints = platform === "x" ? naturalXConstraints(task) : {};
+    const cleanedQuery = socialQuery(task, platform);
     return {
       platform,
-      query: socialQuery(task, platform),
+      operation: "search",
+      query: platform === "x" ? buildXSearchQuery(cleanedQuery, naturalConstraints) : cleanedQuery,
       quality_context: task,
       limit: args.limit,
       capability: "social_search",
+      ...naturalConstraints,
       supplement_on_insufficient: true
     };
   }
@@ -63,9 +67,119 @@ export function localSocialSearchRequest(message) {
   const params = args.params || {};
   const platform = normalizeSearchPlatform(params.platform || params.source);
   if (!platform) return null;
-  const query = String(params.query || params.keyword || params.task || "").trim();
-  if (!query) return null;
-  return { platform, query, limit: params.limit, capability };
+  const operation = String(params.operation || "search").trim().toLowerCase();
+  if (!supportedOperation(platform, operation)) return null;
+  const handle = normalizeHandle(params.handle || params.username || params.account);
+  const entity = normalizeEntityConstraint(params.entity || {
+    required_terms: params.required_terms || (params.domain ? [params.domain] : []),
+    excluded_terms: params.excluded_terms
+  });
+  const timeRange = normalizeTimeRange({ from: params.from || params.since, to: params.to || params.until });
+  const rawQuery = String(params.query || params.keyword || params.question || params.task || "").trim();
+  if (operation === "read_user_posts" && !handle) return null;
+  if (operation === "search" && !rawQuery && !entity.required_terms.length) return null;
+  return {
+    platform,
+    operation,
+    handle,
+    query: platform === "x" && operation === "search"
+      ? buildXSearchQuery(rawQuery, { entity, ...timeRange })
+      : rawQuery || handle,
+    quality_context: rawQuery || handle,
+    entity,
+    ...timeRange,
+    limit: params.limit,
+    capability
+  };
+}
+
+function supportedOperation(platform, operation) {
+  return operation === "search" || (platform === "x" && operation === "read_user_posts");
+}
+
+function naturalXConstraints(task) {
+  const domains = [...String(task || "").matchAll(/(?:https?:\/\/)?\b([a-z0-9-]+(?:\.[a-z0-9-]+)+)\b/ig)]
+    .map((match) => match[1].toLowerCase().replace(/^www\./, ""))
+    .filter((domain) => !["x.com", "twitter.com"].includes(domain));
+  const excluded = [...String(task || "").matchAll(/(?:排除|不要|excluding?|not)\s*["“”']?([a-z0-9._-]{3,})["“”']?/ig)]
+    .map((match) => match[1].toLowerCase());
+  return {
+    entity: normalizeEntityConstraint({ required_terms: domains, excluded_terms: excluded }),
+    ...relativeTimeRange(task)
+  };
+}
+
+function relativeTimeRange(task, now = new Date()) {
+  const text = String(task || "");
+  const match = text.match(/(?:最近|过去|過去|近|last|past)\s*(一|1|\d+)\s*(年|个月|個月|月|周|週|天|years?|months?|weeks?|days?)/i);
+  if (!match) return {};
+  const amount = match[1] === "一" ? 1 : Math.max(1, Number(match[1]) || 1);
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const unit = match[2].toLowerCase();
+  if (/年|year/.test(unit)) from.setUTCFullYear(from.getUTCFullYear() - amount);
+  else if (/月|month/.test(unit)) from.setUTCMonth(from.getUTCMonth() - amount);
+  else if (/周|週|week/.test(unit)) from.setUTCDate(from.getUTCDate() - (amount * 7));
+  else from.setUTCDate(from.getUTCDate() - amount);
+  return { from: isoDay(from), to: isoDay(now) };
+}
+
+function normalizeTimeRange({ from, to } = {}) {
+  const normalizedFrom = validIsoDay(from);
+  const normalizedTo = validIsoDay(to);
+  return {
+    ...(normalizedFrom ? { from: normalizedFrom } : {}),
+    ...(normalizedTo ? { to: normalizedTo } : {})
+  };
+}
+
+function validIsoDay(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  return Number.isFinite(Date.parse(`${text}T00:00:00Z`)) ? text : null;
+}
+
+function isoDay(value) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function normalizeHandle(value) {
+  const handle = String(value || "").trim().replace(/^@/, "");
+  return /^[A-Za-z0-9_]{1,30}$/.test(handle) ? handle : "";
+}
+
+function normalizeEntityConstraint(value = {}) {
+  const terms = (items) => [...new Set((Array.isArray(items) ? items : [])
+    .map((item) => clean(item, 120).toLowerCase())
+    .filter(Boolean))];
+  return {
+    required_terms: terms(value.required_terms),
+    excluded_terms: terms(value.excluded_terms)
+  };
+}
+
+function buildXSearchQuery(query, { entity = {}, from, to } = {}) {
+  const requiredTerms = entity.required_terms || [];
+  const excludedTerms = entity.excluded_terms || [];
+  let base = clean(query, 1000);
+  for (const term of [...requiredTerms, ...excludedTerms]) {
+    base = base.replace(new RegExp(`\\b${escapeRegExp(term)}\\b`, "ig"), " ");
+  }
+  base = base
+    .replace(/(?:排除|不要|excluding?|not)\s*["“”']?[a-z0-9._-]{3,}["“”']?/ig, " ")
+    .replace(/(?:最近|过去|過去|近|last|past)\s*(?:一|1|\d+)\s*(?:年|个月|個月|月|周|週|天|years?|months?|weeks?|days?)/ig, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return [
+    ...requiredTerms.map((term) => `"${term}"`),
+    base,
+    ...excludedTerms.map((term) => `-${term}`),
+    from ? `since:${from}` : "",
+    to ? `until:${to}` : ""
+  ].filter(Boolean).join(" ");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isSocialProviderResearch(task) {
@@ -111,7 +225,19 @@ function socialQuery(task, platform) {
   return cleaned || task;
 }
 
-export async function runLocalSocialSearch({ platform, query, quality_context: qualityContext = query, limit, supplement_on_insufficient: supplementOnInsufficient = false }, options = {}) {
+export async function runLocalSocialSearch({
+  platform,
+  operation = "search",
+  handle = "",
+  query,
+  quality_context: qualityContext = query,
+  entity = {},
+  from,
+  to,
+  capability = "social_search",
+  limit,
+  supplement_on_insufficient: supplementOnInsufficient = false
+}, options = {}) {
   const definition = PLATFORMS[platform];
   if (!definition) {
     return {
@@ -125,22 +251,26 @@ export async function runLocalSocialSearch({ platform, query, quality_context: q
   }
   const runCommand = options.runCommand || spawnCommand;
   const bounded = Math.min(Math.max(Math.trunc(Number(limit) || 10), 1), 50);
-  const result = await runCommand("opencli", definition.args(query, bounded), { timeout: definition.timeout });
+  const context = { bounded, supplementOnInsufficient, qualityContext, entity, handle, from, to, operation, capability };
+  const commandArgs = platform === "x" && operation === "read_user_posts"
+    ? ["twitter", "user-posts", handle, "--limit", String(bounded), "-f", "json"]
+    : definition.args(query, bounded);
+  const result = await runCommand("opencli", commandArgs, { timeout: definition.timeout });
   const attempts = [{ backend_id: `opencli-${platform}`, status: result.status, error: result.error || null }];
 
   if (result.status === "completed") {
-    const rows = normalizeRows(result.data).slice(0, bounded);
-    if (rows.length) return completed(platform, query, rows, attempts, { bounded, supplementOnInsufficient, qualityContext });
+    const rows = filterRows(normalizeRows(result.data), { entity, handle, from, to, operation }).slice(0, bounded);
+    if (rows.length) return completed(platform, query, rows, attempts, context);
     // An empty result set is a real answer, not a connector failure, but only
     // when the session is actually usable — otherwise report the auth problem.
     const who = await runCommand("opencli", [platform === "x" ? "twitter" : platform, "whoami", "-f", "json"], { timeout: 30000 });
     attempts.push({ backend_id: `opencli-${platform}-whoami`, status: who.status, error: who.error || null });
-    if (who.status === "completed") return completed(platform, query, [], attempts, { bounded, supplementOnInsufficient, qualityContext });
-    return authRequired(platform, query, attempts);
+    if (who.status === "completed") return completed(platform, query, [], attempts, context);
+    return authRequired(platform, query, attempts, context);
   }
-  if (result.status === "auth_required") return authRequired(platform, query, attempts);
-  if (result.status === "missing") return connectorOffline(platform, query, attempts);
-  return connectorRuntimeUnavailable(platform, query, attempts);
+  if (result.status === "auth_required") return authRequired(platform, query, attempts, context);
+  if (result.status === "missing") return connectorOffline(platform, query, attempts, context);
+  return connectorRuntimeUnavailable(platform, query, attempts, context);
 }
 
 function normalizeRows(payload) {
@@ -154,11 +284,50 @@ function normalizeRows(payload) {
     id: row?.id ?? row?.note_id ?? row?.bvid ?? row?.aweme_id ?? null,
     title: clean(row?.title ?? row?.text ?? row?.desc ?? row?.content, 400),
     text: clean(row?.text ?? row?.desc ?? row?.content ?? row?.description, 4000),
-    author: clean(typeof row?.author === "string" ? row.author : row?.author?.name ?? row?.author?.uniqueId ?? row?.username ?? row?.nickname, 120),
+    author: clean(typeof row?.author === "string" ? row.author : row?.author?.screen_name ?? row?.author?.username ?? row?.author?.uniqueId ?? row?.author?.name ?? row?.username ?? row?.nickname, 120),
     url: clean(row?.url ?? row?.link ?? row?.short_link, 800),
     published_at: row?.created_at ?? row?.publish_time ?? row?.published_at ?? null,
     engagement: pickEngagement(row)
   })).filter((row) => row.title || row.text || row.url);
+}
+
+function filterRows(rows, { entity = {}, handle = "", from, to, operation = "search" } = {}) {
+  const requiredTerms = entity.required_terms || [];
+  const excludedTerms = entity.excluded_terms || [];
+  const expectedHandle = normalizeHandle(handle).toLowerCase();
+  return rows.filter((row) => {
+    const text = evidenceText(row);
+    if (requiredTerms.length && !requiredTerms.every((term) => text.includes(term.toLowerCase()))) return false;
+    if (excludedTerms.some((term) => text.includes(term.toLowerCase()))) return false;
+    if (operation === "read_user_posts" && expectedHandle && rowHandle(row) !== expectedHandle) return false;
+    if (from || to) {
+      const timestamp = rowTimestamp(row.published_at);
+      if (!timestamp) return false;
+      if (from && timestamp < Date.parse(`${from}T00:00:00Z`)) return false;
+      if (to && timestamp >= Date.parse(`${to}T23:59:59.999Z`) + 1) return false;
+    }
+    return true;
+  });
+}
+
+function rowHandle(row) {
+  const explicit = normalizeHandle(row.author).toLowerCase();
+  if (explicit) return explicit;
+  try {
+    return normalizeHandle(new URL(row.url).pathname.split("/").filter(Boolean)[0]).toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function rowTimestamp(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && String(value).trim() !== "") {
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function pickEngagement(row = {}) {
@@ -211,11 +380,30 @@ export function localFeedbackRequest(requestId, serviceId, context) {
   };
 }
 
-function completed(platform, query, rows, attempts, { bounded = 10, supplementOnInsufficient = false, qualityContext = query } = {}) {
-  const requestId = localRequestId(`search_${platform}`);
+function completed(platform, query, rows, attempts, {
+  bounded = 10,
+  supplementOnInsufficient = false,
+  qualityContext = query,
+  entity = {},
+  handle = "",
+  from,
+  to,
+  operation = "search",
+  capability = "social_search"
+} = {}) {
+  const requestId = localRequestId(`${operation}_${platform}`);
   const minimumItems = Math.min(3, bounded);
-  const quality = assessEvidenceQuality(query, qualityContext, rows, minimumItems);
+  const quality = assessEvidenceQuality(query, qualityContext, rows, minimumItems, entity);
   const insufficient = quality.reasons.length > 0;
+  const requestParams = {
+    platform,
+    operation,
+    ...(query ? { query } : {}),
+    ...(handle ? { handle } : {}),
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...((entity.required_terms?.length || entity.excluded_terms?.length) ? { entity } : {})
+  };
   return {
     ok: true,
     status: rows.length ? "completed" : "no_results",
@@ -228,7 +416,16 @@ function completed(platform, query, rows, attempts, { bounded = 10, supplementOn
       credential_policy: "never_upload",
       raw_result_policy: "local_only"
     },
-    request: { capability: "social_search", params: { platform, query } },
+    routing_control: {
+      protocol_version: "agentrouter_route_control_v1",
+      orchestrator: "agentrouter",
+      selected_backend: `opencli-${platform}`,
+      agent_reach_allowed: false,
+      external_handoff: null,
+      preserve_route_context: true,
+      allowed_next_tools: ["agentrouter_request", "agentrouter_feedback"]
+    },
+    request: { capability, params: requestParams },
     result: { items: rows, item_count: rows.length },
     coverage: {
       status: insufficient ? "insufficient" : "sufficient",
@@ -237,10 +434,12 @@ function completed(platform, query, rows, attempts, { bounded = 10, supplementOn
       relevant_item_count: quality.relevantItemCount,
       timestamped_item_count: quality.timestampedItemCount,
       substantive_item_count: quality.substantiveItemCount,
+      entity_match_policy: quality.entityMatchPolicy,
       reasons: quality.reasons
     },
     ...(insufficient && supplementOnInsufficient ? {
       supplemental_request: {
+        preferred_tool: "agentrouter_request",
         capability: "external_api_query",
         params: {
           source: "exa",
@@ -249,11 +448,13 @@ function completed(platform, query, rows, attempts, { bounded = 10, supplementOn
           limit: Math.max(5, bounded - rows.length)
         },
         trigger: "insufficient_local_social_evidence",
+        preserve_route_context: true,
+        do_not_fallback_outside_agentrouter: true,
         merge_policy: "Use web results only as supplemental context; keep platform-native evidence separately attributed."
       }
     } : {}),
     source: { backend_id: `opencli-${platform}`, attempts },
-    consumer_feedback_request: localFeedbackRequest(requestId, `local_social_${platform}`, { platform, query, capability: "social_search" })
+    consumer_feedback_request: localFeedbackRequest(requestId, `local_social_${platform}`, { ...requestParams, capability })
   };
 }
 
@@ -262,9 +463,12 @@ const SEARCH_STOP_WORDS = new Set([
   "recent", "reddit", "search", "think", "users", "views", "what", "with", "x", "youtube"
 ]);
 
-function assessEvidenceQuality(query, qualityContext, rows, minimumItems) {
+function assessEvidenceQuality(query, qualityContext, rows, minimumItems, entity = {}) {
   const tokens = evidenceTokens(query);
-  const relevant = tokens.length
+  const entityScoped = entity.required_terms?.length || entity.excluded_terms?.length;
+  const relevant = entityScoped
+    ? rows
+    : tokens.length
     ? rows.filter((row) => tokens.some((token) => evidenceText(row).includes(token)))
     : rows;
   const timestampedItemCount = relevant.filter((row) => Boolean(row.published_at)).length;
@@ -278,7 +482,13 @@ function assessEvidenceQuality(query, qualityContext, rows, minimumItems) {
   if (requestsUserOpinion(qualityContext) && relevant.length >= minimumItems && substantiveItemCount === 0) {
     reasons.push("substantive_user_voice_missing");
   }
-  return { relevantItemCount: relevant.length, timestampedItemCount, substantiveItemCount, reasons };
+  return {
+    relevantItemCount: relevant.length,
+    timestampedItemCount,
+    substantiveItemCount,
+    entityMatchPolicy: entityScoped ? "all_required_no_excluded" : "query_token_overlap",
+    reasons
+  };
 }
 
 function evidenceTokens(query) {
@@ -288,7 +498,7 @@ function evidenceTokens(query) {
 }
 
 function evidenceText(row) {
-  return `${row.title || ""} ${row.text || ""}`.toLowerCase();
+  return `${row.author || ""} ${row.url || ""} ${row.title || ""} ${row.text || ""}`.toLowerCase();
 }
 
 function requestsFreshEvidence(query) {
@@ -299,11 +509,32 @@ function requestsUserOpinion(query) {
   return /\b(?:opinions?|views?|what\s+(?:people|users)\s+(?:think|say))\b|看法|观点|觀點|评价|評價|意见|意見|用户原声|用戶原聲/i.test(query);
 }
 
-function authRequired(platform, query, attempts) {
+function socialRequest(platform, query, {
+  capability = "social_search",
+  operation = "search",
+  handle = "",
+  from,
+  to,
+  entity = {}
+} = {}) {
+  const params = {
+    platform,
+    operation,
+    ...(query ? { query } : {}),
+    ...(handle ? { handle } : {}),
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...((entity.required_terms?.length || entity.excluded_terms?.length) ? { entity } : {})
+  };
+  if (operation === "search") delete params.operation;
+  return { capability, params };
+}
+
+function authRequired(platform, query, attempts, context) {
   return {
     ok: false,
     status: "auth_required",
-    request: { capability: "social_search", params: { platform, query } },
+    request: socialRequest(platform, query, context),
     action_required: {
       code: "AUTH_REQUIRED",
       connector_id: `opencli-${platform}`,
@@ -317,11 +548,11 @@ function authRequired(platform, query, attempts) {
   };
 }
 
-function connectorOffline(platform, query, attempts) {
+function connectorOffline(platform, query, attempts, context) {
   return {
     ok: false,
     status: "browser_connector_offline",
-    request: { capability: "social_search", params: { platform, query } },
+    request: socialRequest(platform, query, context),
     action_required: {
       code: "BROWSER_CONNECTOR_OFFLINE",
       connector_id: `opencli-${platform}`,
@@ -335,17 +566,18 @@ function connectorOffline(platform, query, attempts) {
   };
 }
 
-function connectorRuntimeUnavailable(platform, query, attempts) {
+function connectorRuntimeUnavailable(platform, query, attempts, context) {
+  const request = socialRequest(platform, query, context);
   return {
     ok: false,
     status: "local_connector_runtime_unavailable",
-    request: { capability: "social_search", params: { platform, query } },
+    request,
     action_required: {
       code: "LOCAL_CONNECTOR_RUNTIME_UNAVAILABLE",
       connector_id: `opencli-${platform}`,
       message: "The current runtime could not reach the local OpenCLI daemon. Retry this request through the AgentRouter MCP bridge; a sandboxed shell may be isolated from the healthy browser connector.",
       preferred_tool: "agentrouter_request",
-      tool_arguments: { capability: "social_search", params: { platform, query } },
+      tool_arguments: request,
       do_not_fallback_outside_agentrouter: true,
       requires_system_password: false,
       security_note: BROWSER_CONNECTOR_SECURITY_NOTE,

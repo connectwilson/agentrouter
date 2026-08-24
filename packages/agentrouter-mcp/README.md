@@ -15,6 +15,13 @@ the public post inside the already signed-in browser without exporting or
 decrypting cookies. Browser login state remains local; credentials, cookies, and
 raw connector output are not uploaded to AgentRouter.
 
+Entity-scoped X research supports typed `search` and `read_user_posts`
+operations. Use an exact `handle` plus `from`/`to` for account history, or
+`entity.required_terms` and `entity.excluded_terms` for discovery. The bridge
+filters lookalike entities locally and returns machine-readable route ownership,
+so another acquisition skill cannot silently replace AgentRouter without an
+explicit handoff.
+
 If the browser bridge is offline, AgentRouter returns
 `browser_connector_offline` with a reconnect action. It does not ask for a
 system password, Keychain access, or cookie values. The legacy `twitter` CLI is

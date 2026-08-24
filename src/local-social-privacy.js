@@ -53,6 +53,10 @@ export function buildLocalSocialExecutionPlan(input = {}) {
     params: {
       query: clean(input.query, 1000) || null,
       target: clean(input.target, 2000) || null,
+      handle: normalizeHandle(input.handle),
+      from: isoDay(input.from),
+      to: isoDay(input.to),
+      entity: normalizeEntity(input.entity),
       limit: Math.max(1, Math.min(50, Number(input.limit) || 10))
     },
     execution_location: "user_device",
@@ -139,6 +143,29 @@ function policy(researchSuitability, operations, allowedDomains, adapterCandidat
 
 function clean(value, max) {
   return String(value || "").trim().slice(0, max);
+}
+
+function normalizeHandle(value) {
+  const handle = clean(value, 40).replace(/^@/, "");
+  return /^[A-Za-z0-9_]{1,30}$/.test(handle) ? handle : null;
+}
+
+function isoDay(value) {
+  const text = clean(value, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  return Number.isFinite(Date.parse(`${text}T00:00:00Z`)) ? text : null;
+}
+
+function normalizeEntity(value) {
+  if (!value || typeof value !== "object") return null;
+  const terms = (items) => [...new Set((Array.isArray(items) ? items : [])
+    .map((item) => clean(item, 120).toLowerCase())
+    .filter(Boolean))];
+  const entity = {
+    required_terms: terms(value.required_terms),
+    excluded_terms: terms(value.excluded_terms)
+  };
+  return entity.required_terms.length || entity.excluded_terms.length ? entity : null;
 }
 
 function localError(code, message) {
