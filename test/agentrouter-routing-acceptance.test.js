@@ -175,6 +175,82 @@ test("local social search strips instruction chatter and rejects unrelated or un
   assert.match(undated.coverage.reasons.join(" "), /timestamp/i);
 });
 
+test("entity-scoped X research preserves time and exclusion constraints instead of mixing lookalike products", async () => {
+  const request = localSocialSearchRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: { task: "在 X 上研究 whale.ag 过去一年的产品历史，排除 WhaleDance。" }
+    }
+  });
+
+  assert.equal(request.platform, "x");
+  assert.equal(request.operation, "search");
+  assert.deepEqual(request.entity.required_terms, ["whale.ag"]);
+  assert.deepEqual(request.entity.excluded_terms, ["whaledance"]);
+  assert.match(request.query, /"whale\.ag"/);
+  assert.match(request.query, /-WhaleDance/i);
+  assert.match(request.query, /since:\d{4}-\d{2}-\d{2}/);
+  assert.match(request.query, /until:\d{4}-\d{2}-\d{2}/);
+
+  const calls = [];
+  const result = await runLocalSocialSearch(request, {
+    runCommand: async (command, args) => {
+      calls.push([command, ...args]);
+      return { status: "completed", data: [
+        { id: "wrong", username: "WhaleDance", text: "WhaleDance trading launch", created_at: new Date().toISOString(), url: "https://x.com/WhaleDance/status/1" },
+        { id: "right-1", username: "whale_ag", text: "whale.ag launched its first public product", created_at: new Date().toISOString(), url: "https://x.com/whale_ag/status/2" },
+        { id: "right-2", username: "builder", text: "Using whale.ag for onchain trader research", created_at: new Date().toISOString(), url: "https://x.com/builder/status/3" },
+        { id: "right-3", username: "founder", text: "The whale.ag product timeline", created_at: new Date().toISOString(), url: "https://x.com/founder/status/4" }
+      ] };
+    }
+  });
+
+  assert.match(calls[0].join(" "), /"whale\.ag"/);
+  assert.equal(result.result.items.some((item) => /WhaleDance/i.test(`${item.author} ${item.text}`)), false);
+  assert.equal(result.coverage.status, "sufficient");
+  assert.equal(result.coverage.entity_match_policy, "all_required_no_excluded");
+});
+
+test("structured X account history uses user-posts and enforces author and date bounds", async () => {
+  const request = localSocialSearchRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_request",
+      arguments: {
+        capability: "social_user_voice_research",
+        params: {
+          platform: "x",
+          operation: "read_user_posts",
+          handle: "@whale_ag",
+          from: "2025-08-24",
+          to: "2026-08-24",
+          limit: 20
+        }
+      }
+    }
+  });
+
+  assert.equal(request.operation, "read_user_posts");
+  assert.equal(request.handle, "whale_ag");
+  const calls = [];
+  const result = await runLocalSocialSearch(request, {
+    runCommand: async (command, args) => {
+      calls.push([command, ...args]);
+      return { status: "completed", data: [
+        { id: "current", username: "whale_ag", text: "current milestone", created_at: "2026-01-10T00:00:00Z", url: "https://x.com/whale_ag/status/10" },
+        { id: "old", username: "whale_ag", text: "old milestone", created_at: "2024-01-10T00:00:00Z", url: "https://x.com/whale_ag/status/11" },
+        { id: "impostor", username: "whaledance", text: "not the same product", created_at: "2026-01-10T00:00:00Z", url: "https://x.com/whaledance/status/12" }
+      ] };
+    }
+  });
+
+  assert.deepEqual(calls[0].slice(0, 4), ["opencli", "twitter", "user-posts", "whale_ag"]);
+  assert.deepEqual(result.result.items.map((item) => item.id), ["current"]);
+  assert.equal(result.request.params.operation, "read_user_posts");
+  assert.equal(result.request.params.handle, "whale_ag");
+});
+
 test("flight language is normalized before Amadeus authorization", async () => {
   const routed = sourceFor(PROMPTS[21]);
   assert.equal(routed.params.source, "amadeus");

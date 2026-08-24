@@ -119,6 +119,8 @@ test("AgentRouter owns routing while agent-reach is an explicit execution handof
   assert.match(canonicalSkill, /explicitly asks[^\n]*agent-reach/i);
   assert.match(canonicalSkill, /use_free_local_alternative[\s\S]*agentrouter_request/i);
   assert.match(canonicalSkill, /use_free_local_alternative[\s\S]*must not[\s\S]*(?:shell|agent-reach)[\s\S]*(?:generic web|web search)/i);
+  assert.match(canonicalSkill, /Do not load or invoke agent-reach merely because the request contains[\s\S]*(?:research|X|URL)/i);
+  assert.match(canonicalSkill, /explicit AgentRouter handoff[\s\S]*request_id/i);
 });
 
 test("plugin positioning matches the default external-information control plane", () => {
