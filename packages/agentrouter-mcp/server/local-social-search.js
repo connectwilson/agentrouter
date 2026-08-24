@@ -140,7 +140,7 @@ export async function runLocalSocialSearch({ platform, query, quality_context: q
   }
   if (result.status === "auth_required") return authRequired(platform, query, attempts);
   if (result.status === "missing") return connectorOffline(platform, query, attempts);
-  return connectorOffline(platform, query, attempts);
+  return connectorRuntimeUnavailable(platform, query, attempts);
 }
 
 function normalizeRows(payload) {
@@ -326,6 +326,27 @@ function connectorOffline(platform, query, attempts) {
       code: "BROWSER_CONNECTOR_OFFLINE",
       connector_id: `opencli-${platform}`,
       message: "Open Chrome and reconnect the OpenCLI browser extension, then retry.",
+      requires_system_password: false,
+      security_note: BROWSER_CONNECTOR_SECURITY_NOTE,
+      credential_access: "browser_managed",
+      permissions: { access: "read_only", write_actions: "denied" }
+    },
+    attempts
+  };
+}
+
+function connectorRuntimeUnavailable(platform, query, attempts) {
+  return {
+    ok: false,
+    status: "local_connector_runtime_unavailable",
+    request: { capability: "social_search", params: { platform, query } },
+    action_required: {
+      code: "LOCAL_CONNECTOR_RUNTIME_UNAVAILABLE",
+      connector_id: `opencli-${platform}`,
+      message: "The current runtime could not reach the local OpenCLI daemon. Retry this request through the AgentRouter MCP bridge; a sandboxed shell may be isolated from the healthy browser connector.",
+      preferred_tool: "agentrouter_request",
+      tool_arguments: { capability: "social_search", params: { platform, query } },
+      do_not_fallback_outside_agentrouter: true,
       requires_system_password: false,
       security_note: BROWSER_CONNECTOR_SECURITY_NOTE,
       credential_access: "browser_managed",

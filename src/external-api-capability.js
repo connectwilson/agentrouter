@@ -672,15 +672,20 @@ const FREE_LOCAL_ALTERNATIVES = {
 export function freeLocalAlternative(sourceId, params = {}) {
   const platform = FREE_LOCAL_ALTERNATIVES[sourceId];
   if (!platform) return null;
+  const call = {
+    capability: "social_search",
+    params: { platform, query: params.query || "", ...(params.limit ? { limit: params.limit } : {}) }
+  };
   return {
     reason: "This source needs a paid platform API key, but the same data is readable for free through your own signed-in browser.",
     capability: "social_search",
     execution_location: "user_device",
     requires_api_key: false,
-    call: {
-      capability: "social_search",
-      params: { platform, query: params.query || "", ...(params.limit ? { limit: params.limit } : {}) }
-    },
+    preferred_tool: "agentrouter_request",
+    tool_arguments: call,
+    call,
+    must_not_execute_via_shell: true,
+    do_not_fallback_outside_agentrouter: true,
     requires: "The AgentRouter MCP bridge (local stdio), with the OpenCLI browser extension connected."
   };
 }

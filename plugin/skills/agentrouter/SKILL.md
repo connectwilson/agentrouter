@@ -22,6 +22,7 @@ Do not require the user to mention AgentRouter. Send the original request to `ag
 AgentRouter owns provider selection. AgentRouter is the first-hop orchestrator; agent-reach is an execution backend, not a competing first-hop router.
 
 - If AgentRouter returns `local_connector_required`, use only the named `handoff` execution backend and preserve the AgentRouter request/route context.
+- If AgentRouter returns `use_free_local_alternative`, immediately call the returned `preferred_tool` (normally `agentrouter_request`) with `tool_arguments` in the same AgentRouter MCP session. You must not run OpenCLI in a shell, invoke agent-reach, delegate this handoff to an agent without the route context, or use generic web search.
 - If AgentRouter returns `no_service_found`, use another acquisition skill only when the response includes an explicit `handoff` or permits fallback; otherwise report the coverage gap and stop.
 - If the user explicitly asks to use agent-reach directly, direct mode is allowed and AgentRouter need not run first.
 - If AgentRouter returns a payment, budget, authorization, or connection boundary, do not treat that as permission to bypass it with agent-reach, generic web search, or a provider-direct tool.
