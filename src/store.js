@@ -10,6 +10,7 @@ export function createMemoryStore() {
     qualityEvents: [],
     evidenceEvents: [],
     routeObservations: [],
+    issuedQuotes: new Map(),
     quoteFeedbackEvents: [],
     creditAccounts: new Map(),
     creditApiKeys: new Map(),

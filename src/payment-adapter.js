@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { settlementChain } from "./chains.js";
 
 export const PAYMENT_BACKENDS = ["credits", "x402", "omniagentpay", "circle_arc"];
@@ -51,7 +52,7 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
   };
   return {
     quote_version: "agent_router_payment_quote_v1",
-    quote_id: `quote_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+    quote_id: `quote_${randomUUID()}`,
     payment_backend: paymentBackend,
     settlement,
     service_id: manifest.service_id,

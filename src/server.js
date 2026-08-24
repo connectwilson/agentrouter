@@ -1090,6 +1090,7 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/feedback/erc8004") {
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user) || paymentContext.ownerKey)) return;
     const body = await readJson(req);
     const result = await recordClientSubmittedErc8004Feedback(store, body);
     sendJson(res, result.ok ? 200 : 422, result);
@@ -1101,6 +1102,7 @@ async function routeRequest(req, res, store, baseUrl, {
       sendJson(res, 401, { ok: false, status: "authentication_required", error: "An authenticated AgentRouter connection is required." });
       return;
     }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, paymentContext.ownerKey)) return;
     const body = await readJson(req);
     const result = await relayBscPaymasterRequest(body, store);
     sendJson(res, result.ok ? 200 : result.statusCode, result);
@@ -1121,6 +1123,7 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/calls/complete") {
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user) || paymentContext.ownerKey)) return;
     const body = await readJson(req);
     const result = await recordCompletedAgentCall(store, body);
     sendJson(res, result.ok ? 201 : 422, result);
@@ -1232,7 +1235,9 @@ async function routeRequest(req, res, store, baseUrl, {
       return;
     }
     if (!paymentContext.invoke) {
-      const result = quoteCapabilityRequest(store, body);
+      const result = quoteCapabilityRequest(store, body, {
+        actorKey: sensitiveWriteActorKey(req, authUserKey(auth.user) || paymentContext.ownerKey)
+      });
       const payload = requestPaymentRequired(result);
       sendJson(res, paymentBoundaryStatusCode(payload), payload);
       return;
@@ -1255,15 +1260,21 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname === "/agent-router/quote") {
     const body = await readJson(req);
-    const result = quoteCapabilityRequest(store, body);
+    const quoteActorKey = sensitiveWriteActorKey(req, authUserKey(auth.user) || paymentContext.ownerKey);
+    const result = quoteCapabilityRequest(store, body, { actorKey: quoteActorKey });
     sendJson(res, result.ok === false && result.status === "invalid_request" ? 422 : 200, result);
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/quote-feedback") {
+    const quoteActorKey = sensitiveWriteActorKey(req, authUserKey(auth.user) || paymentContext.ownerKey);
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, quoteActorKey)) return;
     const body = await readJson(req);
-    const result = await recordQuoteFeedback(store, body);
-    sendJson(res, result.ok ? 200 : 422, result);
+    const result = await recordQuoteFeedback(store, body, {
+      actorKey: quoteActorKey,
+      requireIssuedQuote: true
+    });
+    sendJson(res, result.ok ? 200 : result.statusCode || 422, result);
     return;
   }
 
@@ -1552,8 +1563,7 @@ function createWriteRateLimiter({ max = 60, windowMs = 60_000 } = {}) {
 }
 
 function allowSensitiveWrite(req, res, limiter, actorKey = "") {
-  const socketAddress = req.socket?.remoteAddress || "unknown";
-  const key = actorKey ? `actor:${actorKey}` : `ip:${socketAddress}`;
+  const key = sensitiveWriteActorKey(req, actorKey);
   const result = limiter.consume(key);
   if (result.allowed) return true;
   res.setHeader("retry-after", String(result.retryAfterSeconds));
@@ -1564,6 +1574,12 @@ function allowSensitiveWrite(req, res, limiter, actorKey = "") {
     }
   });
   return false;
+}
+
+function sensitiveWriteActorKey(req, actorKey = "") {
+  if (actorKey) return `actor:${actorKey}`;
+  const socketAddress = req.socket?.remoteAddress || "unknown";
+  return `anonymous:${crypto.createHash("sha256").update(socketAddress).digest("hex").slice(0, 24)}`;
 }
 
 async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
@@ -1746,10 +1762,14 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
       params: args.params || {},
       constraints: args.constraints || {},
       budget: args.budget || {}
-    });
+    }, { actorKey: paymentContext.ownerKey ? `actor:${paymentContext.ownerKey}` : "" });
   }
   if (name === "agentrouter_quote_feedback") {
-    return recordQuoteFeedback(store, args);
+    if (!paymentContext.ownerKey) return agentRouterConnectionRequired();
+    return recordQuoteFeedback(store, args, {
+      actorKey: `actor:${paymentContext.ownerKey}`,
+      requireIssuedQuote: true
+    });
   }
   if (name === "agentrouter_capabilities") {
     return {
@@ -3681,7 +3701,10 @@ function validateBscPaymasterParams(method, params, pending) {
   return null;
 }
 
-async function recordQuoteFeedback(store, body = {}) {
+async function recordQuoteFeedback(store, body = {}, {
+  actorKey = "",
+  requireIssuedQuote = false
+} = {}) {
   const quoteId = String(body.quote_id || "").trim();
   const decision = String(body.decision || "").trim();
   const reasonCode = String(body.reason_code || "").trim();
@@ -3702,11 +3725,62 @@ async function recordQuoteFeedback(store, body = {}) {
       error: "decision or reason_code is not supported."
     };
   }
+  const issuedQuote = store.issuedQuotes?.get(quoteId);
+  if (requireIssuedQuote && !issuedQuote) {
+    return {
+      ok: false,
+      statusCode: 404,
+      status: "quote_not_found",
+      error: "No unexpired AgentRouter quote exists for this quote_id."
+    };
+  }
+  if (issuedQuote && Number(issuedQuote.expires_at || 0) <= Date.now()) {
+    store.issuedQuotes.delete(quoteId);
+    return {
+      ok: false,
+      statusCode: 410,
+      status: "quote_expired",
+      error: "This AgentRouter quote has expired."
+    };
+  }
+  if (issuedQuote?.service_id && body.service_id && issuedQuote.service_id !== body.service_id) {
+    return {
+      ok: false,
+      statusCode: 422,
+      status: "quote_service_mismatch",
+      error: "service_id does not match the issued quote."
+    };
+  }
+  if (issuedQuote?.actor_key && actorKey && issuedQuote.actor_key !== actorKey) {
+    return {
+      ok: false,
+      statusCode: 403,
+      status: "quote_actor_mismatch",
+      error: "Only the caller that requested this quote may submit its feedback."
+    };
+  }
+  const existing = (store.quoteFeedbackEvents || []).find((item) =>
+    item.quote_id === quoteId && (!actorKey || item.actor_key === actorKey)
+  );
+  if (existing) {
+    const sameFeedback = existing.decision === decision
+      && existing.reason_code === reasonCode
+      && existing.reason === reason;
+    return sameFeedback
+      ? { ok: true, status: "quote_feedback_already_recorded", event: existing }
+      : {
+          ok: false,
+          statusCode: 409,
+          status: "quote_feedback_conflict",
+          error: "Different feedback has already been recorded for this quote."
+        };
+  }
   const event = {
     event_version: "agentrouter_quote_feedback_v1",
     quote_id: quoteId,
-    service_id: body.service_id || null,
-    consumer_id: body.consumer_id || "main_agent",
+    service_id: issuedQuote?.service_id || body.service_id || null,
+    consumer_id: actorKey || body.consumer_id || "main_agent",
+    actor_key: actorKey || undefined,
     decision,
     reason_code: reasonCode,
     reason,

@@ -687,7 +687,7 @@ export function quoteCapabilityRequest(store, {
   constraints = {},
   budget = {},
   consumer_context: consumerContext = {}
-} = {}) {
+} = {}, { actorKey = "" } = {}) {
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
     const request = { capability, params, constraints, consumer_context: consumerContext };
@@ -771,6 +771,7 @@ export function quoteCapabilityRequest(store, {
     constraints: normalizedConstraints,
     selectedService: selected
   });
+  recordIssuedQuote(store, quote, actorKey);
   const quoteFeedbackRequest = createQuoteFeedbackRequest({ quote, selectedService: selected, request: { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext } });
   return {
     ok: quote.would_pay,
@@ -795,6 +796,24 @@ export function quoteCapabilityRequest(store, {
     quote,
     quote_feedback_request: quoteFeedbackRequest
   };
+}
+
+function recordIssuedQuote(store, quote, actorKey = "") {
+  store.issuedQuotes ||= new Map();
+  const now = Date.now();
+  const expiresAt = now + 24 * 60 * 60 * 1000;
+  for (const [quoteId, issued] of store.issuedQuotes) {
+    if (Number(issued.expires_at || 0) <= now || store.issuedQuotes.size > 10_000) {
+      store.issuedQuotes.delete(quoteId);
+    }
+  }
+  store.issuedQuotes.set(quote.quote_id, {
+    quote_id: quote.quote_id,
+    service_id: quote.service_id,
+    actor_key: actorKey,
+    created_at: new Date(now).toISOString(),
+    expires_at: expiresAt
+  });
 }
 
 function createQuoteFeedbackRequest({ quote, selectedService, request }) {
