@@ -199,6 +199,7 @@ test("the MCP bridge retries an explicit transient upstream response", async () 
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     response.setHeader("content-type", "application/json");
     if (attempts === 1) {
+      response.setHeader("x-agentrouter-retry-safe", "true");
       response.writeHead(503);
       response.end(JSON.stringify({ error: "temporarily_unavailable" }));
       return;
@@ -230,6 +231,75 @@ test("the MCP bridge retries an explicit transient upstream response", async () 
   } finally {
     client.close();
     if (server.listening) await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("the MCP bridge does not automatically replay a paid-capable tool call unless the server marks it retry-safe", async () => {
+  let attempts = 0;
+  const server = http.createServer(async (request, response) => {
+    attempts += 1;
+    for await (const _chunk of request) {
+      // Drain the request before returning the simulated gateway failure.
+    }
+    response.writeHead(503, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "temporarily_unavailable" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: baseUrl,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "3",
+    AGENT_ROUTER_REMOTE_RETRY_MS: "10",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "1000"
+  });
+  try {
+    const result = await client.request("tools/call", {
+      name: "agentrouter_fetch",
+      arguments: { task: "research a product" }
+    });
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.status, "temporarily_unavailable");
+    assert.equal(payload.error.attempts, 1);
+    assert.equal(attempts, 1);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("the MCP bridge opens a short circuit after an outage instead of repeatedly waiting on the same dead upstream", async () => {
+  let attempts = 0;
+  const server = http.createServer(async (request, response) => {
+    attempts += 1;
+    for await (const _chunk of request) {
+      // Drain the request before returning the simulated outage.
+    }
+    response.writeHead(503, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "temporarily_unavailable" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: baseUrl,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "1",
+    AGENT_ROUTER_REMOTE_COOLDOWN_MS: "1000",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "1000"
+  });
+  try {
+    const request = {
+      name: "agentrouter_fetch",
+      arguments: { task: "research a product" }
+    };
+    const first = JSON.parse((await client.request("tools/call", request)).content[0].text);
+    const second = JSON.parse((await client.request("tools/call", request)).content[0].text);
+    assert.equal(first.error.category, "upstream_http");
+    assert.equal(second.error.category, "circuit_open");
+    assert.equal(second.error.attempts, 0);
+    assert.equal(second.retryable, true);
+    assert.equal(attempts, 1);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 
