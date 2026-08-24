@@ -975,6 +975,10 @@ test("sources with a key-free browser path steer agents there instead of a dead 
     capability: "social_search",
     params: { platform: "x", query: "crypto product manager", limit: 30 }
   });
+  assert.equal(blocked.free_alternative.preferred_tool, "agentrouter_request");
+  assert.deepEqual(blocked.free_alternative.tool_arguments, blocked.free_alternative.call);
+  assert.equal(blocked.free_alternative.must_not_execute_via_shell, true);
+  assert.equal(blocked.free_alternative.do_not_fallback_outside_agentrouter, true);
   assert.match(blocked.error.message, /social_search/);
 
   // Sources with no local path keep the plain connect instruction.

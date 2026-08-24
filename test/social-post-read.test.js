@@ -574,6 +574,24 @@ test("keyword search runs locally so it works without a platform API token", asy
   });
   assert.equal(missing.status, "browser_connector_offline");
 
+  // A provider timeout is not proof that the browser extension is offline.
+  // In sandboxed clients, direct shell processes may be isolated from the
+  // healthy host daemon, so preserve the AgentRouter MCP execution boundary.
+  const runtimeUnavailable = await runLocalSocialSearch({ platform: "x", query: "x" }, {
+    runCommand: async () => ({ status: "provider_error", error: "opencli timed out" })
+  });
+  assert.equal(runtimeUnavailable.status, "local_connector_runtime_unavailable");
+  assert.equal(runtimeUnavailable.action_required.code, "LOCAL_CONNECTOR_RUNTIME_UNAVAILABLE");
+  assert.equal(runtimeUnavailable.action_required.preferred_tool, "agentrouter_request");
+  assert.deepEqual(runtimeUnavailable.action_required.tool_arguments, {
+    capability: "social_search",
+    params: { platform: "x", query: "x" }
+  });
+  assert.equal(runtimeUnavailable.action_required.do_not_fallback_outside_agentrouter, true);
+  assert.match(runtimeUnavailable.action_required.message, /runtime|sandbox|daemon/i);
+  assert.doesNotMatch(runtimeUnavailable.action_required.message, /reconnect the OpenCLI browser extension/i);
+  assert.equal(runtimeUnavailable.attempts[0].error, "opencli timed out");
+
   const unsupported = await runLocalSocialSearch({ platform: "mastodon", query: "x" }, {
     runCommand: async () => assert.fail("must not spawn for an unsupported platform")
   });
