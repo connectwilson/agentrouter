@@ -190,6 +190,75 @@ test("agentrouter_fetch turns an account-connection action into browser authoriz
   }
 });
 
+test("the MCP bridge retries an explicit transient upstream response", async () => {
+  let attempts = 0;
+  const server = http.createServer(async (request, response) => {
+    attempts += 1;
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.setHeader("content-type", "application/json");
+    if (attempts === 1) {
+      response.writeHead(503);
+      response.end(JSON.stringify({ error: "temporarily_unavailable" }));
+      return;
+    }
+    response.end(JSON.stringify({
+      jsonrpc: "2.0",
+      id: body.id,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ ok: true, answer: "recovered" }) }],
+        isError: false
+      }
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: baseUrl,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "3",
+    AGENT_ROUTER_REMOTE_RETRY_MS: "20",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "1000"
+  });
+  try {
+    const result = await client.request("tools/call", {
+      name: "agentrouter_fetch",
+      arguments: { task: "research a product" }
+    });
+    assert.equal(JSON.parse(result.content[0].text).answer, "recovered");
+    assert.equal(attempts, 2);
+  } finally {
+    client.close();
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("an exhausted remote outage returns a structured retry boundary instead of a JSON-RPC tool failure", async () => {
+  const reservation = http.createServer();
+  await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const client = createMcpClient({
+    AGENT_ROUTER_URL: `http://127.0.0.1:${port}`,
+    AGENT_ROUTER_REMOTE_ATTEMPTS: "1",
+    AGENT_ROUTER_REMOTE_TIMEOUT_MS: "250"
+  });
+  try {
+    const result = await client.request("tools/call", {
+      name: "agentrouter_fetch",
+      arguments: { task: "research a product" }
+    });
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.status, "temporarily_unavailable");
+    assert.equal(payload.error.code, "AGENTROUTER_REMOTE_UNAVAILABLE");
+    assert.equal(payload.retry_original_request, true);
+    assert.equal(payload.do_not_fallback_outside_agentrouter, true);
+    assert.equal(result.isError, false);
+  } finally {
+    client.close();
+  }
+});
+
 function createMcpClient(env) {
   const child = spawn(process.execPath, [path.join(process.cwd(), "packages/agentrouter-mcp/bin/agentrouter-mcp.js")], {
     env: { ...process.env, ...env },
