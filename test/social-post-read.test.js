@@ -592,6 +592,32 @@ test("keyword search runs locally so it works without a platform API token", asy
   assert.doesNotMatch(runtimeUnavailable.action_required.message, /reconnect the OpenCLI browser extension/i);
   assert.equal(runtimeUnavailable.attempts[0].error, "opencli timed out");
 
+  const accountRuntimeUnavailable = await runLocalSocialSearch({
+    platform: "x",
+    capability: "social_user_voice_research",
+    operation: "read_user_posts",
+    handle: "whale_ag",
+    query: "whale.ag",
+    from: "2025-08-24",
+    to: "2026-08-24",
+    entity: { required_terms: ["whale.ag"], excluded_terms: ["whaledance"] }
+  }, {
+    runCommand: async () => ({ status: "provider_error", error: "opencli timed out" })
+  });
+  assert.deepEqual(accountRuntimeUnavailable.request, {
+    capability: "social_user_voice_research",
+    params: {
+      platform: "x",
+      operation: "read_user_posts",
+      query: "whale.ag",
+      handle: "whale_ag",
+      from: "2025-08-24",
+      to: "2026-08-24",
+      entity: { required_terms: ["whale.ag"], excluded_terms: ["whaledance"] }
+    }
+  });
+  assert.deepEqual(accountRuntimeUnavailable.action_required.tool_arguments, accountRuntimeUnavailable.request);
+
   const unsupported = await runLocalSocialSearch({ platform: "mastodon", query: "x" }, {
     runCommand: async () => assert.fail("must not spawn for an unsupported platform")
   });
