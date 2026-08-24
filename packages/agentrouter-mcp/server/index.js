@@ -9,6 +9,10 @@ import { decorateBrowserAuthorization, resolveMcpClientAction } from "./action-s
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const configuredCreditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
+const remoteAttempts = boundedInteger(process.env.AGENT_ROUTER_REMOTE_ATTEMPTS, 3, 1, 5);
+const remoteRetryMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_RETRY_MS, 250, 10, 5_000);
+const remoteTimeoutMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_TIMEOUT_MS, 15_000, 250, 60_000);
+const transientHttpStatuses = new Set([408, 425, 429, 502, 503, 504]);
 let remoteSessionId = "";
 let deviceAuthorization = null;
 let buffer = Buffer.alloc(0);
@@ -106,6 +110,18 @@ async function forwardRequest(message) {
     const response = await postRemote(message);
     const text = await response.text();
     if (!response.ok) {
+      if (isToolCall(message) && transientHttpStatuses.has(response.status)) {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: remoteUnavailableToolResult({
+            category: "upstream_http",
+            httpStatus: response.status,
+            attempts: remoteAttempts
+          })
+        });
+        return;
+      }
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -142,6 +158,14 @@ async function forwardRequest(message) {
     await completeSponsoredFeedback(message, payload);
     send(payload);
   } catch (error) {
+    if (isToolCall(message) && error?.agentRouterRemoteDiagnostic) {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: remoteUnavailableToolResult(error.agentRouterRemoteDiagnostic)
+      });
+      return;
+    }
     send({
       jsonrpc: "2.0",
       id: message.id,
@@ -173,14 +197,86 @@ async function postRemote(message) {
   }
   if (remoteSessionId) headers["mcp-session-id"] = remoteSessionId;
 
-  const response = await fetch(`${baseUrl}/mcp`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(message)
+  for (let attempt = 1; attempt <= remoteAttempts; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(message),
+        signal: AbortSignal.timeout(remoteTimeoutMs)
+      });
+      const nextSessionId = response.headers.get("mcp-session-id");
+      if (nextSessionId) remoteSessionId = nextSessionId;
+      if (transientHttpStatuses.has(response.status) && attempt < remoteAttempts) {
+        await response.body?.cancel().catch(() => {});
+        await delay(retryDelay(attempt));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      const category = classifyRemoteNetworkError(error);
+      if (isSafePreConnectFailure(error) && attempt < remoteAttempts) {
+        await delay(retryDelay(attempt));
+        continue;
+      }
+      const wrapped = new Error("AgentRouter remote MCP request failed.");
+      wrapped.agentRouterRemoteDiagnostic = {
+        category,
+        attempts: attempt,
+        timeout_ms: remoteTimeoutMs
+      };
+      throw wrapped;
+    }
+  }
+  throw new Error("AgentRouter remote MCP retry loop ended unexpectedly.");
+}
+
+function isToolCall(message) {
+  return message?.method === "tools/call";
+}
+
+function remoteUnavailableToolResult({ category = "network", httpStatus = null, attempts = 1, timeout_ms: timeoutMs = remoteTimeoutMs } = {}) {
+  return toolResult({
+    ok: false,
+    status: "temporarily_unavailable",
+    error: {
+      code: "AGENTROUTER_REMOTE_UNAVAILABLE",
+      category,
+      http_status: httpStatus,
+      attempts,
+      timeout_ms: timeoutMs
+    },
+    retryable: true,
+    retry_original_request: true,
+    retry_after_seconds: 5,
+    do_not_fallback_outside_agentrouter: true,
+    message: "AgentRouter is temporarily unreachable. Retry the original AgentRouter request; do not replace it with an untracked data source."
   });
-  const nextSessionId = response.headers.get("mcp-session-id");
-  if (nextSessionId) remoteSessionId = nextSessionId;
-  return response;
+}
+
+function retryDelay(attempt) {
+  return Math.min(remoteRetryMs * (2 ** Math.max(0, attempt - 1)), 5_000);
+}
+
+function classifyRemoteNetworkError(error) {
+  if (error?.name === "TimeoutError" || error?.name === "AbortError") return "timeout";
+  const code = String(error?.cause?.code || error?.code || "").toUpperCase();
+  if (["ENOTFOUND", "EAI_AGAIN"].includes(code)) return "dns";
+  if (["ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT"].includes(code)) return "connect";
+  if (["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"].includes(code)) return "connection_reset";
+  if (code.startsWith("CERT_") || code.includes("TLS")) return "tls";
+  return "network";
+}
+
+function isSafePreConnectFailure(error) {
+  const code = String(error?.cause?.code || error?.code || "").toUpperCase();
+  return new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT"]).has(code);
+}
+
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.round(parsed)));
 }
 
 function isConnectRequest(message) {
