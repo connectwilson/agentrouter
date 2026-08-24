@@ -21,6 +21,20 @@ For paid calls, no API key needs to be copied into the MCP configuration. On the
 
 `AGENT_ROUTER_API_KEY` remains an advanced override for CI and headless servers that cannot open a browser.
 
+The bridge applies bounded remote timeouts and retries only failures that are
+known to be safe before a request is processed. A paid-capable MCP tool call is
+never replayed after an HTTP failure unless AgentRouter explicitly returns
+`x-agentrouter-retry-safe: true`. After an outage, a short circuit returns a
+structured `temporarily_unavailable` result immediately so the AI client does
+not wait repeatedly or silently switch to an untracked data source.
+
+The defaults work for normal clients. Operators can tune them with
+`AGENT_ROUTER_REMOTE_ATTEMPTS` (default `3`),
+`AGENT_ROUTER_REMOTE_RETRY_MS` (default `250`),
+`AGENT_ROUTER_REMOTE_TIMEOUT_MS` (default `15000`), and
+`AGENT_ROUTER_REMOTE_COOLDOWN_MS` (default `5000`). Values are bounded by the
+bridge to prevent accidental retry storms or unbounded hangs.
+
 ## Usage
 
 Run with npx:

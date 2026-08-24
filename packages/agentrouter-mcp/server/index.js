@@ -12,8 +12,10 @@ const configuredCreditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").tr
 const remoteAttempts = boundedInteger(process.env.AGENT_ROUTER_REMOTE_ATTEMPTS, 3, 1, 5);
 const remoteRetryMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_RETRY_MS, 250, 10, 5_000);
 const remoteTimeoutMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_TIMEOUT_MS, 15_000, 250, 60_000);
+const remoteCooldownMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_COOLDOWN_MS, 5_000, 100, 60_000);
 const transientHttpStatuses = new Set([408, 425, 429, 502, 503, 504]);
 let remoteSessionId = "";
+let remoteCircuitOpenUntil = 0;
 let deviceAuthorization = null;
 let buffer = Buffer.alloc(0);
 let processing = Promise.resolve();
@@ -117,7 +119,8 @@ async function forwardRequest(message) {
           result: remoteUnavailableToolResult({
             category: "upstream_http",
             httpStatus: response.status,
-            attempts: remoteAttempts
+            attempts: response.agentRouterRemoteAttempts || 1,
+            retry_after_seconds: circuitRetryAfterSeconds()
           })
         });
         return;
@@ -186,6 +189,14 @@ async function forwardNotification(message) {
 }
 
 async function postRemote(message) {
+  if (isToolCall(message) && remoteCircuitOpenUntil > Date.now()) {
+    throw remoteDiagnosticError({
+      category: "circuit_open",
+      attempts: 0,
+      timeout_ms: remoteTimeoutMs,
+      retry_after_seconds: circuitRetryAfterSeconds()
+    });
+  }
   const headers = {
     "content-type": "application/json",
     accept: "application/json, text/event-stream"
@@ -205,27 +216,31 @@ async function postRemote(message) {
         body: JSON.stringify(message),
         signal: AbortSignal.timeout(remoteTimeoutMs)
       });
+      response.agentRouterRemoteAttempts = attempt;
       const nextSessionId = response.headers.get("mcp-session-id");
       if (nextSessionId) remoteSessionId = nextSessionId;
-      if (transientHttpStatuses.has(response.status) && attempt < remoteAttempts) {
+      if (shouldRetryHttpResponse(message, response, attempt)) {
         await response.body?.cancel().catch(() => {});
         await delay(retryDelay(attempt));
         continue;
       }
+      if (isToolCall(message) && transientHttpStatuses.has(response.status)) openRemoteCircuit();
+      else if (!transientHttpStatuses.has(response.status)) remoteCircuitOpenUntil = 0;
       return response;
     } catch (error) {
+      if (error?.agentRouterRemoteDiagnostic) throw error;
       const category = classifyRemoteNetworkError(error);
       if (isSafePreConnectFailure(error) && attempt < remoteAttempts) {
         await delay(retryDelay(attempt));
         continue;
       }
-      const wrapped = new Error("AgentRouter remote MCP request failed.");
-      wrapped.agentRouterRemoteDiagnostic = {
+      if (isToolCall(message)) openRemoteCircuit();
+      throw remoteDiagnosticError({
         category,
         attempts: attempt,
-        timeout_ms: remoteTimeoutMs
-      };
-      throw wrapped;
+        timeout_ms: remoteTimeoutMs,
+        retry_after_seconds: circuitRetryAfterSeconds()
+      });
     }
   }
   throw new Error("AgentRouter remote MCP retry loop ended unexpectedly.");
@@ -235,7 +250,13 @@ function isToolCall(message) {
   return message?.method === "tools/call";
 }
 
-function remoteUnavailableToolResult({ category = "network", httpStatus = null, attempts = 1, timeout_ms: timeoutMs = remoteTimeoutMs } = {}) {
+function remoteUnavailableToolResult({
+  category = "network",
+  httpStatus = null,
+  attempts = 1,
+  timeout_ms: timeoutMs = remoteTimeoutMs,
+  retry_after_seconds: retryAfterSeconds = 5
+} = {}) {
   return toolResult({
     ok: false,
     status: "temporarily_unavailable",
@@ -248,10 +269,30 @@ function remoteUnavailableToolResult({ category = "network", httpStatus = null, 
     },
     retryable: true,
     retry_original_request: true,
-    retry_after_seconds: 5,
+    retry_after_seconds: retryAfterSeconds,
     do_not_fallback_outside_agentrouter: true,
     message: "AgentRouter is temporarily unreachable. Retry the original AgentRouter request; do not replace it with an untracked data source."
   });
+}
+
+function shouldRetryHttpResponse(message, response, attempt) {
+  if (attempt >= remoteAttempts || !transientHttpStatuses.has(response.status)) return false;
+  if (!isToolCall(message)) return true;
+  return response.headers.get("x-agentrouter-retry-safe")?.toLowerCase() === "true";
+}
+
+function openRemoteCircuit() {
+  remoteCircuitOpenUntil = Date.now() + remoteCooldownMs;
+}
+
+function circuitRetryAfterSeconds() {
+  return Math.max(1, Math.ceil((remoteCircuitOpenUntil - Date.now()) / 1_000));
+}
+
+function remoteDiagnosticError(diagnostic) {
+  const error = new Error("AgentRouter remote MCP request failed.");
+  error.agentRouterRemoteDiagnostic = diagnostic;
+  return error;
 }
 
 function retryDelay(attempt) {
