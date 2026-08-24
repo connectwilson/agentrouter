@@ -268,11 +268,12 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.match(skillText, /Do not require the user to mention AgentRouter/);
     assert.match(skillText, /not a software-development workflow router/);
     assert.match(skillText, /BMAD, OpenSpec, Superpowers/);
-    // The example endpoint must be a host that answers. The Render hostname it
-    // used to name now returns 503, so an agent following the skill literally
-    // would have hit a dead service.
+    // The canonical endpoint stays primary. Only the active Singapore Render
+    // origin may be named as the bounded fallback; the retired original Render
+    // service must never return to the Skill.
     assert.match(skillText, /agentrouter\.network\/agent-router\/fetch/);
-    assert.doesNotMatch(skillText, /onrender\.com/, "the skill must not point at the retired host");
+    assert.match(skillText, /agentrouter-markets-sg\.onrender\.com\/agent-router\/fetch/);
+    assert.doesNotMatch(skillText, /https:\/\/agentrouter-markets\.onrender\.com/, "the skill must not point at the retired host");
     assert.match(skillText, /mcp__market-data__\*/);
     assert.match(skillText, /fund_local_agentrouter_wallet/);
     assert.match(skillText, /Do not continue with web search/);

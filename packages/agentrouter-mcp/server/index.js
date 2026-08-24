@@ -6,16 +6,21 @@ import { readStoredCredential, writeStoredCredential } from "./credential-store.
 import { submitSponsoredFeedback } from "./bsc-feedback.js";
 import { readOrCreateFeedbackSigner } from "./feedback-wallet.js";
 import { decorateBrowserAuthorization, resolveMcpClientAction } from "./action-state.js";
+import { agentRouterConnectTool, bridgeMcpTools } from "./tool-catalog.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
+const remoteOrigins = parseRemoteOrigins(baseUrl, process.env.AGENT_ROUTER_FALLBACK_URLS);
 const configuredCreditApiKey = String(process.env.AGENT_ROUTER_API_KEY || "").trim();
 const remoteAttempts = boundedInteger(process.env.AGENT_ROUTER_REMOTE_ATTEMPTS, 3, 1, 5);
 const remoteRetryMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_RETRY_MS, 250, 10, 5_000);
 const remoteTimeoutMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_TIMEOUT_MS, 15_000, 250, 60_000);
-const remoteCooldownMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_COOLDOWN_MS, 5_000, 100, 60_000);
+const remoteDiscoveryTimeoutMs = boundedInteger(process.env.AGENT_ROUTER_DISCOVERY_TIMEOUT_MS, 1_500, 250, 5_000);
+const remoteCooldownMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_COOLDOWN_MS, 30_000, 100, 300_000);
 const transientHttpStatuses = new Set([408, 425, 429, 502, 503, 504]);
-let remoteSessionId = "";
-let remoteCircuitOpenUntil = 0;
+const remoteSessionIds = new Map();
+const remoteCircuitOpenUntil = new Map();
+let preferredRemoteOrigin = baseUrl;
+let preferredRemoteOriginUntil = 0;
 let deviceAuthorization = null;
 let buffer = Buffer.alloc(0);
 let processing = Promise.resolve();
@@ -38,7 +43,7 @@ export function start() {
 async function processBufferedMessages() {
   for (const message of readMessages()) {
     if (message?.method?.startsWith("notifications/")) {
-      await forwardNotification(message);
+      if (message.method !== "notifications/initialized") await forwardNotification(message);
       continue;
     }
     if (!Object.hasOwn(message || {}, "id")) continue;
@@ -77,11 +82,19 @@ function readMessages() {
 
 async function forwardRequest(message) {
   try {
+    const localControlResult = handleLocalControlPlane(message);
+    if (localControlResult) {
+      send({ jsonrpc: "2.0", id: message.id, result: localControlResult });
+      return;
+    }
+    if (message?.method === "tools/list") {
+      send({ jsonrpc: "2.0", id: message.id, result: await discoverTools(message) });
+      return;
+    }
     if (isConnectRequest(message)) {
       send({ jsonrpc: "2.0", id: message.id, result: await handleConnectRequest(message) });
       return;
     }
-    await resumePendingDeviceAuthorization();
     // Keyword search only works where a browser is: the hosted server has none.
     const localSearch = localSocialSearchRequest(message);
     if (localSearch) {
@@ -109,6 +122,7 @@ async function forwardRequest(message) {
       });
       return;
     }
+    await resumePendingDeviceAuthorization();
     const response = await postRemote(message);
     const text = await response.text();
     if (!response.ok) {
@@ -116,7 +130,7 @@ async function forwardRequest(message) {
         send({
           jsonrpc: "2.0",
           id: message.id,
-          result: remoteUnavailableToolResult({
+          result: remoteUnavailableToolResult(response.agentRouterRemoteDiagnostic || {
             category: "upstream_http",
             httpStatus: response.status,
             attempts: response.agentRouterRemoteAttempts || 1,
@@ -141,7 +155,6 @@ async function forwardRequest(message) {
     if (!payload || typeof payload !== "object") {
       throw new Error("AgentRouter remote MCP returned an invalid JSON response");
     }
-    if (message.method === "tools/list") appendLocalTools(payload);
     const clientAction = resolveMcpClientAction(payload);
     if (clientAction.state === "authorize_account") {
       const authorization = await handleConnectRequest({
@@ -180,6 +193,32 @@ async function forwardRequest(message) {
   }
 }
 
+function handleLocalControlPlane(message) {
+  if (message?.method === "initialize") {
+    return {
+      protocolVersion: message.params?.protocolVersion || "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "AgentRouter", version: "0.12.3" }
+    };
+  }
+  if (message?.method === "ping") return {};
+  return null;
+}
+
+async function discoverTools(message) {
+  try {
+    const response = await postRemote(message, { timeoutMs: remoteDiscoveryTimeoutMs });
+    if (!response.ok) return { tools: bridgeMcpTools };
+    const payload = safeJson(await response.text());
+    const tools = payload?.result?.tools;
+    if (!Array.isArray(tools)) return { tools: bridgeMcpTools };
+    if (!tools.some((tool) => tool?.name === agentRouterConnectTool.name)) tools.unshift(agentRouterConnectTool);
+    return { tools };
+  } catch {
+    return { tools: bridgeMcpTools };
+  }
+}
+
 async function forwardNotification(message) {
   try {
     await postRemote(message);
@@ -188,62 +227,163 @@ async function forwardNotification(message) {
   }
 }
 
-async function postRemote(message) {
-  if (isToolCall(message) && remoteCircuitOpenUntil > Date.now()) {
+async function postRemote(message, { timeoutMs = remoteTimeoutMs } = {}) {
+  const orderedOrigins = orderedRemoteOrigins();
+  const availableOrigins = isToolCall(message)
+    ? orderedOrigins.filter((origin) => circuitOpenUntil(origin) <= Date.now())
+    : orderedOrigins;
+  if (isToolCall(message) && !availableOrigins.length) {
     throw remoteDiagnosticError({
       category: "circuit_open",
       attempts: 0,
       timeout_ms: remoteTimeoutMs,
-      retry_after_seconds: circuitRetryAfterSeconds()
+      attempted_origins: orderedOrigins.map(originLabel),
+      failover_attempted: orderedOrigins.length > 1,
+      retry_after_seconds: circuitRetryAfterSeconds(orderedOrigins)
     });
   }
-  const headers = {
-    "content-type": "application/json",
-    accept: "application/json, text/event-stream"
-  };
   const credential = await currentCredential();
-  if (credential) {
-    headers["x-agentrouter-api-key"] = credential;
-    headers.authorization = `Bearer ${credential}`;
-  }
-  if (remoteSessionId) headers["mcp-session-id"] = remoteSessionId;
-
-  for (let attempt = 1; attempt <= remoteAttempts; attempt += 1) {
+  const attemptLimit = availableOrigins.length > 1
+    ? Math.min(remoteAttempts, availableOrigins.length)
+    : remoteAttempts;
+  const attemptedOrigins = [];
+  let lastResponse = null;
+  let lastCategory = "network";
+  for (let attempt = 1; attempt <= attemptLimit; attempt += 1) {
+    const origin = availableOrigins.length > 1 ? availableOrigins[attempt - 1] : availableOrigins[0];
+    attemptedOrigins.push(originLabel(origin));
     try {
-      const response = await fetch(`${baseUrl}/mcp`, {
+      const response = await fetch(`${origin}/mcp`, {
         method: "POST",
-        headers,
+        headers: remoteHeaders(origin, credential),
         body: JSON.stringify(message),
-        signal: AbortSignal.timeout(remoteTimeoutMs)
+        signal: AbortSignal.timeout(timeoutMs)
       });
       response.agentRouterRemoteAttempts = attempt;
+      response.agentRouterRemoteOrigin = origin;
       const nextSessionId = response.headers.get("mcp-session-id");
-      if (nextSessionId) remoteSessionId = nextSessionId;
-      if (shouldRetryHttpResponse(message, response, attempt)) {
+      if (nextSessionId) remoteSessionIds.set(origin, nextSessionId);
+      if (isRetryableHttpResponse(message, response)) {
+        lastResponse = response;
+        lastCategory = "upstream_http";
+        openRemoteCircuit(origin);
+        if (attempt >= attemptLimit) break;
         await response.body?.cancel().catch(() => {});
         await delay(retryDelay(attempt));
         continue;
       }
-      if (isToolCall(message) && transientHttpStatuses.has(response.status)) openRemoteCircuit();
-      else if (!transientHttpStatuses.has(response.status)) remoteCircuitOpenUntil = 0;
+      if (isToolCall(message) && transientHttpStatuses.has(response.status)) openRemoteCircuit(origin);
+      else if (!transientHttpStatuses.has(response.status)) markRemoteOriginHealthy(origin);
+      response.agentRouterRemoteDiagnostic = remoteDiagnostic({
+        category: transientHttpStatuses.has(response.status) ? "upstream_http" : "http",
+        httpStatus: response.status,
+        attempts: attempt,
+        attemptedOrigins
+      });
       return response;
     } catch (error) {
       if (error?.agentRouterRemoteDiagnostic) throw error;
-      const category = classifyRemoteNetworkError(error);
-      if (isSafePreConnectFailure(error) && attempt < remoteAttempts) {
+      lastCategory = classifyRemoteNetworkError(error);
+      if (isSafePreConnectFailure(error)) openRemoteCircuit(origin);
+      if (isSafePreConnectFailure(error) && attempt < attemptLimit) {
         await delay(retryDelay(attempt));
         continue;
       }
-      if (isToolCall(message)) openRemoteCircuit();
+      if (isToolCall(message)) openRemoteCircuit(origin);
       throw remoteDiagnosticError({
-        category,
-        attempts: attempt,
-        timeout_ms: remoteTimeoutMs,
-        retry_after_seconds: circuitRetryAfterSeconds()
+        ...remoteDiagnostic({ category: lastCategory, attempts: attempt, attemptedOrigins }),
+        retry_after_seconds: circuitRetryAfterSeconds(attemptedOriginsToOrigins(attemptedOrigins))
       });
     }
   }
-  throw new Error("AgentRouter remote MCP retry loop ended unexpectedly.");
+  if (lastResponse) {
+    lastResponse.agentRouterRemoteDiagnostic = remoteDiagnostic({
+      category: lastCategory,
+      httpStatus: lastResponse.status,
+      attempts: attemptedOrigins.length,
+      attemptedOrigins
+    });
+    return lastResponse;
+  }
+  throw remoteDiagnosticError(remoteDiagnostic({
+    category: lastCategory,
+    attempts: attemptedOrigins.length,
+    attemptedOrigins
+  }));
+}
+
+function remoteHeaders(origin, credential = "") {
+  const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+  if (credential) {
+    headers["x-agentrouter-api-key"] = credential;
+    headers.authorization = `Bearer ${credential}`;
+  }
+  const sessionId = remoteSessionIds.get(origin);
+  if (sessionId) headers["mcp-session-id"] = sessionId;
+  return headers;
+}
+
+function remoteDiagnostic({ category, httpStatus = null, attempts, attemptedOrigins = [] }) {
+  return {
+    category,
+    httpStatus,
+    attempts,
+    timeout_ms: remoteTimeoutMs,
+    attempted_origins: [...attemptedOrigins],
+    failover_attempted: attemptedOrigins.length > 1,
+    retry_after_seconds: circuitRetryAfterSeconds(attemptedOriginsToOrigins(attemptedOrigins))
+  };
+}
+
+function attemptedOriginsToOrigins(labels) {
+  const wanted = new Set(labels);
+  return remoteOrigins.filter((origin) => wanted.has(originLabel(origin)));
+}
+
+function orderedRemoteOrigins() {
+  const usePreferred = preferredRemoteOrigin !== baseUrl && Date.now() < preferredRemoteOriginUntil;
+  const first = usePreferred ? preferredRemoteOrigin : baseUrl;
+  return [first, ...remoteOrigins.filter((origin) => origin !== first)];
+}
+
+function originLabel(origin) {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
+  }
+}
+
+function markRemoteOriginHealthy(origin) {
+  remoteCircuitOpenUntil.delete(origin);
+  preferredRemoteOrigin = origin;
+  preferredRemoteOriginUntil = origin === baseUrl ? 0 : Date.now() + remoteCooldownMs;
+}
+
+function circuitOpenUntil(origin) {
+  return remoteCircuitOpenUntil.get(origin) || 0;
+}
+
+function parseRemoteOrigins(primary, configuredFallbacks) {
+  const defaults = primary === "https://agentrouter.network"
+    ? ["https://agentrouter-markets-sg.onrender.com"]
+    : [];
+  const requested = String(configuredFallbacks || "")
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const origins = [];
+  for (const candidate of [primary, ...(requested.length ? requested : defaults)]) {
+    try {
+      const parsed = new URL(candidate);
+      if (!["http:", "https:"].includes(parsed.protocol)) continue;
+      const normalized = parsed.origin.replace(/\/$/, "");
+      if (!origins.includes(normalized)) origins.push(normalized);
+    } catch {
+      // Invalid operator-provided fallback origins are ignored safely.
+    }
+  }
+  return origins.length ? origins : [primary];
 }
 
 function isToolCall(message) {
@@ -255,6 +395,8 @@ function remoteUnavailableToolResult({
   httpStatus = null,
   attempts = 1,
   timeout_ms: timeoutMs = remoteTimeoutMs,
+  attempted_origins: attemptedOrigins = [],
+  failover_attempted: failoverAttempted = false,
   retry_after_seconds: retryAfterSeconds = 5
 } = {}) {
   return toolResult({
@@ -265,7 +407,9 @@ function remoteUnavailableToolResult({
       category,
       http_status: httpStatus,
       attempts,
-      timeout_ms: timeoutMs
+      timeout_ms: timeoutMs,
+      attempted_origins: attemptedOrigins,
+      failover_attempted: failoverAttempted
     },
     retryable: true,
     retry_original_request: true,
@@ -275,18 +419,20 @@ function remoteUnavailableToolResult({
   });
 }
 
-function shouldRetryHttpResponse(message, response, attempt) {
-  if (attempt >= remoteAttempts || !transientHttpStatuses.has(response.status)) return false;
+function isRetryableHttpResponse(message, response) {
+  if (!transientHttpStatuses.has(response.status)) return false;
   if (!isToolCall(message)) return true;
   return response.headers.get("x-agentrouter-retry-safe")?.toLowerCase() === "true";
 }
 
-function openRemoteCircuit() {
-  remoteCircuitOpenUntil = Date.now() + remoteCooldownMs;
+function openRemoteCircuit(origin) {
+  remoteCircuitOpenUntil.set(origin, Date.now() + remoteCooldownMs);
 }
 
-function circuitRetryAfterSeconds() {
-  return Math.max(1, Math.ceil((remoteCircuitOpenUntil - Date.now()) / 1_000));
+function circuitRetryAfterSeconds(origins = remoteOrigins) {
+  const active = origins.map(circuitOpenUntil).filter((value) => value > Date.now());
+  if (!active.length) return 1;
+  return Math.max(1, Math.ceil((Math.min(...active) - Date.now()) / 1_000));
 }
 
 function remoteDiagnosticError(diagnostic) {
@@ -322,23 +468,6 @@ function boundedInteger(value, fallback, minimum, maximum) {
 
 function isConnectRequest(message) {
   return message?.method === "tools/call" && message?.params?.name === "agentrouter_connect";
-}
-
-function appendLocalTools(payload) {
-  const tools = payload?.result?.tools;
-  if (!Array.isArray(tools) || tools.some((tool) => tool?.name === "agentrouter_connect")) return;
-  tools.unshift({
-    name: "agentrouter_connect",
-    description: "Connect this AI client to the user's AgentRouter account through one browser approval. Use this when a paid call reports that no AgentRouter payment credential is available. Never ask the user to copy an API key or edit an MCP configuration file.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        client_name: { type: "string", description: "Human-readable AI client name." },
-        wait_seconds: { type: "integer", minimum: 0, maximum: 55, default: 45, description: "How long to wait for browser approval before returning pending status." },
-        restart: { type: "boolean", default: false, description: "Start a new authorization if the previous code expired." }
-      }
-    }
-  });
 }
 
 async function handleConnectRequest(message) {
@@ -412,7 +541,7 @@ async function pollDeviceToken() {
 }
 
 async function postJson(pathname, body) {
-  const response = await fetch(`${baseUrl}${pathname}`, {
+  const response = await fetchRemotePath(pathname, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(body)
@@ -427,8 +556,39 @@ async function postAuthenticatedJson(pathname, body) {
     headers["x-agentrouter-api-key"] = credential;
     headers.authorization = `Bearer ${credential}`;
   }
-  const response = await fetch(`${baseUrl}${pathname}`, { method: "POST", headers, body: JSON.stringify(body) });
+  const response = await fetchRemotePath(pathname, { method: "POST", headers, body: JSON.stringify(body) });
   return { ok: response.ok, status: response.status, payload: await response.json().catch(() => null) };
+}
+
+async function fetchRemotePath(pathname, init) {
+  const ordered = orderedRemoteOrigins();
+  const available = ordered.filter((origin) => circuitOpenUntil(origin) <= Date.now());
+  const candidates = (available.length ? available : ordered).slice(0, Math.max(1, remoteAttempts));
+  let lastError = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const origin = candidates[index];
+    try {
+      const response = await fetch(`${origin}${pathname}`, {
+        ...init,
+        signal: AbortSignal.timeout(remoteTimeoutMs)
+      });
+      const retrySafe = response.headers.get("x-agentrouter-retry-safe")?.toLowerCase() === "true";
+      if (transientHttpStatuses.has(response.status) && retrySafe && index < candidates.length - 1) {
+        openRemoteCircuit(origin);
+        await response.body?.cancel().catch(() => {});
+        continue;
+      }
+      if (transientHttpStatuses.has(response.status)) openRemoteCircuit(origin);
+      else markRemoteOriginHealthy(origin);
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (isSafePreConnectFailure(error)) openRemoteCircuit(origin);
+      if (isSafePreConnectFailure(error) && index < candidates.length - 1) continue;
+      throw error;
+    }
+  }
+  throw lastError || new Error("AgentRouter remote origins are unavailable.");
 }
 
 async function completeSponsoredFeedback(message, payload) {

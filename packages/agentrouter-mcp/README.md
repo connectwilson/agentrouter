@@ -2,7 +2,11 @@
 
 Public, zero-configuration MCP bridge for AgentRouter.
 
-The package forwards MCP JSON-RPC to `https://agentrouter.network/mcp`. Tool definitions come from the hosted AgentRouter server, so newly deployed capabilities appear after the AI client reconnects without requiring a new package release.
+The bridge owns its MCP control plane locally: `initialize`, `ping`, and
+`tools/list` do not depend on DNS or the hosted service. The same canonical tool
+catalog is imported by the hosted server, preventing the local fallback list
+from drifting away from production. Data calls are forwarded to
+`https://agentrouter.network/mcp`.
 
 For a public X status URL, `agentrouter_fetch` and the structured
 `social_post_read` capability execute through a fixed read-only connector on
@@ -22,17 +26,26 @@ For paid calls, no API key needs to be copied into the MCP configuration. On the
 `AGENT_ROUTER_API_KEY` remains an advanced override for CI and headless servers that cannot open a browser.
 
 The bridge applies bounded remote timeouts and retries only failures that are
-known to be safe before a request is processed. A paid-capable MCP tool call is
-never replayed after an HTTP failure unless AgentRouter explicitly returns
-`x-agentrouter-retry-safe: true`. After an outage, a short circuit returns a
-structured `temporarily_unavailable` result immediately so the AI client does
-not wait repeatedly or silently switch to an untracked data source.
+known to be safe before a request is processed. It automatically fails over
+from the canonical domain to the Singapore Render origin when DNS, Fake-IP,
+TUN, or connect failures occur. A paid-capable MCP tool call is never replayed
+after an ambiguous failure unless AgentRouter explicitly returns
+`x-agentrouter-retry-safe: true`. Circuit state is isolated per origin: the
+healthy origin stays in the hot path during cooldown, then the primary is
+probed again automatically. Exhaustion returns a structured
+`temporarily_unavailable` result with attempted-origin diagnostics so the AI
+client does not wait repeatedly or silently switch to an untracked data source.
 
 The defaults work for normal clients. Operators can tune them with
 `AGENT_ROUTER_REMOTE_ATTEMPTS` (default `3`),
 `AGENT_ROUTER_REMOTE_RETRY_MS` (default `250`),
 `AGENT_ROUTER_REMOTE_TIMEOUT_MS` (default `15000`), and
-`AGENT_ROUTER_REMOTE_COOLDOWN_MS` (default `5000`). Values are bounded by the
+`AGENT_ROUTER_REMOTE_COOLDOWN_MS` (default `30000`). Remote tool discovery has
+its own short `AGENT_ROUTER_DISCOVERY_TIMEOUT_MS` (default `1500`), then falls
+back to the bundled stable catalog instead of blocking client startup. The optional
+`AGENT_ROUTER_FALLBACK_URLS` accepts a comma-separated list of trusted origins;
+the production bridge already includes
+`https://agentrouter-markets-sg.onrender.com`. Values are bounded by the
 bridge to prevent accidental retry storms or unbounded hangs.
 
 ## Usage
@@ -77,7 +90,9 @@ For a local AgentRouter server:
 
 ## Updates
 
-Server-side tools and capability schemas update automatically. Restart or reconnect the AI client if it caches the MCP tool list.
+Capability schemas returned by `agentrouter_capabilities` update server-side.
+Stable MCP tool envelopes ship with the bridge; restart or reconnect the AI
+client after a bridge release if it caches the MCP tool list.
 
 To refresh the Skill and migrate an older GitHub-based MCP config:
 

@@ -45,7 +45,12 @@ test("the MCP bridge control plane initializes and lists tools without any remot
       capabilities: {},
       clientInfo: { name: "offline-client", version: "1" }
     });
+    const packageMetadata = JSON.parse(await fs.readFile(
+      path.join(process.cwd(), "packages/agentrouter-mcp/package.json"),
+      "utf8"
+    ));
     assert.equal(initialized.serverInfo.name, "AgentRouter");
+    assert.equal(initialized.serverInfo.version, packageMetadata.version);
 
     const listed = await client.request("tools/list", {});
     const names = listed.tools.map((tool) => tool.name);
