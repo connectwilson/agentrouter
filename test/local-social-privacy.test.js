@@ -46,6 +46,25 @@ test("local execution plans are declarative, read-only, and upload nothing by de
   assert.deepEqual(xPlan.optional_adapter_candidates, ["twitter-cli"]);
   assert.equal(xPlan.connector_policy.default_auth, "browser_managed");
   assert.equal(xPlan.connector_policy.requires_system_password, false);
+
+  const accountPlan = buildLocalSocialExecutionPlan({
+    platform: "x",
+    operation: "read_user_posts",
+    handle: "@whale_ag",
+    from: "2025-08-24",
+    to: "2026-08-24",
+    entity: { required_terms: ["whale.ag"], excluded_terms: ["WhaleDance"] },
+    limit: 20
+  });
+  assert.deepEqual(accountPlan.params, {
+    query: null,
+    target: null,
+    handle: "whale_ag",
+    from: "2025-08-24",
+    to: "2026-08-24",
+    entity: { required_terms: ["whale.ag"], excluded_terms: ["whaledance"] },
+    limit: 20
+  });
 });
 
 test("local execution plans reject write operations and unsupported platform operations", () => {
