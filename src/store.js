@@ -12,6 +12,7 @@ export function createMemoryStore() {
     routeObservations: [],
     issuedQuotes: new Map(),
     quoteFeedbackEvents: [],
+    feedbackGrants: new Map(),
     creditAccounts: new Map(),
     creditApiKeys: new Map(),
     creditLedger: [],
@@ -282,6 +283,10 @@ export function summarizeTrust(record) {
         verificationScore * 0.05
       )
     : verificationScore * 0.7;
+  const trustSampleSize = Math.max(operationalEvents.length, consumerFeedbackEvents.length);
+  const trustScoreConfidence = trustSampleSize ? trustSampleSize / (trustSampleSize + 5) : 0;
+  const trustScorePrior = verificationScore * 0.7;
+  const routingTrustScore = trustScore * trustScoreConfidence + trustScorePrior * (1 - trustScoreConfidence);
   return {
     provider_id: record.manifest.provider.provider_id,
     feedback_count: events.length,
@@ -300,7 +305,11 @@ export function summarizeTrust(record) {
     average_agent_friendly_score: averageAgentFriendlyScore == null ? null : Number(averageAgentFriendlyScore.toFixed(2)),
     average_latency_ms: averageLatencyMs == null ? null : Number(averageLatencyMs.toFixed(2)),
     verification_status: record.verification_status,
-    trust_score: Number(trustScore.toFixed(4))
+    feedback_state: hasTrustEvents ? "observed" : "no_feedback_yet",
+    trust_score: Number(trustScore.toFixed(4)),
+    trust_score_prior: Number(trustScorePrior.toFixed(4)),
+    trust_score_confidence: Number(trustScoreConfidence.toFixed(4)),
+    routing_trust_score: Number(routingTrustScore.toFixed(4))
   };
 }
 
@@ -431,7 +440,9 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
       feedback_event_count: trust.feedback_count,
       total_calls: trust.operational_feedback_count,
       consumer_feedback_count: trust.consumer_feedback_count,
-      trust_score: trust.trust_score,
+      trust_score: trust.feedback_state === "no_feedback_yet" ? null : trust.trust_score,
+      trust_score_confidence: trust.trust_score_confidence,
+      feedback_state: trust.feedback_state,
       success_rate: trust.success_rate,
       average_latency_ms: trust.average_latency_ms,
       latest_validation: record.validation_runs?.at(-1) || null,
@@ -459,7 +470,41 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
     route_observations: store.routeObservations?.length || 0,
     quote_feedback_events: store.quoteFeedbackEvents?.length || 0,
     evidence_events: store.evidenceEvents?.length || 0,
+    feedback_delivery: feedbackDeliveryMetrics(store),
     services
+  };
+}
+
+export function feedbackDeliveryMetrics(store) {
+  const operationalVersions = new Set([
+    "agent_service_feedback_v1",
+    "agent_external_api_feedback_v1",
+    "agent_local_connector_feedback_v1"
+  ]);
+  const operational = (store.feedbackEvents || []).filter((event) => operationalVersions.has(event.event_version));
+  const byRequest = new Map();
+  for (const event of operational) {
+    const key = `${event.service_id || ""}:${event.request_id || ""}`;
+    if (!byRequest.has(key)) byRequest.set(key, event);
+    else Object.assign(byRequest.get(key), event);
+  }
+  const calls = [...byRequest.values()];
+  const states = new Map();
+  for (const event of store.feedbackEvents || []) {
+    const key = `${event.service_id || ""}:${event.request_id || ""}`;
+    const state = event.consumer_feedback_trust_anchor?.state || event.trust_anchor?.state;
+    if (state) states.set(key, state);
+  }
+  const received = calls.filter((event) => Boolean(event.consumer_feedback)).length;
+  const countState = (state) => [...states.values()].filter((value) => value === state).length;
+  return {
+    expected: calls.length,
+    received,
+    completion_rate: calls.length ? Number((received / calls.length).toFixed(2)) : null,
+    onchain_submitted: countState("onchain_submitted"),
+    onchain_pending: countState("onchain_pending"),
+    onchain_failed: countState("onchain_failed"),
+    offchain_recorded: countState("offchain_recorded")
   };
 }
 
@@ -570,7 +615,9 @@ export function publicServiceSummary(record) {
     verification_status: record.verification_status,
     total_calls: trust.operational_feedback_count,
     consumer_feedback_count: trust.consumer_feedback_count,
-    trust_score: trust.trust_score,
+    trust_score: trust.feedback_state === "no_feedback_yet" ? null : trust.trust_score,
+    trust_score_confidence: trust.trust_score_confidence,
+    feedback_state: trust.feedback_state,
     success_rate: trust.success_rate,
     average_latency_ms: trust.average_latency_ms,
     estimated_revenue: Number((Number(record.manifest.pricing?.amount || 0) * trust.operational_feedback_count).toFixed(8)),

@@ -19,6 +19,7 @@ const remoteCooldownMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_COOLDOWN
 const transientHttpStatuses = new Set([408, 425, 429, 502, 503, 504]);
 const remoteSessionIds = new Map();
 const remoteCircuitOpenUntil = new Map();
+const localFeedbackTokens = new Map();
 let preferredRemoteOrigin = baseUrl;
 let preferredRemoteOriginUntil = 0;
 let deviceAuthorization = null;
@@ -99,6 +100,7 @@ async function forwardRequest(message) {
     const localSearch = localSocialSearchRequest(message);
     if (localSearch) {
       const result = await runLocalSocialSearch(localSearch);
+      await attachLocalFeedbackGrant(result);
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -112,6 +114,7 @@ async function forwardRequest(message) {
     const localSocialPost = localSocialPostRequest(message);
     if (localSocialPost) {
       const result = await runLocalSocialPostRead(localSocialPost.canonical_url);
+      await attachLocalFeedbackGrant(result);
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -123,6 +126,7 @@ async function forwardRequest(message) {
       return;
     }
     await resumePendingDeviceAuthorization();
+    attachLocalFeedbackToken(message);
     const response = await postRemote(message);
     const text = await response.text();
     if (!response.ok) {
@@ -193,12 +197,49 @@ async function forwardRequest(message) {
   }
 }
 
+async function attachLocalFeedbackGrant(result) {
+  if (!result?.request_id || !result?.service_id || !result?.consumer_feedback_request) return result;
+  const params = result.request?.params || {};
+  try {
+    const response = await postAuthenticatedJson("/agent-router/feedback/grant", {
+      request_id: result.request_id,
+      service_id: result.service_id,
+      operation: params.operation || (result.request_id.includes("_post_") ? "post" : "search"),
+      capability: result.request?.capability || "social_search",
+      result_status: result.status
+    });
+    if (!response.ok || !response.payload?.feedback_token) {
+      result.consumer_feedback_request.registration = {
+        status: "registration_failed",
+        error: response.payload?.error?.message || response.payload?.error || `HTTP ${response.status}`
+      };
+      return result;
+    }
+    const token = response.payload.feedback_token;
+    localFeedbackTokens.set(result.request_id, token);
+    result.consumer_feedback_request.feedback_token_required = true;
+    result.consumer_feedback_request.registration = { status: "registered", service_id: result.service_id };
+    return result;
+  } catch (error) {
+    result.consumer_feedback_request.registration = { status: "registration_failed", error: error.message };
+    return result;
+  }
+}
+
+function attachLocalFeedbackToken(message) {
+  if (message?.method !== "tools/call" || message?.params?.name !== "agentrouter_feedback") return;
+  const args = message.params.arguments || {};
+  if (args.feedback_token) return;
+  const token = localFeedbackTokens.get(String(args.request_id || ""));
+  if (token) args.feedback_token = token;
+}
+
 function handleLocalControlPlane(message) {
   if (message?.method === "initialize") {
     return {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "AgentRouter", version: "0.12.4" }
+      serverInfo: { name: "AgentRouter", version: "0.12.5" }
     };
   }
   if (message?.method === "ping") return {};
@@ -615,18 +656,24 @@ async function completeSponsoredFeedback(message, payload) {
     });
     feedback.erc8004 = erc8004;
     feedback.trust_anchor = { ...(feedback.trust_anchor || {}), erc8004 };
-    if (erc8004.status === "submitted") {
-      const attached = await postAuthenticatedJson("/agent-router/feedback/erc8004", {
-        service_id: feedback.service_id,
-        request_id: feedback.request_id,
-        erc8004
-      });
-      feedback.erc8004_attachment = attached.payload;
-      if (attached.ok) feedback.trust_anchor = attached.payload?.trust_anchor || feedback.trust_anchor;
-    }
+    const attached = await postAuthenticatedJson("/agent-router/feedback/erc8004", {
+      service_id: feedback.service_id,
+      request_id: feedback.request_id,
+      erc8004
+    });
+    feedback.erc8004_attachment = attached.payload;
+    if (attached.ok) feedback.trust_anchor = attached.payload?.trust_anchor || feedback.trust_anchor;
     block.text = JSON.stringify(feedback, null, 2);
   } catch (error) {
-    feedback.erc8004 = { ...feedback.erc8004, status: "sponsorship_failed", recorded_offchain: true, error: error.message };
+    const failed = { ...feedback.erc8004, status: "sponsorship_failed", recorded_offchain: true, error: error.message };
+    feedback.erc8004 = failed;
+    const attached = await postAuthenticatedJson("/agent-router/feedback/erc8004", {
+      service_id: feedback.service_id,
+      request_id: feedback.request_id,
+      erc8004: failed
+    }).catch(() => null);
+    if (attached) feedback.erc8004_attachment = attached.payload;
+    if (attached?.ok) feedback.trust_anchor = attached.payload?.trust_anchor || feedback.trust_anchor;
     block.text = JSON.stringify(feedback, null, 2);
   }
 }

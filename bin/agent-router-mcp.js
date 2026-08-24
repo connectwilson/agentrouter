@@ -103,6 +103,7 @@ const tools = [
       properties: {
         request_id: { type: "string", description: "The request_id returned by the completed AgentRouter call." },
         consumer_id: { type: "string", description: "Optional caller identifier.", default: "main_agent" },
+        feedback_token: { type: "string", description: "Server-issued grant for local connector feedback." },
         feedback: {
           type: "object",
           required: ["intent_fit", "answer_useful", "reason"],
@@ -496,6 +497,7 @@ async function submitFeedbackWithLocalWallet(args) {
   const feedbackResult = await post("/agent-router/feedback", {
     request_id: args.request_id,
     consumer_id: args.consumer_id || "main_agent",
+    feedback_token: args.feedback_token,
     feedback: args.feedback || {},
     defer_erc8004_to_consumer: true
   });

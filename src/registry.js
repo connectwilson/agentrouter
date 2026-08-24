@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { createArcPaymentProof } from "./payment.js";
 import { validateEnvelope, validateJsonSchema } from "./schema.js";
 import { publicServiceRecord, summarizeTrust } from "./store.js";
@@ -711,9 +712,10 @@ export async function runServiceHealthCheck(store, serviceId) {
   return healthEvent;
 }
 
-export function recordConsumerFeedback(store, body = {}, {
+export async function recordConsumerFeedback(store, body = {}, {
   actorKey = "",
-  requireKnownInvocation = false
+  requireKnownInvocation = false,
+  writeEvent = writePersistentServiceEvent
 } = {}) {
   const serviceId = body.service_id;
   const record = store.services.get(serviceId);
@@ -735,6 +737,18 @@ export function recordConsumerFeedback(store, body = {}, {
     if (external) {
       assertFeedbackActor(external, actorKey);
       const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);
+      const existing = existingConsumerFeedbackResult(external, consumerFeedback, actorKey);
+      if (existing) return existing;
+      if (external.execution_location === "user_device" && requireKnownInvocation) {
+        assertLocalFeedbackGrant(store, {
+          requestId,
+          serviceId: external.service_id,
+          actorKey,
+          feedbackToken: body.feedback_token
+        });
+      }
+      const event = consumerFeedbackEvent({ target: external, requestId, actorKey, consumerFeedback });
+      await writeEvent({ eventType: "consumer_feedback", serviceId: external.service_id, requestId, event });
       external.consumer_feedback = consumerFeedback;
       external.consumer_rating = consumerFeedback.consumer_score;
       if (actorKey) {
@@ -742,8 +756,10 @@ export function recordConsumerFeedback(store, body = {}, {
         external.consumer_id = actorKey;
       }
       external.updated_at = new Date().toISOString();
+      if (!store.feedbackEvents.some((item) => sameConsumerEvent(item, event))) store.feedbackEvents.push(event);
       return {
         ok: true,
+        status: "consumer_feedback_recorded",
         service_id: external.service_id,
         request_id: requestId,
         consumer_feedback: consumerFeedback,
@@ -753,10 +769,16 @@ export function recordConsumerFeedback(store, body = {}, {
     // Local connector runs execute on the user's device, so the server has no
     // prior event to attach to. Accept the rating and create the record, or
     // free local paths could never build a reputation at all.
-    const localMatch = /^local_(?:search|post)_([a-z]+)_/.exec(requestId);
+    const localMatch = parseLocalFeedbackRequestId(requestId);
     if (localMatch) {
+      if (requireKnownInvocation) {
+        const error = new Error("A server-issued local feedback grant is required for this request_id.");
+        error.statusCode = 404;
+        error.code = "LOCAL_FEEDBACK_GRANT_REQUIRED";
+        throw error;
+      }
       const consumerFeedback = normalizeConsumerFeedback(body.feedback || body);
-      const localServiceId = serviceId || `local_social_${localMatch[1]}`;
+      const localServiceId = serviceId || `local_social_${localMatch.platform}`;
       const event = {
         event_version: "agent_local_connector_feedback_v1",
         request_id: requestId,
@@ -771,9 +793,11 @@ export function recordConsumerFeedback(store, body = {}, {
         consumer_rating: consumerFeedback.consumer_score,
         created_at: new Date().toISOString()
       };
+      await writeEvent({ eventType: "consumer_feedback", serviceId: localServiceId, requestId, event });
       (store.feedbackEvents ||= []).push(event);
       return {
         ok: true,
+        status: "consumer_feedback_recorded",
         service_id: localServiceId,
         request_id: requestId,
         consumer_feedback: consumerFeedback,
@@ -788,6 +812,10 @@ export function recordConsumerFeedback(store, body = {}, {
   const targetEvent = [...(record.feedback_events || [])].reverse().find((event) => event.request_id === requestId);
   if (targetEvent) {
     assertFeedbackActor(targetEvent, actorKey);
+    const existing = existingConsumerFeedbackResult(targetEvent, consumerFeedback, actorKey);
+    if (existing) return { ...existing, trust: summarizeTrust(record) };
+    const event = consumerFeedbackEvent({ target: targetEvent, requestId, actorKey, consumerFeedback });
+    await writeEvent({ eventType: "consumer_feedback", serviceId, requestId, event });
     targetEvent.consumer_feedback = consumerFeedback;
     targetEvent.consumer_rating = consumerFeedback.consumer_score;
     if (actorKey) {
@@ -795,6 +823,7 @@ export function recordConsumerFeedback(store, body = {}, {
       targetEvent.consumer_id = actorKey;
     }
     targetEvent.updated_at = new Date().toISOString();
+    if (!store.feedbackEvents.some((item) => sameConsumerEvent(item, event))) store.feedbackEvents.push(event);
   } else {
     if (requireKnownInvocation) {
       const error = new Error("INVOCATION_NOT_FOUND");
@@ -802,7 +831,7 @@ export function recordConsumerFeedback(store, body = {}, {
       error.code = "INVOCATION_NOT_FOUND";
       throw error;
     }
-    record.feedback_events.push({
+    const target = {
       event_version: "agent_service_feedback_v1",
       request_id: requestId,
       service_id: serviceId,
@@ -815,33 +844,159 @@ export function recordConsumerFeedback(store, body = {}, {
       consumer_rating: consumerFeedback.consumer_score,
       consumer_feedback: consumerFeedback,
       created_at: new Date().toISOString()
-    });
+    };
+    const event = consumerFeedbackEvent({ target, requestId, actorKey, consumerFeedback });
+    await writeEvent({ eventType: "consumer_feedback", serviceId, requestId, event });
+    record.feedback_events.push(target);
+    if (!store.feedbackEvents.some((item) => sameConsumerEvent(item, event))) store.feedbackEvents.push(event);
   }
-  const event = {
-    event_version: "agent_consumer_feedback_v1",
-    service_id: serviceId,
-    provider_id: record.manifest.provider.provider_id,
-    request_id: requestId,
-    consumer_id: actorKey || body.consumer_id || "unknown_consumer_agent",
-    consumer_feedback_actor_key: actorKey || undefined,
-    consumer_feedback: consumerFeedback,
-    created_at: new Date().toISOString()
-  };
-  store.feedbackEvents.push(event);
-  writePersistentServiceEvent({
-    eventType: "consumer_feedback",
-    serviceId,
-    requestId,
-    event
-  }).catch(() => {});
   return {
     ok: true,
+    status: "consumer_feedback_recorded",
     service_id: serviceId,
     request_id: requestId,
     consumer_feedback: consumerFeedback,
     trust: summarizeTrust(record)
   };
 }
+
+function consumerFeedbackEvent({ target, requestId, actorKey, consumerFeedback }) {
+  return {
+    event_version: "agent_consumer_feedback_v1",
+    service_id: target.service_id,
+    provider_id: target.provider_id,
+    request_id: requestId,
+    consumer_id: actorKey || target.consumer_id || "unknown_consumer_agent",
+    consumer_feedback_actor_key: actorKey || undefined,
+    consumer_feedback: consumerFeedback,
+    created_at: new Date().toISOString()
+  };
+}
+
+function existingConsumerFeedbackResult(target, consumerFeedback, actorKey) {
+  if (!target.consumer_feedback) return null;
+  const same = JSON.stringify(target.consumer_feedback) === JSON.stringify(consumerFeedback);
+  if (!same) {
+    const error = new Error("Different feedback has already been recorded for this invocation.");
+    error.statusCode = 409;
+    error.code = "CONSUMER_FEEDBACK_CONFLICT";
+    throw error;
+  }
+  return {
+    ok: true,
+    status: "consumer_feedback_already_recorded",
+    service_id: target.service_id,
+    request_id: target.request_id,
+    consumer_feedback: target.consumer_feedback,
+    recorded_at: target.updated_at || target.created_at,
+    consumer_id: actorKey || target.consumer_id,
+    trust_anchor: target.consumer_feedback_trust_anchor || target.trust_anchor || null
+  };
+}
+
+function sameConsumerEvent(left, right) {
+  return left.event_version === "agent_consumer_feedback_v1"
+    && left.request_id === right.request_id
+    && left.service_id === right.service_id
+    && left.consumer_id === right.consumer_id;
+}
+
+export function parseLocalFeedbackRequestId(requestId) {
+  const match = /^local_(search|post|read_user_posts)_([a-z]+)_/.exec(String(requestId || ""));
+  return match ? { operation: match[1], platform: match[2] } : null;
+}
+
+export async function issueLocalFeedbackGrant(store, body = {}, {
+  actorKey = "",
+  writeEvent = writePersistentServiceEvent,
+  randomBytes = (size) => crypto.randomBytes(size)
+} = {}) {
+  const requestId = String(body.request_id || "").trim();
+  const parsed = parseLocalFeedbackRequestId(requestId);
+  if (!actorKey || !parsed) {
+    const error = new Error("A valid local request_id and authenticated actor are required.");
+    error.statusCode = actorKey ? 422 : 401;
+    error.code = actorKey ? "INVALID_LOCAL_FEEDBACK_GRANT" : "AUTH_REQUIRED";
+    throw error;
+  }
+  const serviceId = String(body.service_id || `local_social_${parsed.platform}`);
+  if (serviceId !== `local_social_${parsed.platform}` || (body.operation && body.operation !== parsed.operation)) {
+    const error = new Error("Local feedback grant metadata does not match request_id.");
+    error.statusCode = 422;
+    error.code = "LOCAL_FEEDBACK_GRANT_MISMATCH";
+    throw error;
+  }
+  const existing = store.feedbackGrants?.get(requestId);
+  if (existing) {
+    if (existing.actor_key !== actorKey) {
+      const error = new Error("This local invocation belongs to another authenticated account.");
+      error.statusCode = 403;
+      error.code = "FORBIDDEN_FEEDBACK_ACTOR";
+      throw error;
+    }
+    if (existing.public?.feedback_token) {
+      return { ...existing.public, status: "feedback_grant_already_issued" };
+    }
+    const error = new Error("This local feedback grant was already issued. Run the local operation again to obtain a new request_id.");
+    error.statusCode = 409;
+    error.code = "FEEDBACK_GRANT_ALREADY_ISSUED";
+    throw error;
+  }
+  const feedbackToken = randomBytes(32).toString("base64url");
+  const createdAt = new Date().toISOString();
+  const grant = {
+    event_version: "agent_local_feedback_grant_v1",
+    request_id: requestId,
+    service_id: serviceId,
+    provider_id: "local_browser_connector",
+    actor_key: actorKey,
+    operation: parsed.operation,
+    platform: parsed.platform,
+    capability: String(body.capability || "social_search"),
+    result_status: String(body.result_status || "completed"),
+    token_hash: hashJson(feedbackToken),
+    created_at: createdAt
+  };
+  await writeEvent({ eventType: "feedback_grant", serviceId, requestId, event: grant });
+  const operational = localOperationalEventFromGrant(grant);
+  store.feedbackGrants ||= new Map();
+  const publicGrant = { ok: true, status: "feedback_grant_issued", request_id: requestId, service_id: serviceId, feedback_token: feedbackToken, created_at: createdAt };
+  store.feedbackGrants.set(requestId, { ...grant, public: publicGrant });
+  if (!store.feedbackEvents.some((event) => event.request_id === requestId && event.service_id === serviceId)) {
+    store.feedbackEvents.push(operational);
+  }
+  return publicGrant;
+}
+
+function assertLocalFeedbackGrant(store, { requestId, serviceId, actorKey, feedbackToken }) {
+  const grant = store.feedbackGrants?.get(requestId);
+  if (!grant || grant.service_id !== serviceId || grant.actor_key !== actorKey || hashJson(String(feedbackToken || "")) !== grant.token_hash) {
+    const error = new Error("A valid server-issued local feedback grant is required for this invocation.");
+    error.statusCode = grant && grant.actor_key !== actorKey ? 403 : 404;
+    error.code = grant && grant.actor_key !== actorKey ? "FORBIDDEN_FEEDBACK_ACTOR" : "LOCAL_FEEDBACK_GRANT_REQUIRED";
+    throw error;
+  }
+}
+
+function localOperationalEventFromGrant(grant) {
+  const success = ["completed", "no_results", "success"].includes(grant.result_status);
+  return {
+    event_version: "agent_local_connector_feedback_v1",
+    request_id: grant.request_id,
+    service_id: grant.service_id,
+    provider_id: grant.provider_id,
+    consumer_id: grant.actor_key,
+    invocation_actor_key: grant.actor_key,
+    status: success ? "success" : "error",
+    schema_valid: success,
+    execution_location: "user_device",
+    operation: grant.operation,
+    capability: grant.capability,
+    consumer_feedback_expected: true,
+    created_at: grant.created_at
+  };
+}
+
 
 function assertFeedbackActor(event, actorKey) {
   if (!actorKey) return;
@@ -862,8 +1017,26 @@ function assertFeedbackActor(event, actorKey) {
 
 export async function hydratePersistentServiceEvents(store) {
   const events = await listPersistentServiceEvents();
+  return hydrateServiceEventRows(store, events);
+}
+
+export async function hydrateServiceEventRows(store, events = []) {
   for (const row of events) {
     const event = row.event;
+    if (row.event_type === "feedback_grant") {
+      store.feedbackGrants ||= new Map();
+      if (!store.feedbackGrants.has(row.request_id)) store.feedbackGrants.set(row.request_id, event);
+      const operational = localOperationalEventFromGrant(event);
+      if (!store.feedbackEvents.some((item) => item.request_id === row.request_id && item.service_id === row.service_id)) {
+        store.feedbackEvents.push(operational);
+      }
+      continue;
+    }
+    if (row.event_type === "issued_quote") {
+      store.issuedQuotes ||= new Map();
+      if (Number(event.expires_at || 0) > Date.now()) store.issuedQuotes.set(event.quote_id, event);
+      continue;
+    }
     if (row.event_type === "operational_feedback") {
       const record = store.services.get(row.service_id);
       if (record && !record.feedback_events.some((item) => item.request_id === event.request_id && item.payment_tx === event.payment_tx)) {
@@ -897,8 +1070,25 @@ export async function hydratePersistentServiceEvents(store) {
           });
         }
       }
+      const globalOperational = [...store.feedbackEvents].reverse().find((item) =>
+        item.request_id === row.request_id &&
+        item.service_id === row.service_id &&
+        item.event_version !== "agent_consumer_feedback_v1"
+      );
+      if (globalOperational) {
+        globalOperational.consumer_feedback = event.consumer_feedback;
+        globalOperational.consumer_rating = event.consumer_feedback?.consumer_score ?? globalOperational.consumer_rating;
+        globalOperational.consumer_feedback_actor_key = event.consumer_feedback_actor_key || event.consumer_id;
+      }
       if (!store.feedbackEvents.some((item) => item.event_version === event.event_version && item.request_id === event.request_id && item.consumer_id === event.consumer_id)) {
         store.feedbackEvents.push(event);
+      }
+      continue;
+    }
+    if (row.event_type === "quote_feedback") {
+      store.quoteFeedbackEvents ||= [];
+      if (!store.quoteFeedbackEvents.some((item) => item.quote_id === event.quote_id && item.actor_key === event.actor_key)) {
+        store.quoteFeedbackEvents.push(event);
       }
       continue;
     }
@@ -921,6 +1111,32 @@ export async function hydratePersistentServiceEvents(store) {
         target.arc_anchor = event.arc_anchor;
         if (event.erc8004) target.erc8004 = event.erc8004;
         if (event.trust_anchor) target.trust_anchor = event.trust_anchor;
+      }
+      continue;
+    }
+    if (row.event_type === "consumer_feedback_erc8004_client") {
+      const record = store.services.get(row.service_id);
+      const target = [...(record?.feedback_events || [])].reverse().find((item) => item.request_id === row.request_id);
+      if (target && event.erc8004) {
+        target.consumer_feedback_erc8004 = event.erc8004;
+        target.consumer_feedback_trust_anchor = {
+          ...(target.consumer_feedback_trust_anchor || {}),
+          primary_standard: "ERC-8004",
+          state: event.erc8004.status === "submitted" ? "onchain_submitted" : "onchain_failed",
+          erc8004: event.erc8004,
+          updated_at: event.created_at || new Date().toISOString()
+        };
+      }
+      const globalTarget = [...store.feedbackEvents].reverse().find((item) =>
+        item.request_id === row.request_id && item.service_id === row.service_id
+      );
+      if (globalTarget && event.erc8004) {
+        globalTarget.erc8004 = event.erc8004;
+        globalTarget.trust_anchor = target?.consumer_feedback_trust_anchor || {
+          state: event.erc8004.status === "submitted" ? "onchain_submitted" : "onchain_failed",
+          primary_standard: "ERC-8004",
+          erc8004: event.erc8004
+        };
       }
       continue;
     }

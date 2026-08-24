@@ -71,6 +71,7 @@ test("agent hub exposes callable AI Search API sources as one category", () => {
   assert.match(hub, /class="api-price"/);
   assert.match(hub, /class="api-trust"/);
   assert.match(hub, /formatTrustScore\(service\.trust_score\)/);
+  assert.match(hub, /No feedback/);
   assert.match(hub, />Calls<\/span>/);
   assert.match(hub, />Success<\/span>/);
   assert.doesNotMatch(hub, /class="heart"/);

@@ -249,6 +249,8 @@ After a paid call, AgentRouter records:
 
 The custom evidence anchor keeps the paid-call trace auditable without putting raw API data onchain. Consumer feedback uses ERC-8004 as its one public onchain record; AgentRouter does not also create a custom feedback-anchor transaction.
 
+Feedback uses a persistent, idempotent event lifecycle. Registered, external-API, and local-browser calls share the same consumer-feedback contract; local calls require a server-issued one-time grant. Trust anchors report `offchain_recorded`, `onchain_pending`, `onchain_submitted`, or `onchain_failed`, and registry stats expose feedback completion plus each onchain state. Trust scoring also reports sample confidence and shrinks small samples toward the verified-service prior before using them for routing.
+
 Each published service can expose an ERC-8004 Agent Registration File and register an onchain identity:
 
 ```bash

@@ -267,6 +267,56 @@ test("sensitive writes are rate limited per authenticated actor", async () => {
   });
 });
 
+test("terminal ERC-8004 sponsorship failures become an explicit persisted trust state", async () => {
+  await withSecurityServer(async ({ server, baseUrl }) => {
+    await postJson(`${baseUrl}/services/register`, manifest("erc_failure_service"), "ar_session=owner-session");
+    const pending = {
+      standard: "ERC-8004",
+      registry_type: "reputation",
+      status: "consumer_submission_required",
+      chain_id: 56,
+      registry_address: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+      agent_id: "42",
+      feedback_hash: `0x${"c".repeat(64)}`,
+      value: "10000",
+      value_decimals: 2,
+      tag1: "intent_fit",
+      tag2: "answer_useful",
+      endpoint: "https://agentrouter.network/agent-router/feedback",
+      feedback_uri: "https://agentrouter.network/agent-router/feedback?request_id=req_erc_failure"
+    };
+    const event = {
+      event_version: "agent_service_feedback_v1",
+      request_id: "req_erc_failure",
+      service_id: "erc_failure_service",
+      provider_id: "provider_erc_failure_service",
+      invocation_actor_key: "github:security-owner",
+      status: "success",
+      schema_valid: true,
+      consumer_feedback_erc8004: pending,
+      consumer_feedback_trust_anchor: { state: "onchain_pending", erc8004: pending },
+      created_at: new Date().toISOString()
+    };
+    server.store.services.get("erc_failure_service").feedback_events.push(event);
+    server.store.feedbackEvents.push(event);
+
+    const response = await postJson(`${baseUrl}/agent-router/feedback/erc8004`, {
+      service_id: "erc_failure_service",
+      request_id: "req_erc_failure",
+      erc8004: {
+        ...pending,
+        status: "sponsorship_failed",
+        error: "Paymaster unavailable"
+      }
+    }, "ar_session=owner-session");
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.status, "erc8004_feedback_failure_attached");
+    assert.equal(payload.trust_anchor.state, "onchain_failed");
+    assert.equal(event.consumer_feedback_erc8004.status, "sponsorship_failed");
+  });
+});
+
 test("quote feedback only accepts an issued quote and is idempotent", async () => {
   await withSecurityServer(async ({ server, baseUrl }) => {
     const registration = await postJson(

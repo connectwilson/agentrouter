@@ -55,6 +55,12 @@ test("persistent hydration restores external feedback, quote feedback, and submi
     tx_hash: `0x${"a".repeat(64)}`
   };
   const rows = [
+    {
+      event_type: "issued_quote",
+      service_id: "hydrated_service",
+      request_id: "quote_1",
+      event: { quote_id: "quote_1", service_id: "hydrated_service", actor_key: "actor:owner", created_at: "2026-08-24T00:00:30.000Z", expires_at: Date.now() + 60_000 }
+    },
     { event_type: "operational_feedback", service_id: "hydrated_service", request_id: "req_registry", event: registryOperational },
     { event_type: "operational_feedback", service_id: "external_api_exa", request_id: "req_external", event: externalOperational },
     {
@@ -99,6 +105,7 @@ test("persistent hydration restores external feedback, quote feedback, and submi
   const external = store.feedbackEvents.find((event) => event.request_id === "req_external" && event.event_version === "agent_service_feedback_v1");
   assert.equal(external.consumer_feedback.intent_fit, "no");
   assert.equal(store.quoteFeedbackEvents.length, 1);
+  assert.equal(store.issuedQuotes.get("quote_1").service_id, "hydrated_service");
   const registry = record.feedback_events.find((event) => event.request_id === "req_registry");
   assert.equal(registry.consumer_feedback_erc8004.status, "submitted");
   assert.equal(registry.consumer_feedback_trust_anchor.state, "onchain_submitted");
@@ -139,7 +146,10 @@ test("trust exposes sample confidence and shrinks small samples for routing", ()
   assert.equal(none.feedback_state, "no_feedback_yet");
   assert.equal(none.trust_score_confidence, 0);
   assert.ok(one.trust_score_confidence > 0 && one.trust_score_confidence < many.trust_score_confidence);
-  assert.ok(one.routing_trust_score > one.trust_score, "one rating is shrunk toward the verified-service prior");
+  assert.ok(
+    Math.abs(one.routing_trust_score - one.trust_score_prior) < Math.abs(one.trust_score - one.trust_score_prior),
+    "one rating is shrunk toward the verified-service prior"
+  );
   assert.ok(Math.abs(many.routing_trust_score - many.trust_score) < Math.abs(one.routing_trust_score - one.trust_score));
 });
 

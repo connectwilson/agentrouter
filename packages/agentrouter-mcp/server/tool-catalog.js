@@ -96,6 +96,7 @@ export const remoteMcpTools = [
       properties: {
         request_id: { type: "string" },
         consumer_id: { type: "string" },
+        feedback_token: { type: "string", description: "Opaque one-time grant returned for a local connector result; the MCP bridge normally supplies this automatically." },
         feedback: { type: "object" }
       }
     }

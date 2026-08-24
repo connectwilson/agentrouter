@@ -933,7 +933,7 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
           <div><span>Price</span><strong>${html(priceDisplay)}</strong><small>${html(priceContextLabel)}${pricingSourceLink}</small></div>
           <div><span>Service calls</span><strong>${html(service.metrics_available === false ? "--" : trust.operational_feedback_count ?? service.total_calls ?? 0)}</strong><small>Observed demand</small></div>
           <div><span>Success rate</span><strong>${html(formatPercent(trust.success_rate))}</strong><small>Runtime feedback</small></div>
-          <div><span>Trust score</span><strong>${html(formatScore(trust.trust_score))}</strong><small>Verification + feedback</small></div>
+          <div><span>Trust score</span><strong>${html(trust.feedback_state === "no_feedback_yet" ? "No feedback yet" : formatScore(trust.trust_score))}</strong><small>${html(trust.feedback_state === "no_feedback_yet" ? "Awaiting observed calls" : `Confidence ${formatPercent(trust.trust_score_confidence)}`)}</small></div>
           <div><span>Health</span><strong>${html(health.status || service.health_status || "unknown")}</strong><small>${html(health.last_validation_at || "No validation time")}</small></div>
         </section>
 
@@ -1509,7 +1509,7 @@ function serviceClientScript() {
     }
     function serviceRevenue(service) { return Number(service.price || 0) * Number(service.total_calls || 0); }
     function formatTrustScore(value) {
-      if (value == null || Number.isNaN(Number(value))) return "—";
+      if (value == null || Number.isNaN(Number(value))) return "No feedback";
       return Math.round(Math.max(0, Math.min(1, Number(value))) * 100) + "/100";
     }
     function formatSuccessRate(value) {

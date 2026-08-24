@@ -387,20 +387,7 @@ export async function routeTask(store, { task = "", intent: providedIntent, cons
     score: selected.routing_score,
     created_at: new Date().toISOString()
   };
-  record.feedback_events.push({
-    event_version: "agent_service_feedback_v1",
-    request_id: invocation.body.result.request_id || `route_${Date.now()}`,
-    service_id: selected.service_id,
-    provider_id: record.manifest.provider.provider_id,
-    consumer_id: "router_agent",
-    payment_tx: invocation.body.feedback?.payment_tx || null,
-    status: invocation.body.result.status === "success" ? "success" : "error",
-    schema_valid: verification.schema_valid,
-    latency_ms: invocation.body.feedback?.latency_ms || null,
-    consumer_rating: verification.schema_valid && verification.coverage_valid ? 1 : 0,
-    verification,
-    created_at: new Date().toISOString()
-  });
+  attachVerificationToLatestFeedback(record, invocation.body.result.request_id, verification);
   const consumer_feedback_request = createConsumerFeedbackRequest({
     request: { task, intent: resolved.intent, constraints },
     selectedService: selected,
@@ -820,13 +807,20 @@ function recordIssuedQuote(store, quote, actorKey = "") {
       store.issuedQuotes.delete(quoteId);
     }
   }
-  store.issuedQuotes.set(quote.quote_id, {
+  const event = {
     quote_id: quote.quote_id,
     service_id: quote.service_id,
     actor_key: actorKey,
     created_at: new Date(now).toISOString(),
     expires_at: expiresAt
-  });
+  };
+  store.issuedQuotes.set(quote.quote_id, event);
+  writePersistentServiceEvent({
+    eventType: "issued_quote",
+    serviceId: quote.service_id,
+    requestId: quote.quote_id,
+    event
+  }).catch(() => {});
 }
 
 function createQuoteFeedbackRequest({ quote, selectedService, request }) {
@@ -1087,7 +1081,7 @@ function scoreCandidate(record, intent, requiredCapabilities, constraints, match
     return { service_id: manifest.service_id, routing_score: 0 };
   }
   const trust = summarizeTrust(record);
-  const trustScore = trust.trust_score;
+  const trustScore = trust.routing_trust_score ?? trust.trust_score;
   const health = summarizeHealth(record);
   if (health.circuit_breaker?.active && !constraints.include_circuit_broken_services) {
     return {

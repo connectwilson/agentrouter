@@ -864,7 +864,9 @@ function externalApiService(definition, store) {
 }
 
 function externalApiEvents(store, serviceId) {
-  return (store?.feedbackEvents || []).filter((event) => event.service_id === serviceId);
+  return (store?.feedbackEvents || []).filter((event) =>
+    event.service_id === serviceId && event.event_version !== "agent_consumer_feedback_v1"
+  );
 }
 
 // Reputation only means something if good results can be rated too, so every

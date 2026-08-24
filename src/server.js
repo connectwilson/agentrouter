@@ -9,7 +9,7 @@ import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
   fetchApifyActorMetadata,
   handleMockUpstreamApify } from "./provider-runtime.js";
-import { hydratePersistentServiceEvents, invokePaidService, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
+import { hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
 import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabilityRequest, routeTask } from "./router.js";
@@ -941,7 +941,7 @@ async function routeRequest(req, res, store, baseUrl, {
     const serviceId = url.pathname.split("/")[2];
     const record = store.services.get(serviceId);
     if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
-    sendJson(res, 200, record.feedback_events || []);
+    sendJson(res, 200, (record.feedback_events || []).map(publicFeedbackEvent));
     return;
   }
 
@@ -961,15 +961,30 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!body.service_id) {
       body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
     }
-    const result = recordConsumerFeedback(store, body, {
+    const result = await recordConsumerFeedback(store, body, {
       actorKey: feedbackActorKey,
       requireKnownInvocation: true
     });
-    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
+    const trustAnchor = result.status === "consumer_feedback_already_recorded" && result.trust_anchor
+      ? result.trust_anchor
+      : await recordConsumerFeedbackAnchor(store, result, baseUrl);
     result.arc_anchor = trustAnchor.arc_anchor;
     result.erc8004 = trustAnchor.erc8004;
     result.trust_anchor = trustAnchor;
     sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/agent-router/feedback/grant") {
+    const feedbackActorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    if (!feedbackActorKey) {
+      sendJson(res, 401, { error: { code: "AUTH_REQUIRED", message: "An authenticated AgentRouter connection is required." } });
+      return;
+    }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, feedbackActorKey)) return;
+    const body = await readJson(req);
+    const result = await issueLocalFeedbackGrant(store, body, { actorKey: feedbackActorKey });
+    sendJson(res, 201, result);
     return;
   }
 
@@ -1001,7 +1016,7 @@ async function routeRequest(req, res, store, baseUrl, {
       feedback_event_version: "agent_router_feedback_events_v1",
       storage: "offchain_memory_db",
       count: events.length,
-      events
+      events: events.map(publicFeedbackEvent)
     });
     return;
   }
@@ -1666,11 +1681,13 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     if (!paymentContext.ownerKey) return agentRouterConnectionRequired();
     const body = { ...args };
     if (!body.service_id) body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
-    const result = recordConsumerFeedback(store, body, {
+    const result = await recordConsumerFeedback(store, body, {
       actorKey: paymentContext.ownerKey,
       requireKnownInvocation: true
     });
-    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
+    const trustAnchor = result.status === "consumer_feedback_already_recorded" && result.trust_anchor
+      ? result.trust_anchor
+      : await recordConsumerFeedbackAnchor(store, result, baseUrl);
     return {
       ...result,
       arc_anchor: trustAnchor.arc_anchor,
@@ -3264,10 +3281,44 @@ function createCompletedCallQualityEvent({ serviceId, providerId, requestId, fee
 }
 
 function listFeedbackEvents(store, { requestId, serviceId } = {}) {
-  const events = serviceId
-    ? (store.services.get(serviceId)?.feedback_events || [])
-    : [...store.services.values()].flatMap((record) => record.feedback_events || []);
-  return events.filter((event) => !requestId || event.request_id === requestId);
+  const feedbackVersions = new Set([
+    "agent_service_feedback_v1",
+    "agent_external_api_feedback_v1",
+    "agent_local_connector_feedback_v1",
+    "agent_consumer_feedback_v1"
+  ]);
+  const events = (store.feedbackEvents || []).filter((event) => feedbackVersions.has(event.event_version));
+  return events
+    .filter((event) => !serviceId || event.service_id === serviceId)
+    .filter((event) => !requestId || event.request_id === requestId);
+}
+
+function publicFeedbackEvent(event = {}) {
+  const feedback = event.consumer_feedback;
+  return {
+    event_version: event.event_version,
+    request_id: event.request_id,
+    service_id: event.service_id,
+    provider_id: event.provider_id,
+    status: event.status,
+    schema_valid: event.schema_valid,
+    verification: event.verification,
+    latency_ms: event.latency_ms,
+    consumer_rating: event.consumer_rating,
+    consumer_feedback: feedback ? {
+      intent_fit: feedback.intent_fit,
+      answer_useful: feedback.answer_useful,
+      data_quality_score: feedback.data_quality_score,
+      used_in_final_answer: feedback.used_in_final_answer,
+      confidence: feedback.confidence,
+      consumer_score: feedback.consumer_score
+    } : null,
+    trust_anchor: event.consumer_feedback_trust_anchor || event.trust_anchor || null,
+    consumer_feedback_arc_anchor: event.consumer_feedback_arc_anchor || event.arc_anchor || null,
+    consumer_feedback_erc8004: event.consumer_feedback_erc8004 || event.erc8004 || null,
+    created_at: event.created_at,
+    updated_at: event.updated_at || null
+  };
 }
 
 function resolveFeedbackServiceId(store, requestId) {
@@ -3299,6 +3350,7 @@ async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "")
   const trustAnchor = {
     trust_anchor_version: "agent_router_trust_anchor_v1",
     primary_standard: erc8004.status === "not_configured" ? "offchain_feedback" : "ERC-8004",
+    state: erc8004.status === "not_configured" ? "offchain_recorded" : "onchain_pending",
     arc_anchor: anchor,
     erc8004
   };
@@ -3383,12 +3435,16 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
       error: "erc8004 must describe an ERC-8004 reputation submission."
     };
   }
-  if (erc8004.status !== "submitted" || !/^0x[0-9a-fA-F]{64}$/.test(String(erc8004.tx_hash || ""))) {
+  const terminalFailureStatuses = new Set(["sponsorship_unavailable", "sponsorship_failed", "submit_failed"]);
+  if (erc8004.status !== "submitted" && !terminalFailureStatuses.has(erc8004.status)) {
     return {
       ok: false,
-      status: "erc8004_feedback_not_submitted",
-      error: "erc8004.status must be submitted and tx_hash must be present."
+      status: "invalid_erc8004_feedback_status",
+      error: "erc8004.status must be submitted or a supported terminal failure state."
     };
+  }
+  if (erc8004.status === "submitted" && !/^0x[0-9a-fA-F]{64}$/.test(String(erc8004.tx_hash || ""))) {
+    return { ok: false, status: "erc8004_feedback_not_submitted", error: "A submitted feedback transaction must include tx_hash." };
   }
   const record = store.services.get(serviceId);
   const event = [...(record?.feedback_events || [])].reverse().find((item) => item.request_id === requestId);
@@ -3413,8 +3469,22 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
       error: "No verifiable ERC-8004 feedback request exists for this request_id."
     };
   }
+  if (
+    String(erc8004.agent_id || "") !== String(pending.agent_id) ||
+    String(erc8004.feedback_hash || "").toLowerCase() !== String(pending.feedback_hash).toLowerCase()
+  ) {
+    return { ok: false, status: "erc8004_feedback_descriptor_mismatch", error: "ERC-8004 result does not match the pending feedback descriptor." };
+  }
   let verified;
-  if (process.env.ADN_ERC8004_MODE === "mock" && erc8004.mode === "mock") {
+  if (terminalFailureStatuses.has(erc8004.status)) {
+    verified = {
+      ...pending,
+      status: erc8004.status,
+      recorded_offchain: true,
+      error: String(erc8004.error || "ERC-8004 feedback submission failed."),
+      gas_sponsorship: erc8004.gas_sponsorship || null
+    };
+  } else if (process.env.ADN_ERC8004_MODE === "mock" && erc8004.mode === "mock") {
     verified = {
       ...pending,
       status: "submitted",
@@ -3455,6 +3525,7 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
   event.consumer_feedback_trust_anchor = {
     ...(event.consumer_feedback_trust_anchor || {}),
     primary_standard: "ERC-8004",
+    state: verified.status === "submitted" ? "onchain_submitted" : "onchain_failed",
     erc8004: verified,
     updated_at: new Date().toISOString()
   };
@@ -3467,7 +3538,7 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
     globalConsumer.erc8004 = verified;
     globalConsumer.trust_anchor = event.consumer_feedback_trust_anchor;
   }
-  writePersistentServiceEvent({
+  await writePersistentServiceEvent({
     eventType: "consumer_feedback_erc8004_client",
     serviceId,
     requestId,
@@ -3479,10 +3550,10 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
       erc8004: verified,
       created_at: new Date().toISOString()
     }
-  }).catch(() => {});
+  });
   return {
     ok: true,
-    status: "erc8004_feedback_attached",
+    status: verified.status === "submitted" ? "erc8004_feedback_attached" : "erc8004_feedback_failure_attached",
     service_id: serviceId,
     request_id: requestId,
     erc8004: verified,
@@ -3609,6 +3680,22 @@ async function recordQuoteFeedback(store, body = {}, {
       error: "decision or reason_code is not supported."
     };
   }
+  const existing = (store.quoteFeedbackEvents || []).find((item) =>
+    item.quote_id === quoteId && (!actorKey || item.actor_key === actorKey)
+  );
+  if (existing) {
+    const sameFeedback = existing.decision === decision
+      && existing.reason_code === reasonCode
+      && existing.reason === reason;
+    return sameFeedback
+      ? { ok: true, status: "quote_feedback_already_recorded", event: existing }
+      : {
+          ok: false,
+          statusCode: 409,
+          status: "quote_feedback_conflict",
+          error: "Different feedback has already been recorded for this quote."
+        };
+  }
   const issuedQuote = store.issuedQuotes?.get(quoteId);
   if (requireIssuedQuote && !issuedQuote) {
     return {
@@ -3642,22 +3729,6 @@ async function recordQuoteFeedback(store, body = {}, {
       status: "quote_actor_mismatch",
       error: "Only the caller that requested this quote may submit its feedback."
     };
-  }
-  const existing = (store.quoteFeedbackEvents || []).find((item) =>
-    item.quote_id === quoteId && (!actorKey || item.actor_key === actorKey)
-  );
-  if (existing) {
-    const sameFeedback = existing.decision === decision
-      && existing.reason_code === reasonCode
-      && existing.reason === reason;
-    return sameFeedback
-      ? { ok: true, status: "quote_feedback_already_recorded", event: existing }
-      : {
-          ok: false,
-          statusCode: 409,
-          status: "quote_feedback_conflict",
-          error: "Different feedback has already been recorded for this quote."
-        };
   }
   const event = {
     event_version: "agentrouter_quote_feedback_v1",

@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 let poolPromise = null;
 let schemaReady = false;
 
@@ -75,12 +77,32 @@ export async function writePersistentServiceEvent({ eventType, serviceId, reques
   if (!persistenceEnabled()) return false;
   const pool = await getPool();
   await ensureSchema(pool);
+  const idempotencyKey = serviceEventIdempotencyKey({ eventType, serviceId, requestId, event });
   await pool.query(
-    `insert into adn_service_events (event_type, service_id, request_id, event, created_at)
-     values ($1, $2, $3, $4::jsonb, coalesce(($4::jsonb->>'created_at')::timestamptz, now()))`,
-    [eventType, serviceId || null, requestId || null, JSON.stringify(event)]
+    `insert into adn_service_events (event_type, service_id, request_id, event, idempotency_key, created_at)
+     values ($1, $2, $3, $4::jsonb, $5, coalesce(($4::jsonb->>'created_at')::timestamptz, now()))
+     on conflict (idempotency_key) where idempotency_key is not null do nothing`,
+    [eventType, serviceId || null, requestId || null, JSON.stringify(event), idempotencyKey]
   );
   return true;
+}
+
+function serviceEventIdempotencyKey({ eventType, serviceId, requestId, event }) {
+  const idempotentTypes = new Set([
+    "consumer_feedback",
+    "consumer_feedback_anchor",
+    "consumer_feedback_erc8004_client",
+    "feedback_grant",
+    "issued_quote",
+    "quote_feedback"
+  ]);
+  if (!idempotentTypes.has(eventType) || !requestId) return null;
+  return crypto.createHash("sha256").update(JSON.stringify([
+    eventType,
+    serviceId || "",
+    requestId,
+    event?.consumer_id || event?.actor_key || ""
+  ])).digest("hex");
 }
 
 export async function listPersistentServiceEvents({ limit = 10000 } = {}) {
@@ -458,8 +480,11 @@ async function ensureSchema(pool) {
       service_id text,
       request_id text,
       event jsonb not null,
+      idempotency_key text,
       created_at timestamptz not null default now()
     );
+    alter table adn_service_events add column if not exists idempotency_key text;
+    create unique index if not exists adn_service_events_idempotency_idx on adn_service_events(idempotency_key) where idempotency_key is not null;
     create index if not exists adn_service_events_service_idx on adn_service_events(service_id);
     create index if not exists adn_service_events_type_idx on adn_service_events(event_type);
     create index if not exists adn_service_events_request_idx on adn_service_events(request_id);
