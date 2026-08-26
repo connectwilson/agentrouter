@@ -41,6 +41,17 @@ test("homepage emits only the Naive black-and-white visual system", () => {
   assert.doesNotMatch(page, /--shadow-lift:/);
 });
 
+test("homepage renders live recent calls instead of process-load registration order", () => {
+  const page = homeHtml({});
+
+  assert.match(page, /<h3>Recent calls<\/h3>/);
+  assert.doesNotMatch(page, /<h3>Recently registered<\/h3>/);
+  assert.match(page, /stats\.recent_calls/);
+  assert.match(page, /renderRecentCallRows/);
+  assert.match(page, /cache:\s*"no-store"/);
+  assert.match(page, /setInterval\(loadHomeStats,\s*30_000\)/);
+});
+
 test("agent hub renders one data-backed Categories list without empty source taxonomy", () => {
   const hub = agentHtml({});
 

@@ -172,3 +172,48 @@ test("registry stats report feedback completion and explicit on-chain states", (
     offchain_recorded: 1
   });
 });
+
+test("home stats count the canonical call ledger and expose newest calls across service types", async () => {
+  const { summarizeHomeStats } = await import("../src/store.js");
+  const store = createMemoryStore();
+  const record = registerService(store, {
+    ...structuredClone(baseFundFlowManifest),
+    service_id: "registered_recent_service",
+    title: "Registered recent service",
+    provider: { ...baseFundFlowManifest.provider, provider_id: "registered_provider" }
+  }, "http://127.0.0.1:8800");
+  record.feedback_events.push(operational({ requestId: "registered_req", serviceId: "registered_recent_service" }));
+  store.feedbackEvents.push(
+    operational({ requestId: "registered_req", serviceId: "registered_recent_service" }),
+    {
+      event_version: "agent_external_api_feedback_v1",
+      request_id: "external_req",
+      service_id: "external_api_exa",
+      provider_id: "exa",
+      status: "success",
+      schema_valid: true,
+      created_at: "2026-08-24T00:02:00.000Z"
+    },
+    {
+      event_version: "agent_local_connector_feedback_v1",
+      request_id: "local_req",
+      service_id: "local_social_x",
+      provider_id: "local_browser_connector",
+      status: "success",
+      schema_valid: true,
+      created_at: "2026-08-24T00:03:00.000Z"
+    }
+  );
+
+  const stats = summarizeHomeStats(store);
+
+  assert.equal(stats.total_calls, 3, "the registered event present in both ledgers is counted once");
+  assert.deepEqual(stats.recent_calls.map((call) => call.service_id), [
+    "local_social_x",
+    "external_api_exa",
+    "registered_recent_service"
+  ]);
+  assert.equal(stats.recent_calls[2].title, "Registered recent service");
+  assert.equal(stats.generated_at.endsWith("Z"), true);
+  assert.equal("recent_services" in stats, false, "registration load order is not a call activity feed");
+});
