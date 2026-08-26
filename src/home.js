@@ -127,10 +127,10 @@ export function homeHtml({ auth = {} } = {}) {
             </section>
             <section>
               <div class="table-head">
-                <h3>Recently registered</h3>
-                <a href="/human">Provider view -></a>
+                <h3>Recent calls</h3>
+                <a href="/agent-router/feedback">Activity JSON -></a>
               </div>
-              <div class="service-table" id="recent-services"></div>
+              <div class="service-table" id="recent-calls"></div>
             </section>
           </div>
         </section>
@@ -151,16 +151,24 @@ export function homeHtml({ auth = {} } = {}) {
         </div>
       </main>
       <script>
+        let homeStatsLoading = false;
         async function loadHomeStats() {
+          if (homeStatsLoading) return;
+          homeStatsLoading = true;
           let stats = { services: [], registered_services: 0, verified_services: 0, total_calls: 0, total_feedback_events: 0 };
-          try { stats = await fetch("/agent-router/home-stats").then((res) => res.json()); } catch {}
-          setText("home-services", stats.registered_services || 0);
-          setText("home-verified", stats.verified_services || 0);
-          setText("home-calls", stats.total_calls || 0);
-          const ratedServices = (stats.services || []).filter((item) => item.reputation?.has_feedback).length;
-          setText("home-feedback", ratedServices + " / " + (stats.registered_services || 0));
-          renderSparks(stats);
-          renderHomeTables(stats);
+          try {
+            stats = await fetch("/agent-router/home-stats", { cache: "no-store" }).then((res) => {
+              if (!res.ok) throw new Error("Home stats unavailable");
+              return res.json();
+            });
+            setText("home-services", stats.registered_services || 0);
+            setText("home-verified", stats.verified_services || 0);
+            setText("home-calls", stats.total_calls || 0);
+            setText("home-feedback", Number(stats.rated_services_count || 0) + " / " + (stats.registered_services || 0));
+            renderSparks(stats);
+            renderHomeTables(stats);
+          } catch {}
+          finally { homeStatsLoading = false; }
         }
         ${sharedClientHelpers()}
         document.getElementById("home-copy-install").addEventListener("click", async () => {
@@ -194,9 +202,28 @@ export function homeHtml({ auth = {} } = {}) {
           const sorted = stats.featured_services || [...services].sort((a, b) =>
             Number(b.trust_score || 0) + Number(b.total_calls || 0) - Number(a.trust_score || 0) - Number(a.total_calls || 0)
           );
-          const recent = stats.recent_services || [...services].slice(-8).reverse();
           document.getElementById("featured-services").innerHTML = renderRows(sorted.slice(0, 8), "score");
-          document.getElementById("recent-services").innerHTML = renderRows(recent.slice(0, 8), "when");
+          document.getElementById("recent-calls").innerHTML = renderRecentCallRows(stats.recent_calls || []);
+        }
+        function renderRecentCallRows(calls) {
+          if (!calls.length) return '<div class="empty-row">No calls yet.</div>';
+          return [
+            '<div class="service-row table-labels"><span>Service</span><span>Provider</span><span>Result</span><span>Called</span></div>',
+            ...calls.map((call) => '<div class="service-row">' +
+              '<span><b>' + escapeHtml(call.service_id || "service") + '</b><small>' + escapeHtml(call.title || "Service call") + '</small></span>' +
+              '<span><mark>' + escapeHtml(call.provider_id || "provider") + '</mark></span>' +
+              '<span><b>' + escapeHtml(call.status === "success" ? "Success" : "Failed") + '</b><small>' + (call.latency_ms == null ? "" : Math.round(call.latency_ms) + " ms") + '</small></span>' +
+              '<span>' + formatRelativeTime(call.called_at) + '</span>' +
+            '</div>')
+          ].join("");
+        }
+        function formatRelativeTime(value) {
+          const elapsed = Date.now() - Date.parse(value || "");
+          if (!Number.isFinite(elapsed) || elapsed < 0) return "Just now";
+          if (elapsed < 60_000) return "Just now";
+          if (elapsed < 3_600_000) return Math.floor(elapsed / 60_000) + "m ago";
+          if (elapsed < 86_400_000) return Math.floor(elapsed / 3_600_000) + "h ago";
+          return Math.floor(elapsed / 86_400_000) + "d ago";
         }
         // A rate without its sample is misleading: one happy call is not a
         // 100% service. Show the count with it, and say plainly when there is
@@ -229,6 +256,15 @@ export function homeHtml({ auth = {} } = {}) {
           ].join("");
         }
         loadHomeStats();
+        clearInterval(window.__agentRouterHomeStatsInterval);
+        window.__agentRouterHomeStatsInterval = setInterval(loadHomeStats, 30_000);
+        if (window.__agentRouterHomeVisibilityHandler) {
+          document.removeEventListener("visibilitychange", window.__agentRouterHomeVisibilityHandler);
+        }
+        window.__agentRouterHomeVisibilityHandler = () => {
+          if (document.visibilityState === "visible") loadHomeStats();
+        };
+        document.addEventListener("visibilitychange", window.__agentRouterHomeVisibilityHandler);
       </script>
     `
   });

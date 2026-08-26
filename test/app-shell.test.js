@@ -50,6 +50,8 @@ test("homepage renders live recent calls instead of process-load registration or
   assert.match(page, /renderRecentCallRows/);
   assert.match(page, /cache:\s*"no-store"/);
   assert.match(page, /setInterval\(loadHomeStats,\s*30_000\)/);
+  assert.match(page, /clearInterval\(window\.__agentRouterHomeStatsInterval\)/);
+  assert.match(page, /removeEventListener\("visibilitychange",\s*window\.__agentRouterHomeVisibilityHandler\)/);
 });
 
 test("agent hub renders one data-backed Categories list without empty source taxonomy", () => {

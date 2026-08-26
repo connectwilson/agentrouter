@@ -476,19 +476,7 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
 }
 
 export function feedbackDeliveryMetrics(store) {
-  const operationalVersions = new Set([
-    "agent_service_feedback_v1",
-    "agent_external_api_feedback_v1",
-    "agent_local_connector_feedback_v1"
-  ]);
-  const operational = (store.feedbackEvents || []).filter((event) => operationalVersions.has(event.event_version));
-  const byRequest = new Map();
-  for (const event of operational) {
-    const key = `${event.service_id || ""}:${event.request_id || ""}`;
-    if (!byRequest.has(key)) byRequest.set(key, event);
-    else Object.assign(byRequest.get(key), event);
-  }
-  const calls = [...byRequest.values()];
+  const calls = canonicalOperationalFeedback(store);
   const states = new Map();
   for (const event of store.feedbackEvents || []) {
     const key = `${event.service_id || ""}:${event.request_id || ""}`;
@@ -511,30 +499,71 @@ export function feedbackDeliveryMetrics(store) {
 export function summarizeHomeStats(store) {
   const records = [...store.services.values()];
   const services = records.map((record) => publicServiceSummary(record));
+  const serviceById = new Map(services.map((service) => [service.service_id, service]));
+  const calls = canonicalOperationalFeedback(store);
   const featured = [...services]
     .sort((a, b) => Number(b.trust_score || 0) + Number(b.total_calls || 0) - Number(a.trust_score || 0) - Number(a.total_calls || 0))
     .slice(0, 8);
-  const recent = [...services]
-    .sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))
+  const recentCalls = [...calls]
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
     .slice(0, 8);
-  const merged = [];
-  const seen = new Set();
-  for (const service of [...featured, ...recent]) {
-    if (seen.has(service.service_id)) continue;
-    seen.add(service.service_id);
-    merged.push(service);
-  }
+  const recentCallSummaries = recentCalls.map((event) => {
+    const service = serviceById.get(event.service_id);
+    return {
+      service_id: event.service_id,
+      title: service?.title || readableServiceId(event.service_id),
+      provider_id: event.provider_id || service?.provider_id || "provider",
+      status: event.status || "unknown",
+      schema_valid: event.schema_valid ?? null,
+      latency_ms: typeof event.latency_ms === "number" ? event.latency_ms : null,
+      called_at: event.created_at || null
+    };
+  });
   return {
-    stats_version: "agent_router_home_stats_v1",
+    stats_version: "agent_router_home_stats_v2",
+    generated_at: new Date().toISOString(),
     registered_services: services.length,
     verified_services: services.filter((service) => service.verification_status === "verified").length,
-    total_calls: services.reduce((sum, service) => sum + Number(service.total_calls || 0), 0),
-    total_feedback_events: records.reduce((sum, record) => sum + (record.feedback_events || []).length, 0),
+    total_calls: calls.length,
+    total_feedback_events: (store.feedbackEvents || []).length || records.reduce((sum, record) => sum + (record.feedback_events || []).length, 0),
     total_consumer_feedback: services.reduce((sum, service) => sum + Number(service.consumer_feedback_count || 0), 0),
+    rated_services_count: services.filter((service) => service.reputation?.has_agent_ratings).length,
     featured_services: featured,
-    recent_services: recent,
-    services: merged
+    recent_calls: recentCallSummaries,
+    services: featured
   };
+}
+
+const OPERATIONAL_FEEDBACK_VERSIONS = new Set([
+  "agent_service_feedback_v1",
+  "agent_external_api_feedback_v1",
+  "agent_local_connector_feedback_v1"
+]);
+
+function canonicalOperationalFeedback(store) {
+  const globalEvents = (store.feedbackEvents || []).filter((event) =>
+    OPERATIONAL_FEEDBACK_VERSIONS.has(event.event_version) && event.status !== "consumer_feedback_only"
+  );
+  const registeredEvents = [...store.services.values()].flatMap((record) =>
+    (record.feedback_events || []).filter((event) => event.status !== "consumer_feedback_only")
+  );
+  const calls = new Map();
+  for (const event of [...registeredEvents, ...globalEvents]) {
+    const key = event.request_id
+      ? `${event.service_id || ""}:${event.request_id}`
+      : `${event.service_id || ""}:${event.created_at || ""}:${event.payment_tx || ""}`;
+    if (!calls.has(key)) calls.set(key, { ...event });
+    else Object.assign(calls.get(key), event);
+  }
+  return [...calls.values()];
+}
+
+function readableServiceId(serviceId) {
+  return String(serviceId || "service")
+    .replace(/^external_api_/, "")
+    .replace(/^local_social_/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export function listServiceSummaries(store, {

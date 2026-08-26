@@ -202,12 +202,19 @@ test("home stats count the canonical call ledger and expose newest calls across 
       status: "success",
       schema_valid: true,
       created_at: "2026-08-24T00:03:00.000Z"
+    },
+    {
+      event_version: "agent_service_feedback_v1",
+      request_id: "rating_without_call",
+      service_id: "registered_recent_service",
+      status: "consumer_feedback_only",
+      created_at: "2026-08-24T00:04:00.000Z"
     }
   );
 
   const stats = summarizeHomeStats(store);
 
-  assert.equal(stats.total_calls, 3, "the registered event present in both ledgers is counted once");
+  assert.equal(stats.total_calls, 3, "duplicate ledger rows and rating-only events are not counted as calls");
   assert.deepEqual(stats.recent_calls.map((call) => call.service_id), [
     "local_social_x",
     "external_api_exa",

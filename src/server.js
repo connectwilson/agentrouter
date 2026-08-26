@@ -477,7 +477,7 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "GET" && url.pathname === "/agent-router/home-stats") {
     sendJson(res, 200, summarizeHomeStats(store), {
-      "cache-control": "public, max-age=15, stale-while-revalidate=60"
+      "cache-control": "no-store"
     });
     return;
   }

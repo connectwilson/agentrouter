@@ -1288,9 +1288,9 @@ test("discovery connector searches, previews, invokes, and records feedback", as
 
     const homeStatsResponse = await fetch(`${baseUrl}/agent-router/home-stats`);
     assert.equal(homeStatsResponse.status, 200);
-    assert.match(homeStatsResponse.headers.get("cache-control"), /max-age=15/);
+    assert.equal(homeStatsResponse.headers.get("cache-control"), "no-store");
     const homeStats = await homeStatsResponse.json();
-    assert.equal(homeStats.stats_version, "agent_router_home_stats_v1");
+    assert.equal(homeStats.stats_version, "agent_router_home_stats_v2");
     assert.equal(homeStats.registered_services, 2);
     assert.ok(homeStats.services.length <= 16);
     assert.equal(homeStats.services.some((service) => Object.prototype.hasOwnProperty.call(service, "sample_request")), false);
