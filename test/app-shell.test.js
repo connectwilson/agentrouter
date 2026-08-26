@@ -70,6 +70,18 @@ test("agent hub category links restore the selected category from the URL", () =
   assert.match(hub, /categories\.some\(\(item\) => item\.category === requestedCategory\)/);
 });
 
+test("agent hub leads with productized capability packs that filter the live service catalog", () => {
+  const hub = agentHtml({});
+
+  assert.match(hub, /Start with a capability/);
+  assert.match(hub, /agent-router\/capability-packs/);
+  assert.match(hub, /id="capability-pack-grid"/);
+  assert.match(hub, /const requestedPack = pageParams\.get\("pack"\)/);
+  assert.match(hub, /params\.set\("pack", activePack\)/);
+  assert.match(hub, /data-pack/);
+  assert.match(hub, /Canonical contract/);
+});
+
 test("agent hub exposes callable AI Search API sources as one category", () => {
   const hub = agentHtml({});
   assert.match(hub, /AI Search/);
