@@ -1692,6 +1692,48 @@ test("AgentRouter category endpoint returns only populated, mutually-exclusive c
   });
 });
 
+test("AgentRouter capability packs expose live availability and filter the service catalog", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const services = [
+      { title: "Pack DEX Liquidity", capabilities: "data_service,dex_liquidity,onchain_data" },
+      { title: "Pack Generic Dataset", capabilities: "data_service,paged_demo" }
+    ];
+    for (const [index, service] of services.entries()) {
+      const response = await fetch(`${baseUrl}/studio/providers`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "static-json",
+          title: service.title,
+          provider_name: "Capability Pack Provider",
+          description_for_agent: `Live ${service.capabilities} test service.`,
+          capabilities: service.capabilities,
+          price: "0.004",
+          sample_request: "{}",
+          sample_data: JSON.stringify({ records: [{ ok: true, pack_fixture: index }] }),
+          live_data: JSON.stringify({ records: [{ ok: true, pack_fixture: index }] }),
+          summary: "Capability pack API test."
+        })
+      });
+      assert.equal(response.status, 201, await response.text());
+    }
+
+    const packResponse = await fetch(`${baseUrl}/agent-router/capability-packs`);
+    assert.equal(packResponse.status, 200);
+    assert.equal(packResponse.headers.get("cache-control"), "no-store");
+    const packPayload = await packResponse.json();
+    assert.equal(packPayload.capability_pack_list_version, "agent_router_capability_packs_v1");
+    assert.equal(packPayload.total, 5);
+    assert.ok(packPayload.packs.find((pack) => pack.id === "onchain").service_count >= 1);
+
+    const filteredResponse = await fetch(`${baseUrl}/agent-router/services?q=pack&pack=onchain`);
+    assert.equal(filteredResponse.status, 200);
+    const filtered = await filteredResponse.json();
+    assert.equal(filtered.total, 1);
+    assert.deepEqual(filtered.services[0].capabilities.slice().sort(), ["data_service", "dex_liquidity", "onchain_data"]);
+  });
+});
+
 test("Public API automation keeps draining validated candidates instead of waiting a day", () => {
   const options = publicApiAutomationOptions({});
   assert.equal(options.validationLimit, 50);

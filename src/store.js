@@ -1,4 +1,5 @@
 import { settlementChain, erc8004Registries, erc8004ExplorerUrl } from "./chains.js";
+import { serviceMatchesCapabilityPack } from "./capability-packs.js";
 
 export function createMemoryStore() {
   return {
@@ -572,6 +573,7 @@ export function listServiceSummaries(store, {
   maxPrice,
   verifiedOnly = false,
   category = "All",
+  pack = "",
   sort = "relevance",
   limit = 24,
   offset = 0
@@ -588,6 +590,7 @@ export function listServiceSummaries(store, {
     const manifest = record.manifest;
     if (max != null && Number(manifest.pricing?.amount || 0) > max) continue;
     if (capabilities.length && !capabilities.every((capability) => (manifest.capabilities || []).includes(capability))) continue;
+    if (pack && !serviceMatchesCapabilityPack(manifest, pack)) continue;
     if (!serviceCategoryMatches(manifest, normalizedCategory)) continue;
 
     const haystack = serviceSummaryHaystack(manifest);

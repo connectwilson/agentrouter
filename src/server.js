@@ -42,6 +42,7 @@ import { getExternalApiCatalog,
   freeLocalAlternative, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
+import { listCapabilityPacks, serviceMatchesCapabilityPack } from "./capability-packs.js";
 import {
   bootstrapPublicApiPipeline,
   hydratePublicApiCoverage,
@@ -509,15 +510,19 @@ async function routeRequest(req, res, store, baseUrl, {
     const verifiedOnly = url.searchParams.get("verified_only") === "true";
     const capabilities = url.searchParams.getAll("capability");
     const category = url.searchParams.get("category") || "All";
+    const pack = url.searchParams.get("pack") || "";
     const sort = url.searchParams.get("sort") || "relevance";
     const limit = url.searchParams.get("limit") || 24;
     const offset = url.searchParams.get("offset") || 0;
     const includeDetails = url.searchParams.get("include_details") === "true";
     await loadProviderConfigs(store, baseUrl, { validate: false });
     if (includeDetails) {
-      const records = query || maxPrice || verifiedOnly || capabilities.length
+      const candidates = query || maxPrice || verifiedOnly || capabilities.length
         ? searchServices(store, { query, capabilities, maxPrice, verifiedOnly })
         : [...store.services.values()].map((record) => publicServiceRecord(record));
+      const records = pack
+        ? candidates.filter((record) => serviceMatchesCapabilityPack(record, pack))
+        : candidates;
       sendJson(res, 200, {
         service_list_version: "agent_router_service_list_v1",
         count: records.length,
@@ -525,7 +530,20 @@ async function routeRequest(req, res, store, baseUrl, {
       });
       return;
     }
-    sendJson(res, 200, listServiceSummaries(store, { query, capabilities, maxPrice, verifiedOnly, category, sort, limit, offset }));
+    sendJson(res, 200, listServiceSummaries(store, { query, capabilities, maxPrice, verifiedOnly, category, pack, sort, limit, offset }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/capability-packs") {
+    await loadProviderConfigs(store, baseUrl, { validate: false });
+    const packs = listCapabilityPacks([...store.services.values()]);
+    sendJson(res, 200, {
+      capability_pack_list_version: "agent_router_capability_packs_v1",
+      total: packs.length,
+      packs
+    }, {
+      "cache-control": "no-store"
+    });
     return;
   }
 
@@ -2372,6 +2390,7 @@ function createAgentRouterOriginDocument(store, baseUrl) {
       health: `${baseUrl}/agent-router/health`,
       remote_mcp: `${baseUrl}/mcp`,
       services: `${baseUrl}/agent-router/services`,
+      capability_packs: `${baseUrl}/agent-router/capability-packs`,
       feedback: `${baseUrl}/agent-router/feedback`,
       evidence: `${baseUrl}/agent-router/evidence`
     },

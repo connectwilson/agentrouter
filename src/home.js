@@ -516,6 +516,17 @@ export function agentHtml({ auth = {} } = {}) {
             </div>
           </section>
 
+          <section class="capability-pack-section" aria-labelledby="capability-pack-title">
+            <div class="capability-pack-head">
+              <div>
+                <span class="eyebrow">Capability packs</span>
+                <h2 id="capability-pack-title">Start with a capability</h2>
+              </div>
+              <p>Choose a stable task contract. AgentRouter finds the best available provider at call time.</p>
+            </div>
+            <div class="capability-pack-grid" id="capability-pack-grid" aria-live="polite"></div>
+          </section>
+
           <div class="market-toolbar">
             <input id="service-search" placeholder="Search APIs, providers, categories, or capabilities" />
             <div class="dropdown" id="sort-dropdown">
@@ -562,6 +573,7 @@ export function agentHtml({ auth = {} } = {}) {
       <script>
         ${serviceClientScript()}
         let categories = [{ category: "All", count: 0 }];
+        let capabilityPacks = [];
         let builtInCapabilities = [];
         let aiSearchSources = [];
         const builtInCategory = "Social research";
@@ -569,6 +581,7 @@ export function agentHtml({ auth = {} } = {}) {
         const pageSize = 24;
         let servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
         let activeCategory = "All";
+        let activePack = "";
         let currentPage = 0;
         let searchTimer = null;
         document.getElementById("service-search").addEventListener("input", () => {
@@ -626,16 +639,20 @@ export function agentHtml({ auth = {} } = {}) {
           const pageParams = new URLSearchParams(location.search);
           const query = pageParams.get("q") || "";
           const requestedCategory = pageParams.get("category") || "All";
+          const requestedPack = pageParams.get("pack");
           document.getElementById("service-search").value = query;
           try {
-            const [categoryResponse, builtInResponse, apiSourcesResponse] = await Promise.all([
+            const [categoryResponse, builtInResponse, apiSourcesResponse, packsResponse] = await Promise.all([
               fetch("/agent-router/service-categories"),
               fetch("/agent-router/builtin-capabilities"),
-              fetch("/agent-router/api-sources")
+              fetch("/agent-router/api-sources"),
+              fetch("/agent-router/capability-packs")
             ]);
             const payload = await categoryResponse.json();
             const builtInPayload = await builtInResponse.json();
             const apiSourcesPayload = await apiSourcesResponse.json();
+            const packsPayload = await packsResponse.json();
+            capabilityPacks = Array.isArray(packsPayload.packs) ? packsPayload.packs : [];
             builtInCapabilities = Array.isArray(builtInPayload.capabilities) ? builtInPayload.capabilities : [];
             aiSearchSources = (Array.isArray(apiSourcesPayload.sources) ? apiSourcesPayload.sources : [])
               .filter((source) => source.implementation_status === "available" && source.hub_category === aiSearchCategory);
@@ -648,9 +665,45 @@ export function agentHtml({ auth = {} } = {}) {
               ...(builtInCapabilities.length ? [{ category: builtInCategory, count: builtInCapabilities.length }] : [])
             ];
           } catch {}
+          activePack = capabilityPacks.some((pack) => pack.id === requestedPack) ? requestedPack : "";
           activeCategory = categories.some((item) => item.category === requestedCategory) ? requestedCategory : "All";
+          if (activePack) activeCategory = "All";
+          renderCapabilityPacks();
           renderCategories();
           loadAgentServices();
+        }
+        function syncHubUrl() {
+          const params = new URLSearchParams();
+          const query = document.getElementById("service-search").value.trim();
+          if (query) params.set("q", query);
+          if (activePack) params.set("pack", activePack);
+          else if (activeCategory !== "All") params.set("category", activeCategory);
+          const next = location.pathname + (params.toString() ? "?" + params.toString() : "");
+          history.replaceState({}, "", next);
+        }
+        function renderCapabilityPacks() {
+          const grid = document.getElementById("capability-pack-grid");
+          grid.innerHTML = capabilityPacks.map((pack) => {
+            const selected = pack.id === activePack;
+            const price = pack.starting_price_usdc == null ? "No live service" : "From $" + escapeHtml(pack.starting_price_usdc);
+            return '<button type="button" class="capability-pack-card ' + (selected ? "active" : "") + '" data-pack="' + escapeHtml(pack.id) + '" aria-pressed="' + String(selected) + '">' +
+              '<span class="capability-pack-title">' + escapeHtml(pack.title) + '</span>' +
+              '<span class="capability-pack-description">' + escapeHtml(pack.description) + '</span>' +
+              '<span class="capability-pack-contract"><small>Canonical contract</small><code>' + escapeHtml(pack.contract) + '</code></span>' +
+              '<span class="capability-pack-meta"><b>' + formatCount(pack.service_count) + ' services</b><b>' + price + '</b></span>' +
+            '</button>';
+          }).join("");
+          grid.querySelectorAll("[data-pack]").forEach((button) => {
+            button.addEventListener("click", () => {
+              activePack = activePack === button.dataset.pack ? "" : button.dataset.pack;
+              activeCategory = "All";
+              currentPage = 0;
+              renderCapabilityPacks();
+              renderCategories();
+              syncHubUrl();
+              loadAgentServices();
+            });
+          });
         }
         function renderCategories() {
           document.getElementById("category-row").innerHTML = categories.map(({ category, count }) =>
@@ -658,9 +711,12 @@ export function agentHtml({ auth = {} } = {}) {
           ).join("");
           document.querySelectorAll(".category").forEach((button) => {
             button.addEventListener("click", () => {
+              activePack = "";
               activeCategory = button.dataset.category;
               currentPage = 0;
+              renderCapabilityPacks();
               renderCategories();
+              syncHubUrl();
               loadAgentServices();
             });
           });
@@ -678,6 +734,7 @@ export function agentHtml({ auth = {} } = {}) {
             limit: String(pageSize),
             offset: String(currentPage * pageSize)
           });
+          if (activePack) params.set("pack", activePack);
           document.getElementById("agent-result-count").textContent = "Loading services...";
           showSkeleton();
           try {
@@ -706,10 +763,10 @@ export function agentHtml({ auth = {} } = {}) {
         }
         function renderAgentHub() {
           const query = document.getElementById("service-search").value.trim().toLowerCase();
-          const visibleBuiltIns = (activeCategory === "All" || activeCategory === builtInCategory)
+          const visibleBuiltIns = (!activePack || activePack === "social") && (activeCategory === "All" || activeCategory === builtInCategory)
             ? builtInCapabilities.filter((capability) => !query || [capability.title, capability.description, capability.capability, ...(capability.platforms || [])].join(" ").toLowerCase().includes(query))
             : [];
-          const visibleAiSearchSources = (activeCategory === "All" || activeCategory === aiSearchCategory)
+          const visibleAiSearchSources = (!activePack || activePack === "research") && (activeCategory === "All" || activeCategory === aiSearchCategory)
             ? aiSearchSources.filter((source) => !query || [source.title, source.source, source.category, ...(source.operations || [])].join(" ").toLowerCase().includes(query))
             : [];
           const services = servicePage.services || [];
