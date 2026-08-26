@@ -1731,6 +1731,24 @@ test("AgentRouter capability packs expose live availability and filter the servi
     const filtered = await filteredResponse.json();
     assert.equal(filtered.total, 1);
     assert.deepEqual(filtered.services[0].capabilities.slice().sort(), ["data_service", "dex_liquidity", "onchain_data"]);
+
+    const canonicalQuoteResponse = await fetch(`${baseUrl}/agent-router/quote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "onchain.analyze_activity",
+        params: { task: "Compare DEX liquidity and onchain activity" },
+        constraints: { max_price_usdc: "0.003" }
+      })
+    });
+    assert.equal(canonicalQuoteResponse.status, 200);
+    const canonicalQuote = await canonicalQuoteResponse.json();
+    assert.equal(canonicalQuote.status, "quote_blocked");
+    assert.equal(canonicalQuote.request.capability, "onchain.analyze_activity");
+    assert.equal(canonicalQuote.capability_pack.id, "onchain");
+    assert.equal(canonicalQuote.capability_pack.resolved_capability, "dex_liquidity");
+    assert.equal(canonicalQuote.selected_service.service_id, filtered.services[0].service_id);
+    assert.equal(canonicalQuote.quote.max_amount, "0.003");
   });
 });
 

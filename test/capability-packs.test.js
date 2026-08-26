@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   getCapabilityPack,
   listCapabilityPacks,
+  resolveCapabilityPackCall,
   serviceMatchesCapabilityPack
 } from "../src/capability-packs.js";
 
@@ -61,4 +62,39 @@ test("capability pack summaries derive live availability and price from register
   assert.equal(markets.verified_service_count, 0);
   assert.equal(markets.starting_price_usdc, "0.001");
   assert.equal(getCapabilityPack("missing", records), null);
+});
+
+test("canonical research contract resolves general research and scholarly intent to different provider capabilities", () => {
+  const records = [
+    record({ serviceId: "exa_search", capabilities: ["web_search"] }),
+    record({ serviceId: "openalex_works", capabilities: ["paper_search", "citation_metadata"] })
+  ];
+
+  const general = resolveCapabilityPackCall(records, {
+    contract: "research.find_evidence",
+    params: { task: "Research AgentRouter competitors and market opportunities" }
+  });
+  const scholarly = resolveCapabilityPackCall(records, {
+    contract: "research.find_evidence",
+    params: { task: "Find peer reviewed papers and citation metadata about agent routing" }
+  });
+
+  assert.equal(general.ok, true);
+  assert.equal(general.pack.id, "research");
+  assert.equal(general.resolved_capability, "web_search");
+  assert.equal(general.params.query, "Research AgentRouter competitors and market opportunities");
+  assert.equal(scholarly.resolved_capability, "paper_search");
+});
+
+test("canonical contracts fail transparently when their pack has no live service and ignore unknown contracts", () => {
+  const generic = record({ serviceId: "generic", capabilities: ["data_service"] });
+  const unavailable = resolveCapabilityPackCall([generic], {
+    contract: "markets.get_market_data",
+    params: { task: "Get the current NVDA price" }
+  });
+
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.status, "no_match");
+  assert.equal(unavailable.pack.id, "markets");
+  assert.equal(resolveCapabilityPackCall([generic], { contract: "unknown.do_thing", params: {} }), null);
 });
