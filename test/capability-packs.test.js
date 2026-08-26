@@ -29,6 +29,7 @@ test("capability packs expose stable agent-facing contracts instead of provider 
     assert.match(pack.contract, /^[a-z]+\.[a-z_]+$/);
     assert.ok(pack.sample_task.length > 10);
     assert.ok(pack.description.length > 20);
+    assert.deepEqual(pack.input_schema.required, ["task"]);
   }
 });
 
@@ -82,6 +83,7 @@ test("canonical research contract resolves general research and scholarly intent
   assert.equal(general.ok, true);
   assert.equal(general.pack.id, "research");
   assert.equal(general.resolved_capability, "web_search");
+  assert.equal(general.params.task, "Research AgentRouter competitors and market opportunities");
   assert.equal(general.params.query, "Research AgentRouter competitors and market opportunities");
   assert.equal(scholarly.resolved_capability, "paper_search");
 });
@@ -97,4 +99,17 @@ test("canonical contracts fail transparently when their pack has no live service
   assert.equal(unavailable.status, "no_match");
   assert.equal(unavailable.pack.id, "markets");
   assert.equal(resolveCapabilityPackCall([generic], { contract: "unknown.do_thing", params: {} }), null);
+});
+
+test("canonical contracts reject an empty task before any paid service can be selected", () => {
+  const records = [record({ serviceId: "exa_search", capabilities: ["web_search"] })];
+  const invalid = resolveCapabilityPackCall(records, {
+    contract: "research.find_evidence",
+    params: {}
+  });
+
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.status, "invalid_request");
+  assert.equal(invalid.error, "MISSING_TASK");
+  assert.equal(invalid.resolved_capability, undefined);
 });

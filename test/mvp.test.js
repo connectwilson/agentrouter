@@ -1726,6 +1726,10 @@ test("AgentRouter capability packs expose live availability and filter the servi
     assert.equal(packPayload.total, 5);
     assert.ok(packPayload.packs.find((pack) => pack.id === "onchain").service_count >= 1);
 
+    const catalog = await fetch(`${baseUrl}/capabilities`).then((response) => response.json());
+    assert.ok(catalog.capability_packs.some((pack) => pack.contract === "onchain.analyze_activity"));
+    assert.deepEqual(catalog.capability_packs[0].input_schema.required, ["task"]);
+
     const filteredResponse = await fetch(`${baseUrl}/agent-router/services?q=pack&pack=onchain`);
     assert.equal(filteredResponse.status, 200);
     const filtered = await filteredResponse.json();
@@ -1748,7 +1752,55 @@ test("AgentRouter capability packs expose live availability and filter the servi
     assert.equal(canonicalQuote.capability_pack.id, "onchain");
     assert.equal(canonicalQuote.capability_pack.resolved_capability, "dex_liquidity");
     assert.equal(canonicalQuote.selected_service.service_id, filtered.services[0].service_id);
-    assert.equal(canonicalQuote.quote.max_amount, "0.003");
+    assert.equal(canonicalQuote.quote.budget.max_price_usdc, "0.003");
+
+    const trustGuardResponse = await fetch(`${baseUrl}/agent-router/quote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "onchain.analyze_activity",
+        params: { task: "Compare DEX liquidity and onchain activity" },
+        constraints: { max_price_usdc: "0.004", min_trust_score: 0.99 }
+      })
+    });
+    assert.equal(trustGuardResponse.status, 200);
+    const trustGuard = await trustGuardResponse.json();
+    assert.equal(trustGuard.status, "no_match");
+    assert.equal(trustGuard.request.capability, "onchain.analyze_activity");
+    assert.equal(trustGuard.capability_pack.resolved_capability, "dex_liquidity");
+    assert.equal(trustGuard.selected_service, undefined);
+
+    const canonicalRequestResponse = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "onchain.analyze_activity",
+        params: { task: "Compare DEX liquidity and onchain activity" },
+        constraints: { max_price_usdc: "0.004" }
+      })
+    });
+    assert.equal(canonicalRequestResponse.status, 200);
+    const canonicalResult = await canonicalRequestResponse.json();
+    assert.equal(canonicalResult.ok, true);
+    assert.equal(canonicalResult.status, "routed");
+    assert.equal(canonicalResult.request.capability, "onchain.analyze_activity");
+    assert.equal(canonicalResult.request.resolved_capability, "dex_liquidity");
+    assert.equal(canonicalResult.protocol.external_contract, "onchain.analyze_activity");
+    assert.equal(canonicalResult.capability_pack.resolved_capability, "dex_liquidity");
+    assert.equal(canonicalResult.selected_service.service_id, filtered.services[0].service_id);
+    assert.ok(canonicalResult.result.request_id);
+    assert.equal(canonicalResult.evidence.request.consumer_context.capability_pack_contract, "onchain.analyze_activity");
+
+    const invalidRequestResponse = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "research.find_evidence", params: {} })
+    });
+    assert.equal(invalidRequestResponse.status, 422);
+    const invalidRequest = await invalidRequestResponse.json();
+    assert.equal(invalidRequest.status, "invalid_request");
+    assert.equal(invalidRequest.error, "MISSING_TASK");
+    assert.equal(invalidRequest.capability_pack.contract, "research.find_evidence");
   });
 });
 

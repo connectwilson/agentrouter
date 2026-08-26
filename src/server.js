@@ -1110,11 +1110,13 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "GET" && url.pathname === "/capabilities") {
+    const capabilityPacks = listCapabilityPacks([...store.services.values()]);
     sendJson(res, 200, {
       catalog_version: "agent_router_capability_catalog_v1",
       preferred_endpoint: "/agent-router/request",
       note: "Main agents should parse user intent into this structured capability schema. /agent-router/ask is a demo fallback, not the core protocol.",
-      capabilities: getCapabilityCatalog()
+      capabilities: getCapabilityCatalog(),
+      capability_packs: capabilityPacks
     });
     return;
   }

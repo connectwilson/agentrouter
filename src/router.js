@@ -1,4 +1,5 @@
 import { invokePaidService, searchServices } from "./registry.js";
+import { resolveCapabilityPackCall } from "./capability-packs.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { createPaymentQuote, effectivePricing } from "./payment-adapter.js";
 import { createEvidenceEnvelope } from "./evidence.js";
@@ -406,6 +407,70 @@ export async function routeTask(store, { task = "", intent: providedIntent, cons
   };
 }
 
+function publicCapabilityPackResolution(resolution) {
+  return {
+    id: resolution.pack.id,
+    title: resolution.pack.title,
+    contract: resolution.contract,
+    resolved_capability: resolution.resolved_capability || null,
+    dispatch_reason: resolution.dispatch_reason || null,
+    service_count: resolution.pack.service_count,
+    verified_service_count: resolution.pack.verified_service_count,
+    starting_price_usdc: resolution.pack.starting_price_usdc
+  };
+}
+
+function canonicalPackRequest(result, resolution, original) {
+  return {
+    ...(result?.request || {}),
+    capability: original.capability,
+    params: original.params,
+    resolved_capability: resolution.resolved_capability
+  };
+}
+
+function decorateCapabilityPackResult(result, resolution, original) {
+  const capabilityPack = publicCapabilityPackResolution(resolution);
+  const request = canonicalPackRequest(result, resolution, original);
+  return {
+    ...result,
+    protocol: result?.protocol ? {
+      ...result.protocol,
+      external_contract: resolution.contract
+    } : result?.protocol,
+    request,
+    capability_pack: capabilityPack,
+    route_decision: result?.route_decision ? {
+      ...result.route_decision,
+      request,
+      capability_pack: capabilityPack
+    } : result?.route_decision
+  };
+}
+
+function capabilityPackFailure(resolution, { capability, params, constraints, consumerContext }) {
+  const capabilityPack = publicCapabilityPackResolution(resolution);
+  const request = { capability, params, constraints, consumer_context: consumerContext };
+  const status = resolution.status === "invalid_request" ? "invalid_request" : ROUTER_STATUSES.NO_MATCH;
+  return {
+    ok: false,
+    status,
+    ...(resolution.error ? { error: resolution.error } : {}),
+    ...(resolution.expected_schema ? { expected_schema: resolution.expected_schema } : {}),
+    request,
+    capability_pack: capabilityPack,
+    candidates_considered: 0,
+    exact_match: false,
+    message: resolution.message,
+    route_decision: createRouteDecision({
+      status,
+      request,
+      exactMatch: false,
+      diagnostics: { message: resolution.message, capability_pack: capabilityPack }
+    })
+  };
+}
+
 export async function routeCapabilityRequest(store, {
   capability,
   params = {},
@@ -413,6 +478,22 @@ export async function routeCapabilityRequest(store, {
   budget = {},
   consumer_context: consumerContext = {}
 } = {}, options = {}) {
+  const packResolution = resolveCapabilityPackCall([...store.services.values()], { contract: capability, params });
+  if (packResolution) {
+    if (!packResolution.ok) return capabilityPackFailure(packResolution, { capability, params, constraints, consumerContext });
+    const routed = await routeCapabilityRequest(store, {
+      capability: packResolution.resolved_capability,
+      params: packResolution.params,
+      constraints,
+      budget,
+      consumer_context: {
+        ...consumerContext,
+        capability_pack_contract: capability,
+        capability_pack_id: packResolution.pack.id
+      }
+    }, options);
+    return decorateCapabilityPackResult(routed, packResolution, { capability, params });
+  }
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
     const request = { capability, params, constraints, consumer_context: consumerContext };
@@ -688,6 +769,22 @@ export function quoteCapabilityRequest(store, {
   budget = {},
   consumer_context: consumerContext = {}
 } = {}, { actorKey = "" } = {}) {
+  const packResolution = resolveCapabilityPackCall([...store.services.values()], { contract: capability, params });
+  if (packResolution) {
+    if (!packResolution.ok) return capabilityPackFailure(packResolution, { capability, params, constraints, consumerContext });
+    const quoted = quoteCapabilityRequest(store, {
+      capability: packResolution.resolved_capability,
+      params: packResolution.params,
+      constraints,
+      budget,
+      consumer_context: {
+        ...consumerContext,
+        capability_pack_contract: capability,
+        capability_pack_id: packResolution.pack.id
+      }
+    }, { actorKey });
+    return decorateCapabilityPackResult(quoted, packResolution, { capability, params });
+  }
   const validation = validateCapabilityRequest({ capability, params });
   if (!validation.ok) {
     const request = { capability, params, constraints, consumer_context: consumerContext };
@@ -900,6 +997,9 @@ export function normalizeTaskIntent({ task = "", providedIntent, constraints = {
 
 export function rankCandidates(store, intent, constraints = {}) {
   const requiredCapabilities = capabilityRequirements(intent.capability);
+  const minimumTrustScore = constraints.min_trust_score == null || constraints.min_trust_score === ""
+    ? null
+    : Number(constraints.min_trust_score);
   const excludedServiceIds = new Set([
     ...(constraints.exclude_service_ids || []),
     ...(constraints.exclude_services || [])
@@ -915,6 +1015,7 @@ export function rankCandidates(store, intent, constraints = {}) {
     .filter((service) => !excludedServiceIds.has(service.service_id))
     .map((service) => scoreCandidate(store.services.get(service.service_id), intent, requiredCapabilities, constraints, service.match_score))
     .filter((candidate) => candidate.routing_score > 0)
+    .filter((candidate) => minimumTrustScore == null || !Number.isFinite(minimumTrustScore) || candidate.trust_score >= minimumTrustScore)
     .sort((a, b) => b.routing_score - a.routing_score);
 }
 

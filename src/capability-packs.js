@@ -61,6 +61,54 @@ const CAPABILITY_PACKS = Object.freeze([
   }
 ]);
 
+const PACK_DEFAULT_CAPABILITIES = Object.freeze({
+  research: ["web_search", "search_general", "news_search", "paper_search", "citation_metadata", "academic_search"],
+  social: ["social_search", "social_user_voice_research", "social_post_read", "social_sentiment", "creator_research"],
+  markets: ["market_price", "stock_quote", "crypto_price", "market_data", "ohlcv", "ticker"],
+  onchain: ["onchain_data", "onchain_analysis", "dex_liquidity", "wallet_activity", "smart_money", "fund_flow"],
+  operations: ["weather_forecast", "place_search", "flight_search", "shipping_tracking", "domain_reputation"]
+});
+
+const PACK_DISPATCH_RULES = Object.freeze({
+  research: [
+    { pattern: /peer[\s_-]?review|papers?|论文|文献|citation|引用|doi|arxiv|scholarly|academic/i, capabilities: ["paper_search", "academic_search", "citation_metadata"] },
+    { pattern: /news|report|current|latest|最近|最新|行业报告/i, capabilities: ["news_search", "web_search", "search_general"] }
+  ],
+  social: [
+    { pattern: /reddit/i, capabilities: ["reddit_search", "social_search", "social_user_voice_research"] },
+    { pattern: /x\.com|twitter|tweets?|推特/i, capabilities: ["twitter_search", "social_search", "social_post_read"] },
+    { pattern: /youtube|视频/i, capabilities: ["youtube_search", "social_search", "creator_research"] }
+  ],
+  markets: [
+    { pattern: /stock|equity|shares?|股票|市值|10-k|8-k/i, capabilities: ["stock_quote", "equity_quote", "market_price", "financial_fundamentals"] },
+    { pattern: /btc|eth|crypto|token|加密|币价/i, capabilities: ["crypto_price", "market_price", "market_cap"] }
+  ],
+  onchain: [
+    { pattern: /dex|pool|liquidity|流动性|trading pair/i, capabilities: ["dex_liquidity", "dex_pair", "onchain_data"] },
+    { pattern: /wallet|address|钱包|地址/i, capabilities: ["wallet_activity", "wallet_profiler", "onchain_data"] },
+    { pattern: /smart[\s_-]?money|聪明钱/i, capabilities: ["smart_money", "wallet_activity", "onchain_analysis"] }
+  ],
+  operations: [
+    { pattern: /weather|forecast|temperature|rain|天气|气温|降雨/i, capabilities: ["weather_forecast"] },
+    { pattern: /flight|航班/i, capabilities: ["flight_search"] },
+    { pattern: /shipping|parcel|tracking|快递|物流/i, capabilities: ["shipping_tracking", "parcel_tracking"] },
+    { pattern: /malware|phishing|domain|恶意|钓鱼|域名/i, capabilities: ["domain_reputation", "domain_risk", "malware_check"] }
+  ]
+});
+
+const CAPABILITY_PACK_INPUT_SCHEMA = Object.freeze({
+  type: "object",
+  required: ["task"],
+  properties: {
+    task: {
+      type: "string",
+      minLength: 1,
+      description: "Describe the data or evidence the agent needs. AgentRouter selects a provider capability inside the pack."
+    }
+  },
+  additionalProperties: true
+});
+
 function normalizedManifestText(manifest = {}) {
   return [
     manifest.service_id,
@@ -81,6 +129,10 @@ function packDefinition(packId) {
   return CAPABILITY_PACKS.find((pack) => pack.id === packId) || null;
 }
 
+function packDefinitionByContract(contract) {
+  return CAPABILITY_PACKS.find((pack) => pack.contract === contract) || null;
+}
+
 export function serviceMatchesCapabilityPack(manifest, packId) {
   const pack = packDefinition(packId);
   if (!pack || !manifest) return false;
@@ -99,6 +151,7 @@ function publicPack(pack, records) {
     contract: pack.contract,
     description: pack.description,
     sample_task: pack.sample_task,
+    input_schema: CAPABILITY_PACK_INPUT_SCHEMA,
     service_count: matches.length,
     verified_service_count: matches.filter((record) => record.verification_status === "verified").length,
     starting_price_usdc: prices.length ? String(Math.min(...prices)) : null
@@ -113,4 +166,59 @@ export function listCapabilityPacks(records = []) {
 export function getCapabilityPack(packId, records = []) {
   const pack = packDefinition(packId);
   return pack ? publicPack(pack, Array.isArray(records) ? records : []) : null;
+}
+
+export function resolveCapabilityPackCall(records = [], { contract, params = {} } = {}) {
+  const pack = packDefinitionByContract(contract);
+  if (!pack) return null;
+  const safeRecords = Array.isArray(records) ? records : [];
+  const publicDefinition = publicPack(pack, safeRecords);
+  const safeParams = params && typeof params === "object" && !Array.isArray(params) ? { ...params } : {};
+  const task = String(safeParams.task || safeParams.query || safeParams.prompt || "").trim();
+  if (!task) {
+    return {
+      ok: false,
+      status: "invalid_request",
+      error: "MISSING_TASK",
+      contract,
+      pack: publicDefinition,
+      expected_schema: CAPABILITY_PACK_INPUT_SCHEMA,
+      message: `${contract} requires a non-empty task.`
+    };
+  }
+  const matchingRecords = safeRecords.filter((record) => serviceMatchesCapabilityPack(record?.manifest, pack.id));
+  if (!matchingRecords.length) {
+    return {
+      ok: false,
+      status: "no_match",
+      contract,
+      pack: publicDefinition,
+      message: `No live service currently implements ${contract}.`
+    };
+  }
+
+  if (task && !safeParams.query) safeParams.query = task;
+
+  const availableCapabilities = [...new Set(matchingRecords.flatMap((record) => record.manifest?.capabilities || []))]
+    .filter((capability) => capability !== "data_service");
+  const dispatch = (PACK_DISPATCH_RULES[pack.id] || []).find((rule) => rule.pattern.test(task));
+  const preference = [
+    ...(dispatch?.capabilities || []),
+    ...(PACK_DEFAULT_CAPABILITIES[pack.id] || []),
+    ...pack.signals
+  ];
+  const resolvedCapability = preference.find((capability) => availableCapabilities.includes(capability))
+    || availableCapabilities[0];
+
+  return {
+    ok: true,
+    status: "resolved",
+    contract,
+    pack: publicDefinition,
+    resolved_capability: resolvedCapability,
+    params: safeParams,
+    dispatch_reason: dispatch
+      ? `Task matched the ${pack.id} pack's specialist dispatch rule.`
+      : `Task used the ${pack.id} pack's default provider capability order.`
+  };
 }
