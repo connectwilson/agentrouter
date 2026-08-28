@@ -15,6 +15,19 @@ test("perpetual-futures requests preserve the base asset from a USDT trading pai
   assert.equal(result.intent.trading_pair, "HFTUSDT");
 });
 
+test("core and compatibility parsers agree on an arbitrary uppercase liquidation asset", () => {
+  const task = "查XLM当前最大爆仓痛点";
+  const normalized = normalizeTaskIntent({ task });
+  const compatibility = inferIntent(task);
+
+  assert.equal(normalized.status, "route_with_assumption");
+  assert.equal(normalized.intent.capability, "perp_liquidation_max_pain");
+  assert.equal(normalized.intent.asset, "XLM");
+  assert.equal(normalized.intent.market_type, "perpetual_futures");
+  assert.equal(normalized.intent.time_sensitivity, "realtime");
+  assert.equal(compatibility.input.asset, normalized.intent.asset);
+});
+
 test("natural-language fetch intent preserves a compact perpetual trading pair", () => {
   const intent = inferIntent("HFTUSDT 币安永续最大爆仓痛点");
 

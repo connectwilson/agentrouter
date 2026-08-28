@@ -973,9 +973,10 @@ export function resolveRoute(store, { task = "", intent: providedIntent, constra
 }
 
 export function normalizeTaskIntent({ task = "", providedIntent, constraints = {} } = {}) {
-  const text = String(task || "").toLowerCase();
+  const rawText = String(task || "");
+  const text = rawText.toLowerCase();
   const intent = sanitizeProvidedIntent(providedIntent);
-  const detected = detectIntent(text);
+  const detected = detectIntent(text, rawText);
   const merged = {
     ...detected.intent,
     ...intent
@@ -1019,8 +1020,8 @@ export function rankCandidates(store, intent, constraints = {}) {
     .sort((a, b) => b.routing_score - a.routing_score);
 }
 
-function detectIntent(text) {
-  const asset = detectAsset(text);
+function detectIntent(text, rawText = text) {
+  const asset = detectAsset(text, rawText);
   const tradingPair = detectTradingPair(text);
   const chain = detectChain(text);
   const days = detectDays(text);
@@ -2201,13 +2202,21 @@ function ambiguityNotesFor(capability) {
   return [];
 }
 
-function detectAsset(text) {
+function detectAsset(text, rawText = text) {
   const pair = detectTradingPair(text);
   if (pair) return pair.base_asset;
   if (/\bbitcoin\b/i.test(text)) return "BTC";
   if (/\bethereum\b/i.test(text)) return "ETH";
   const match = text.match(/\b(btc|eth|sol|bnb|xrp|doge|hype)\b/i);
-  return match ? match[1].toUpperCase() : undefined;
+  if (match) return match[1].toUpperCase();
+  const dollarTicker = String(rawText).match(/\$([A-Za-z][A-Za-z0-9]{1,11})(?=$|[^A-Za-z0-9])/);
+  const uppercaseTicker = String(rawText).match(/(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,11})(?=$|[^A-Za-z0-9])/);
+  const ticker = (dollarTicker?.[1] || uppercaseTicker?.[1] || "").toUpperCase();
+  const nonAssetSymbols = new Set([
+    "AI", "API", "HTTP", "JSON", "USD", "USDC", "USDT", "NFT", "TVL", "DEX", "CEX",
+    "BSC", "BASE", "SOLANA", "ARBITRUM", "OPTIMISM", "ETHEREUM", "HYPEREVM", "POLYGON", "AVALANCHE"
+  ]);
+  return ticker && !nonAssetSymbols.has(ticker) ? ticker : undefined;
 }
 
 function detectTradingPair(text) {
