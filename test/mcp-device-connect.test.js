@@ -124,6 +124,7 @@ test("agentrouter_connect completes browser approval and future MCP calls use th
     const pending = JSON.parse(first.content[0].text);
     assert.equal(pending.status, "authorization_required");
     assert.equal(pending.user_code, "AR-TEST-CODE");
+    assert.equal(pending.browser_open.status, "disabled");
     assert.equal("access_token" in pending, false);
 
     approved = true;
@@ -488,7 +489,7 @@ async function unusedLocalOrigin() {
 
 function createMcpClient(env) {
   const child = spawn(process.execPath, [path.join(process.cwd(), "packages/agentrouter-mcp/bin/agentrouter-mcp.js")], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, AGENTROUTER_DISABLE_BROWSER_OPEN: "1", ...env },
     stdio: ["pipe", "pipe", "pipe"]
   });
   let id = 0;
