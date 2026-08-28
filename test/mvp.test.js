@@ -2402,6 +2402,7 @@ test("AgentRouter npm MCP package discovers new tools from remote MCP without a 
     const listed = await client.request("tools/list", {});
     assert.deepEqual(listed.tools.map((tool) => tool.name), [
       "agentrouter_connect",
+      "agentrouter_complete_handoff",
       "server_added_after_client_publish"
     ]);
   } finally {
