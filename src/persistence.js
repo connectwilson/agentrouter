@@ -7,6 +7,38 @@ export function persistenceEnabled() {
   return Boolean(process.env.DATABASE_URL);
 }
 
+export async function persistenceReadiness() {
+  if (!persistenceEnabled()) {
+    const required = persistentRegistryRequired();
+    return {
+      ok: !required,
+      checks: { database: { ok: !required, configured: false, ...(required ? { error: "DATABASE_URL is required in hosted runtime." } : {}) } }
+    };
+  }
+  try {
+    const pool = await getPool();
+    await pool.query("select 1");
+    return { ok: true, checks: { database: { ok: true, configured: true } } };
+  } catch (error) {
+    return { ok: false, checks: { database: { ok: false, configured: true, error: error.message } } };
+  }
+}
+
+export async function claimPersistentBrowserHandoff(handoffId, expiresAt) {
+  if (!persistenceEnabled()) return true;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query("delete from adn_browser_handoff_claims where expires_at < now()");
+  const result = await pool.query(
+    `insert into adn_browser_handoff_claims (handoff_id, expires_at, consumed_at)
+     values ($1, $2::timestamptz, now())
+     on conflict (handoff_id) do nothing
+     returning handoff_id`,
+    [String(handoffId || ""), String(expiresAt || "")]
+  );
+  return result.rowCount === 1;
+}
+
 export function persistentRegistryRequired() {
   return process.env.ADN_REQUIRE_PERSISTENT_REGISTRY === "true" || Boolean(process.env.RENDER);
 }
@@ -488,6 +520,12 @@ async function ensureSchema(pool) {
     create index if not exists adn_service_events_service_idx on adn_service_events(service_id);
     create index if not exists adn_service_events_type_idx on adn_service_events(event_type);
     create index if not exists adn_service_events_request_idx on adn_service_events(request_id);
+    create table if not exists adn_browser_handoff_claims (
+      handoff_id text primary key,
+      expires_at timestamptz not null,
+      consumed_at timestamptz not null default now()
+    );
+    create index if not exists adn_browser_handoff_claims_expiry_idx on adn_browser_handoff_claims(expires_at);
     create table if not exists adn_credit_accounts (
       account_id text primary key,
       owner_key text not null unique,

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { createLocalBrowserConnector } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
+import { createExpiringTokenCache } from "../packages/agentrouter-mcp/server/feedback-token-cache.js";
 
 const xTarget = "https://x.com/marclou/status/2081890388298874880";
 const nativeContext = {
@@ -97,6 +98,21 @@ test("browser handoff canonicalization covers every locally parsed social platfo
     assert.equal(result.status, "completed", `${platform}: ${result.error?.code || "failed"}`);
     assert.equal(result.result.post.post_id, postId);
   }
+});
+
+test("local feedback tokens expire, are bounded, and can be consumed", () => {
+  let now = 1_000;
+  const cache = createExpiringTokenCache({ now: () => now, ttlMs: 100, maxEntries: 2 });
+  cache.set("a", "token-a");
+  cache.set("b", "token-b");
+  cache.set("c", "token-c");
+  assert.equal(cache.get("a"), undefined);
+  assert.equal(cache.get("b"), "token-b");
+  cache.delete("b");
+  assert.equal(cache.get("b"), undefined);
+  now = 1_101;
+  assert.equal(cache.get("c"), undefined);
+  assert.equal(cache.size, 0);
 });
 
 async function jsFiles(root) {

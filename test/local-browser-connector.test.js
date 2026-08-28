@@ -23,11 +23,13 @@ test("local browser handoff prefers a declared Codex native browser over OpenCLI
     }
   });
 
-  assert.equal(handoff.handoff_version, "agentrouter_local_browser_handoff_v1");
+  assert.equal(handoff.handoff_version, "agentrouter_local_browser_handoff_v2");
   assert.equal(handoff.kind, "local_browser_execution");
   assert.equal(handoff.selected_adapter, "codex_browser");
   assert.deepEqual(handoff.fallback_adapters, ["opencli"]);
-  assert.deepEqual(handoff.allowed_origins, ["https://x.com", "https://twitter.com"]);
+  assert.deepEqual(handoff.allowed_origins, ["https://x.com", "https://www.x.com", "https://twitter.com", "https://www.twitter.com"]);
+  assert.match(handoff.handoff_token, /^arh1\./);
+  assert.ok(handoff.expires_at);
   assert.equal(handoff.permissions.access, "read_only");
   assert.equal(handoff.permissions.write_actions, "denied");
   assert.equal(handoff.completion.tool, "agentrouter_complete_handoff");
@@ -83,7 +85,9 @@ test("native browser completion normalizes evidence and never returns browser se
   assert.equal(completed.source.backend_id, "codex_browser");
   assert.match(completed.request_id, /^local_post_x_/);
   assert.equal(completed.result.post.text, "Native browser result");
-  assert.equal(completed.verification.source_url_preserved, true);
+  assert.equal(completed.verification.source_url_matched, true);
+  assert.equal(completed.result.post.verification_status, "caller_attested");
+  assert.equal(completed.verification.content_verified, false);
   assert.equal(completed.consumer_feedback_request.tool, "agentrouter_feedback");
   assert.doesNotMatch(JSON.stringify(completed), /must-not-escape|cookie|auth_token/i);
 });

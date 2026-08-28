@@ -385,6 +385,35 @@ test("HTTP clients can complete a native browser handoff without MCP stdio", asy
   }
 });
 
+test("hosted completion rejects a handoff already claimed by another instance", async () => {
+  const server = createServer({
+    store: createMemoryStore(),
+    browserHandoffClaim: async () => false
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const routed = await fetch(`${baseUrl}/agent-router/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: `读取 ${xUrl}`,
+        consumer_context: { local_browser: { adapter: "codex_browser", available: true, operations: ["read_post"] } }
+      })
+    }).then((response) => response.json());
+    const response = await fetch(`${baseUrl}/agent-router/browser-handoffs/complete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handoff: routed.handoff, result: { canonical_url: xUrl, text: "cross-instance replay" } })
+    });
+    const completed = await response.json();
+    assert.equal(response.status, 422);
+    assert.equal(completed.error.code, "HANDOFF_ALREADY_CONSUMED");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("MCP bridge frames stdout as newline-delimited JSON, not LSP Content-Length", async () => {
   const { encodeMessage } = await import("../packages/agentrouter-mcp/server/index.js");
   const wire = encodeMessage({ jsonrpc: "2.0", id: 1, result: { ok: true } });

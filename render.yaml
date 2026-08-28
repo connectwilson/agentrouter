@@ -7,13 +7,15 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /agent-router/health
+    healthCheckPath: /agent-router/ready
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
       - key: DATABASE_URL
+        sync: false
+      - key: ADN_BROWSER_HANDOFF_SECRET
         sync: false
       - key: ADN_PROVIDER_RECEIVE_ADDRESS
         value: 0x2c4d600a04c0d3bbb1e3cc8a13e54e21c2b6c0bb
@@ -42,7 +44,7 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /agent-router/health
+    healthCheckPath: /agent-router/ready
     envVars:
       - key: NODE_ENV
         value: production
@@ -51,6 +53,8 @@ services:
       - key: AGENT_ROUTER_PUBLIC_URL
         sync: false
       - key: DATABASE_URL
+        sync: false
+      - key: ADN_BROWSER_HANDOFF_SECRET
         sync: false
       - key: ADN_PROVIDER_RECEIVE_ADDRESS
         value: 0x2c4d600a04c0d3bbb1e3cc8a13e54e21c2b6c0bb

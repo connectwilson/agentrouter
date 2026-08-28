@@ -13,7 +13,7 @@ import { hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGr
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
 import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabilityRequest, routeTask } from "./router.js";
-import { writePersistentServiceEvent } from "./persistence.js";
+import { claimPersistentBrowserHandoff, persistenceReadiness, writePersistentServiceEvent } from "./persistence.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { isArcNetwork, verifyArcUsdcTransfer } from "./arc-payment.js";
 import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
@@ -53,6 +53,7 @@ import {
   syncPublicApiCoverage
 } from "./public-api-pipeline.js";
 import { remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
+import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
 
 const clientLogoPaths = {
   "claude.svg": new URL("../public/assets/client-logos/claude.svg", import.meta.url),
@@ -77,7 +78,9 @@ export function createServer({
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {},
-  writeRateLimit = {}
+  writeRateLimit = {},
+  readinessProbe = agentRouterReadiness,
+  browserHandoffClaim = claimPersistentBrowserHandoff
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
@@ -91,7 +94,9 @@ export function createServer({
         socialConnectionOptions,
         socialProviderFactory,
         publicApiPipelineOptions: resolvedPublicApiPipelineOptions,
-        writeRateLimiter
+        writeRateLimiter,
+        readinessProbe,
+        browserHandoffClaim
       });
     } catch (error) {
       sendJson(res, error.statusCode || 500, {
@@ -114,7 +119,9 @@ async function routeRequest(req, res, store, baseUrl, {
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {},
-  writeRateLimiter
+  writeRateLimiter,
+  readinessProbe = agentRouterReadiness,
+  browserHandoffClaim = claimPersistentBrowserHandoff
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
@@ -173,6 +180,12 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/agent-router/ready") {
+    const readiness = await readinessProbe();
+    sendJson(res, readiness.ok ? 200 : 503, readiness, { "cache-control": "no-store" });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/agent-router/health") {
     sendJson(res, 200, {
       ok: true,
@@ -199,7 +212,8 @@ async function routeRequest(req, res, store, baseUrl, {
       ...paymentContext,
       socialConnectionOptions,
       socialProviderFactory,
-      socialResearchRunner
+      socialResearchRunner,
+      browserHandoffClaim
     });
     return;
   }
@@ -1177,6 +1191,13 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/agent-router/browser-handoffs/complete") {
+    const body = await readJson(req);
+    const result = await completeHostedBrowserHandoff(body, browserHandoffClaim);
+    sendJson(res, result.ok === false ? 422 : 200, result, { "cache-control": "no-store" });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/agent-router/quote") {
     const body = await readJson(req);
     const quoteActorKey = sensitiveWriteActorKey(req, authUserKey(auth.user) || paymentContext.ownerKey);
@@ -1371,6 +1392,43 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   sendNotFound(res, "ROUTE_NOT_FOUND");
+}
+
+export async function agentRouterReadiness({
+  persistenceProbe = persistenceReadiness,
+  environment = process.env
+} = {}) {
+  const persistence = await persistenceProbe();
+  const hosted = environment.NODE_ENV === "production" || Boolean(environment.RENDER);
+  const signingSecret = String(environment.ADN_BROWSER_HANDOFF_SECRET || "");
+  const signingReady = !hosted || signingSecret.length >= 32;
+  return {
+    ok: Boolean(persistence.ok && signingReady),
+    checks: {
+      ...(persistence.checks || {}),
+      browser_handoff_signing: {
+        ok: signingReady,
+        required: hosted,
+        configured: signingSecret.length >= 32,
+        ...(signingReady ? {} : { error: "ADN_BROWSER_HANDOFF_SECRET must be a shared secret of at least 32 characters in hosted runtime." })
+      }
+    }
+  };
+}
+
+async function completeHostedBrowserHandoff(args, claim = claimPersistentBrowserHandoff) {
+  const result = completeLocalBrowserHandoff(args);
+  if (result.ok === false) return result;
+  const claimed = await claim(result.source.handoff_id, result.source.handoff_expires_at);
+  if (claimed) return result;
+  return {
+    ok: false,
+    status: "invalid_handoff_result",
+    error: {
+      code: "HANDOFF_ALREADY_CONSUMED",
+      message: "This browser handoff was already completed on another AgentRouter instance."
+    }
+  };
 }
 
 function requireAuth(req, res, auth, url) {
@@ -1592,6 +1650,9 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext 
 
 async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}) {
   await loadProviderConfigs(store, baseUrl, { validate: false });
+  if (name === "agentrouter_complete_handoff") {
+    return completeHostedBrowserHandoff(args, paymentContext.browserHandoffClaim || claimPersistentBrowserHandoff);
+  }
   if (name === "agentrouter_fetch") {
     return runRemoteAgentRouterFetch(store, args, {
       ...paymentContext

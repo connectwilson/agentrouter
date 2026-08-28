@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 
-import { createServer } from "../src/server.js";
+import { agentRouterReadiness, createServer } from "../src/server.js";
 import { createMemoryStore } from "../src/store.js";
 
 test("readiness reports dependency failures separately from process liveness", async () => {
@@ -29,4 +29,19 @@ test("release CI runs tests, package smoke checks, and dependency audit", async 
   assert.match(workflow, /mcp:npm:pack/);
   assert.match(workflow, /npm audit/);
   assert.match(workflow, /mcp-package-smoke/);
+});
+
+test("hosted readiness requires one shared browser handoff signing secret", async () => {
+  const missing = await agentRouterReadiness({
+    persistenceProbe: async () => ({ ok: true, checks: { database: { ok: true } } }),
+    environment: { NODE_ENV: "production" }
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.checks.browser_handoff_signing.ok, false);
+
+  const configured = await agentRouterReadiness({
+    persistenceProbe: async () => ({ ok: true, checks: { database: { ok: true } } }),
+    environment: { NODE_ENV: "production", ADN_BROWSER_HANDOFF_SECRET: "shared-secret-at-least-32-characters" }
+  });
+  assert.equal(configured.ok, true);
 });

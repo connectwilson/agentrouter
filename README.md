@@ -110,11 +110,14 @@ For production-style deployments, set:
 ```text
 DATABASE_URL=postgres://...
 ADN_PROVIDER_SECRET_PASSPHRASE=<stable-32+-char-secret>
+ADN_BROWSER_HANDOFF_SECRET=<stable-shared-32+-char-secret>
 ```
 
 When `DATABASE_URL` is present, Provider Studio writes provider configs to Postgres and stores provider credentials as encrypted secret records. On every restart, AgentRouter reloads registered providers from the database, so a provider only needs to publish once.
 
 `ADN_PROVIDER_SECRET_PASSPHRASE` is a platform encryption key, not a provider API key. It must stay stable across deploys. Rotating it without re-encrypting secrets will make existing provider credentials unreadable.
+
+`ADN_BROWSER_HANDOFF_SECRET` signs short-lived native-browser handoffs. Hosted instances must use the same stable value so a request created on one instance can be completed on another; `/agent-router/ready` rejects production traffic when it is missing or shorter than 32 characters.
 
 Do not add provider-owned API keys such as BlockBeats, Nansen, or other upstream keys to hosted deployment environment variables as the normal onboarding path. Providers enter their credentials in Provider Studio; the platform stores encrypted secret records in the persistent registry. Hosted deployments that require persistence, such as Render, reject Provider Studio publish requests unless `DATABASE_URL` and a stable `ADN_PROVIDER_SECRET_PASSPHRASE` are configured.
 

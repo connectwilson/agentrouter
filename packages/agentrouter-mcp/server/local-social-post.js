@@ -4,8 +4,7 @@ import path from "node:path";
 import {
   buildLocalBrowserHandoff,
   hasNativeBrowserCapability
-} from "../../../src/local-browser-connector.js";
-import { buildLocalSocialExecutionPlan } from "../../../src/local-social-privacy.js";
+} from "./local-browser-connector.js";
 
 // Users see a macOS Keychain prompt when a cookie-decrypting tool runs, and it is
 // easy to blame whichever tool asked for data. Say plainly that it is not us.
@@ -99,12 +98,15 @@ export function localBrowserHandoffRequest(message, parsed) {
   if (!parsed || message?.method !== "tools/call") return null;
   const consumerContext = message.params?.arguments?.consumer_context || {};
   if (!hasNativeBrowserCapability(consumerContext, "read_post")) return null;
-  const localExecutionPlan = buildLocalSocialExecutionPlan({
+  const localExecutionPlan = {
+    protocol_version: "agentrouter_local_social_task_v1",
     platform: parsed.platform,
     operation: "read_post",
-    target: parsed.canonical_url,
-    limit: 1
-  });
+    params: { target: parsed.canonical_url, limit: 1 },
+    execution_location: "user_device",
+    permissions: { access: "read_only", write_actions: "denied" },
+    data_policy: { credentials: "never_upload", raw_results: "never_upload" }
+  };
   const handoff = buildLocalBrowserHandoff({
     platform: parsed.platform,
     operation: "read_post",

@@ -28,6 +28,7 @@
     "mcpb:pack": "mcpb pack mcpb/agentrouter",
     "mcp:npm:check": "node --check packages/agentrouter-mcp/server/index.js",
     "mcp:npm:pack": "npm pack ./packages/agentrouter-mcp --dry-run",
+    "mcp-package-smoke": "node scripts/mcp-package-smoke.js",
     "plugin:skill:sync": "node scripts/sync-plugin-skill.js",
     "dev:local": "node --env-file=.env.local src/server.js",
     "anchor:deploy": "node scripts/deploy-evidence-anchor.js"

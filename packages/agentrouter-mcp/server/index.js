@@ -16,7 +16,8 @@ import {
   agentRouterConnectTool,
   bridgeMcpTools
 } from "./tool-catalog.js";
-import { completeLocalBrowserHandoff } from "../../../src/local-browser-connector.js";
+import { completeLocalBrowserHandoff } from "./local-browser-connector.js";
+import { createExpiringTokenCache } from "./feedback-token-cache.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const remoteOrigins = parseRemoteOrigins(baseUrl, process.env.AGENT_ROUTER_FALLBACK_URLS);
@@ -29,7 +30,7 @@ const remoteCooldownMs = boundedInteger(process.env.AGENT_ROUTER_REMOTE_COOLDOWN
 const transientHttpStatuses = new Set([408, 425, 429, 502, 503, 504]);
 const remoteSessionIds = new Map();
 const remoteCircuitOpenUntil = new Map();
-const localFeedbackTokens = new Map();
+const localFeedbackTokens = createExpiringTokenCache();
 let preferredRemoteOrigin = baseUrl;
 let preferredRemoteOriginUntil = 0;
 let deviceAuthorization = null;
@@ -162,7 +163,7 @@ async function forwardRequest(message) {
       return;
     }
     await resumePendingDeviceAuthorization();
-    attachLocalFeedbackToken(message);
+    const attachedFeedbackRequestId = attachLocalFeedbackToken(message);
     const response = await postRemote(message);
     const text = await response.text();
     if (!response.ok) {
@@ -212,6 +213,9 @@ async function forwardRequest(message) {
       return;
     }
     await completeSponsoredFeedback(message, payload);
+    if (attachedFeedbackRequestId && !payload.error && payload.result?.isError !== true) {
+      localFeedbackTokens.delete(attachedFeedbackRequestId);
+    }
     send(payload);
   } catch (error) {
     if (isToolCall(message) && error?.agentRouterRemoteDiagnostic) {
@@ -263,11 +267,14 @@ async function attachLocalFeedbackGrant(result) {
 }
 
 function attachLocalFeedbackToken(message) {
-  if (message?.method !== "tools/call" || message?.params?.name !== "agentrouter_feedback") return;
+  if (message?.method !== "tools/call" || message?.params?.name !== "agentrouter_feedback") return null;
   const args = message.params.arguments || {};
-  if (args.feedback_token) return;
-  const token = localFeedbackTokens.get(String(args.request_id || ""));
-  if (token) args.feedback_token = token;
+  const requestId = String(args.request_id || "");
+  if (args.feedback_token) return null;
+  const token = localFeedbackTokens.get(requestId);
+  if (!token) return null;
+  args.feedback_token = token;
+  return requestId;
 }
 
 function handleLocalControlPlane(message) {
@@ -275,7 +282,7 @@ function handleLocalControlPlane(message) {
     return {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "AgentRouter", version: "0.12.5" }
+      serverInfo: { name: "AgentRouter", version: "0.13.0" }
     };
   }
   if (message?.method === "ping") return {};

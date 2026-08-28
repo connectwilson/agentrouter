@@ -1,3 +1,22 @@
+const localBrowserContextSchema = {
+  type: "object",
+  properties: {
+    local_browser: {
+      type: "object",
+      description: "Capabilities exposed by the AI client's built-in, user-authenticated browser.",
+      properties: {
+        adapter: { enum: ["codex_browser", "claude_in_chrome", "opencli"] },
+        available: { type: "boolean" },
+        operations: { type: "array", items: { enum: ["read_post"] } },
+        session_mode: { enum: ["existing_user_session", "isolated_session", "shared_profile", "isolated_profile"] }
+      },
+      additionalProperties: false
+    },
+    source: { type: "string" }
+  },
+  additionalProperties: true
+};
+
 export const remoteMcpTools = [
   {
     name: "agentrouter_fetch",
@@ -22,7 +41,7 @@ export const remoteMcpTools = [
         budget: { type: "object" },
         max_price: { type: "string", default: "0.05" },
         currency: { type: "string", default: "USDC" },
-        consumer_context: { type: "object" }
+        consumer_context: localBrowserContextSchema
       }
     }
   },
@@ -48,7 +67,7 @@ export const remoteMcpTools = [
         params: { type: "object", description: "Capability-specific input parameters." },
         constraints: { type: "object", description: "Routing and payment constraints, for example max_price_usdc and freshness_seconds." },
         budget: { type: "object", description: "Optional budget object." },
-        consumer_context: { type: "object", description: "Optional caller context." }
+        consumer_context: localBrowserContextSchema
       }
     }
   },
@@ -153,4 +172,6 @@ export const agentRouterCompleteHandoffTool = {
   }
 };
 
-export const bridgeMcpTools = [agentRouterConnectTool, agentRouterCompleteHandoffTool, ...remoteMcpTools];
+remoteMcpTools.push(agentRouterCompleteHandoffTool);
+
+export const bridgeMcpTools = [agentRouterConnectTool, ...remoteMcpTools];

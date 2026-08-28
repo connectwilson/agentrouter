@@ -8,6 +8,10 @@ catalog is imported by the hosted server, preventing the local fallback list
 from drifting away from production. Data calls are forwarded to
 `https://agentrouter.network/mcp`.
 
+Native-browser reads use signed, five-minute, single-use handoffs. Hosted
+deployments must share `ADN_BROWSER_HANDOFF_SECRET` (at least 32 characters)
+across instances so a completion can be verified after load balancing.
+
 For a public X status URL, `agentrouter_fetch` and the structured
 `social_post_read` capability execute through a negotiated read-only connector
 on the user's device. A caller can declare `consumer_context.local_browser`

@@ -937,10 +937,13 @@ export async function issueLocalFeedbackGrant(store, body = {}, {
     if (existing.public?.feedback_token) {
       return { ...existing.public, status: "feedback_grant_already_issued" };
     }
-    const error = new Error("This local feedback grant was already issued. Run the local operation again to obtain a new request_id.");
-    error.statusCode = 409;
-    error.code = "FEEDBACK_GRANT_ALREADY_ISSUED";
-    throw error;
+    const feedbackToken = randomBytes(32).toString("base64url");
+    const rotatedAt = new Date().toISOString();
+    const rotated = { ...existing, token_hash: hashJson(feedbackToken), rotated_at: rotatedAt };
+    await writeEvent({ eventType: "feedback_grant_rotation", serviceId, requestId, event: rotated });
+    const publicGrant = { ok: true, status: "feedback_grant_rotated", request_id: requestId, service_id: serviceId, feedback_token: feedbackToken, created_at: existing.created_at, rotated_at: rotatedAt };
+    store.feedbackGrants.set(requestId, { ...rotated, public: publicGrant });
+    return publicGrant;
   }
   const feedbackToken = randomBytes(32).toString("base64url");
   const createdAt = new Date().toISOString();
@@ -1023,9 +1026,9 @@ export async function hydratePersistentServiceEvents(store) {
 export async function hydrateServiceEventRows(store, events = []) {
   for (const row of events) {
     const event = row.event;
-    if (row.event_type === "feedback_grant") {
+    if (row.event_type === "feedback_grant" || row.event_type === "feedback_grant_rotation") {
       store.feedbackGrants ||= new Map();
-      if (!store.feedbackGrants.has(row.request_id)) store.feedbackGrants.set(row.request_id, event);
+      store.feedbackGrants.set(row.request_id, event);
       const operational = localOperationalEventFromGrant(event);
       if (!store.feedbackEvents.some((item) => item.request_id === row.request_id && item.service_id === row.service_id)) {
         store.feedbackEvents.push(operational);
