@@ -102,12 +102,44 @@ test("hosted fetch recognizes an X URL and requests local execution instead of n
     assert.equal(payload.status, "local_connector_required");
     assert.equal(payload.request.capability, "social_post_read");
     assert.equal(payload.local_execution_plan.params.target, xUrl);
-    assert.equal(payload.handoff.kind, "local_execution");
+    assert.equal(payload.handoff.kind, "local_browser_execution");
     assert.equal(payload.handoff.backend, "agentrouter_mcp_local_connector");
-    assert.equal(payload.handoff.adapter, "opencli");
+    assert.equal(payload.handoff.selected_adapter, "opencli");
+    assert.equal(payload.handoff.completion.tool, "agentrouter_complete_handoff");
     assert.equal(payload.handoff.preserve_route_context, true);
     assert.equal(payload.fallback_allowed, false);
     assert.notEqual(payload.status, "no_service_found");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("hosted fetch selects a declared native browser without requiring OpenCLI", async () => {
+  const server = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/agent-router/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: `读取这个 X 帖子 ${xUrl}`,
+        consumer_context: {
+          local_browser: {
+            adapter: "codex_browser",
+            available: true,
+            operations: ["read_post"]
+          }
+        }
+      })
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "local_connector_required");
+    assert.equal(payload.handoff.selected_adapter, "codex_browser");
+    assert.deepEqual(payload.handoff.fallback_adapters, ["opencli"]);
+    assert.match(payload.action_required.message, /built-in browser/i);
+    assert.doesNotMatch(payload.action_required.message, /install|restart/i);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
