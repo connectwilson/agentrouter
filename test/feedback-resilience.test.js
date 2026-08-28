@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { baseFundFlowManifest } from "../src/fixtures.js";
 import {
   hydrateServiceEventRows,
+  issueLocalFeedbackGrant,
   recordConsumerFeedback,
   registerService
 } from "../src/registry.js";
@@ -36,6 +37,40 @@ function operational({ requestId, serviceId, actor = "actor:owner" }) {
     created_at: "2026-08-24T00:00:00.000Z"
   };
 }
+
+test("a hydrated feedback grant rotates its opaque token after restart", async () => {
+  const store = createMemoryStore();
+  const requestId = "local_post_x_restart";
+  await hydrateServiceEventRows(store, [{
+    event_type: "feedback_grant",
+    service_id: "local_social_x",
+    request_id: requestId,
+    event: {
+      event_version: "agent_local_feedback_grant_v1",
+      request_id: requestId,
+      service_id: "local_social_x",
+      actor_key: "actor:owner",
+      operation: "post",
+      platform: "x",
+      token_hash: "old-hash",
+      created_at: "2026-08-28T00:00:00.000Z"
+    }
+  }]);
+  const writes = [];
+  const result = await issueLocalFeedbackGrant(store, {
+    request_id: requestId,
+    service_id: "local_social_x",
+    operation: "post"
+  }, {
+    actorKey: "actor:owner",
+    writeEvent: async (entry) => writes.push(entry),
+    randomBytes: () => Buffer.alloc(32, 7)
+  });
+  assert.equal(result.status, "feedback_grant_rotated");
+  assert.match(result.feedback_token, /^[A-Za-z0-9_-]{32,}$/);
+  assert.equal(writes[0].eventType, "feedback_grant_rotation");
+  assert.notEqual(store.feedbackGrants.get(requestId).token_hash, "old-hash");
+});
 
 test("persistent hydration restores external feedback, quote feedback, and submitted ERC-8004 state", async () => {
   const store = createMemoryStore();

@@ -304,6 +304,85 @@ test("MCP bridge exposes native browser handoff completion without replacing Ope
   });
   assert.equal(completion.result.text, "result");
   assert.ok(bridgeMcpTools.some((tool) => tool.name === "agentrouter_complete_handoff"));
+  const fetchTool = bridgeMcpTools.find((tool) => tool.name === "agentrouter_fetch");
+  assert.deepEqual(
+    fetchTool.inputSchema.properties.consumer_context.properties.local_browser.properties.operations.items.enum,
+    ["read_post"]
+  );
+});
+
+test("remote MCP exposes and completes one native browser handoff", async () => {
+  const server = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/mcp`;
+  const call = async (id, name, args = {}) => {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } })
+    });
+    return response.json();
+  };
+  try {
+    const listedResponse = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })
+    });
+    const listed = await listedResponse.json();
+    assert.ok(listed.result.tools.some((tool) => tool.name === "agentrouter_complete_handoff"));
+
+    const routed = await call(2, "agentrouter_fetch", {
+      task: `读取 ${xUrl}`,
+      consumer_context: {
+        local_browser: { adapter: "codex_browser", available: true, operations: ["read_post"] }
+      }
+    });
+    const handoffResult = JSON.parse(routed.result.content[0].text);
+    assert.equal(handoffResult.handoff.selected_adapter, "codex_browser");
+
+    const completed = await call(3, "agentrouter_complete_handoff", {
+      handoff: handoffResult.handoff,
+      result: { canonical_url: xUrl, text: "remote native result", author_handle: "marclou" }
+    });
+    const payload = JSON.parse(completed.result.content[0].text);
+    assert.equal(payload.status, "completed");
+    assert.equal(payload.result.post.text, "remote native result");
+
+    const replayed = await call(4, "agentrouter_complete_handoff", {
+      handoff: handoffResult.handoff,
+      result: { canonical_url: xUrl, text: "replay" }
+    });
+    assert.equal(JSON.parse(replayed.result.content[0].text).error.code, "HANDOFF_ALREADY_CONSUMED");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("HTTP clients can complete a native browser handoff without MCP stdio", async () => {
+  const server = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const routed = await fetch(`${baseUrl}/agent-router/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: `读取 ${xUrl}`,
+        consumer_context: { local_browser: { adapter: "codex_browser", available: true, operations: ["read_post"] } }
+      })
+    }).then((response) => response.json());
+    const response = await fetch(`${baseUrl}/agent-router/browser-handoffs/complete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handoff: routed.handoff, result: { canonical_url: xUrl, text: "HTTP result" } })
+    });
+    const completed = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(completed.result.post.text, "HTTP result");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("MCP bridge frames stdout as newline-delimited JSON, not LSP Content-Length", async () => {
