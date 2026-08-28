@@ -37,6 +37,10 @@ configured with `AGENTROUTER_ALLOW_TWITTER_CLI_FALLBACK=1`.
 
 For paid calls, no API key needs to be copied into the MCP configuration. On the first request that needs account credits, call the bridge's `agentrouter_connect` tool. It returns a short browser approval link; after the user approves, the bridge stores the device credential privately and uses the prepaid balance automatically. The credential is never returned to the AI agent.
 
+The bridge opens that approval URL automatically through the operating system's
+default browser and still returns the URL for hosts that block browser launch.
+Headless environments can set `AGENTROUTER_DISABLE_BROWSER_OPEN=1`.
+
 `AGENT_ROUTER_API_KEY` remains an advanced override for CI and headless servers that cannot open a browser.
 
 The bridge applies bounded remote timeouts and retries only failures that are

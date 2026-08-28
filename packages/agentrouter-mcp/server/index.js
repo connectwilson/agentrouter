@@ -18,6 +18,7 @@ import {
 } from "./tool-catalog.js";
 import { completeLocalBrowserHandoff } from "./local-browser-connector.js";
 import { createExpiringTokenCache } from "./feedback-token-cache.js";
+import { launchBrowserAuthorization } from "./browser-launcher.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const remoteOrigins = parseRemoteOrigins(baseUrl, process.env.AGENT_ROUTER_FALLBACK_URLS);
@@ -282,7 +283,7 @@ function handleLocalControlPlane(message) {
     return {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "AgentRouter", version: "0.13.0" }
+      serverInfo: { name: "AgentRouter", version: "0.13.1" }
     };
   }
   if (message?.method === "ping") return {};
@@ -570,6 +571,13 @@ async function handleConnectRequest(message) {
     });
     if (!started.ok) return toolResult({ status: "connection_failed", error: started.payload?.error || `HTTP ${started.status}` }, true);
     deviceAuthorization = { ...started.payload, client_name: clientName };
+    deviceAuthorization.browser_open = await launchBrowserAuthorization(
+      deviceAuthorization.verification_uri_complete || deviceAuthorization.verification_uri,
+      {
+        allowedOrigins: remoteOrigins,
+        disabled: process.env.AGENTROUTER_DISABLE_BROWSER_OPEN === "1"
+      }
+    );
   }
 
   const waitSeconds = Math.max(0, Math.min(55, Number(args.wait_seconds ?? 45) || 0));
@@ -597,6 +605,7 @@ async function handleConnectRequest(message) {
     verification_uri: deviceAuthorization.verification_uri,
     verification_uri_complete: deviceAuthorization.verification_uri_complete,
     expires_in: deviceAuthorization.expires_in,
+    browser_open: deviceAuthorization.browser_open,
     message: "Open the authorization link and approve this agent. Then call agentrouter_connect again if this call returns before approval."
   });
 }

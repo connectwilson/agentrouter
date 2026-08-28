@@ -43,3 +43,38 @@ test("headless clients can disable automatic browser launch while retaining the 
   );
   assert.deepEqual(result, { attempted: false, opened: false, status: "disabled" });
 });
+
+test("browser authorization uses native no-shell launchers on Linux and Windows", async () => {
+  const commands = [];
+  const spawnProcess = (command, args) => {
+    commands.push([command, args]);
+    const child = new EventEmitter();
+    child.unref = () => {};
+    queueMicrotask(() => child.emit("spawn"));
+    return child;
+  };
+  await launchBrowserAuthorization("https://agentrouter.network/connect", { platform: "linux", spawnProcess });
+  await launchBrowserAuthorization("https://agentrouter.network/connect", { platform: "win32", spawnProcess });
+  const unsupported = await launchBrowserAuthorization("https://agentrouter.network/connect", { platform: "aix", spawnProcess });
+  assert.deepEqual(commands.map(([command]) => command), ["xdg-open", "rundll32.exe"]);
+  assert.equal(unsupported.status, "unsupported_platform");
+});
+
+test("browser launch failure remains recoverable through the returned approval URL", async () => {
+  const spawnFailure = await launchBrowserAuthorization("https://agentrouter.network/connect", {
+    platform: "darwin",
+    spawnProcess: () => {
+      const child = new EventEmitter();
+      child.unref = () => {};
+      queueMicrotask(() => child.emit("error", new Error("not available")));
+      return child;
+    }
+  });
+  const thrownFailure = await launchBrowserAuthorization("https://agentrouter.network/connect", {
+    platform: "darwin",
+    spawnProcess: () => { throw new Error("blocked by host"); }
+  });
+  assert.equal(spawnFailure.status, "failed");
+  assert.equal(thrownFailure.status, "failed");
+  assert.match(thrownFailure.error, /blocked by host/);
+});
