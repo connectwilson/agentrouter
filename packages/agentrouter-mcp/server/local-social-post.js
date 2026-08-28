@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 
 import path from "node:path";
+import {
+  buildLocalBrowserHandoff,
+  hasNativeBrowserCapability
+} from "../../../src/local-browser-connector.js";
+import { buildLocalSocialExecutionPlan } from "../../../src/local-social-privacy.js";
 
 // Users see a macOS Keychain prompt when a cookie-decrypting tool runs, and it is
 // easy to blame whichever tool asked for data. Say plainly that it is not us.
@@ -88,6 +93,46 @@ export function localSocialPostRequest(message) {
   }
   if (name !== "agentrouter_fetch" && name !== "agentrouter_ask") return null;
   return findSocialPostUrl(args.task || args.query);
+}
+
+export function localBrowserHandoffRequest(message, parsed) {
+  if (!parsed || message?.method !== "tools/call") return null;
+  const consumerContext = message.params?.arguments?.consumer_context || {};
+  if (!hasNativeBrowserCapability(consumerContext, "read_post")) return null;
+  const localExecutionPlan = buildLocalSocialExecutionPlan({
+    platform: parsed.platform,
+    operation: "read_post",
+    target: parsed.canonical_url,
+    limit: 1
+  });
+  const handoff = buildLocalBrowserHandoff({
+    platform: parsed.platform,
+    operation: "read_post",
+    target: parsed.canonical_url,
+    localExecutionPlan,
+    consumerContext
+  });
+  return {
+    ok: false,
+    status: "local_connector_required",
+    request: {
+      capability: "social_post_read",
+      params: { url: parsed.canonical_url, platform: parsed.platform }
+    },
+    action_required: {
+      code: "LOCAL_BROWSER_EXECUTION_REQUIRED",
+      message: "Use the AI client's built-in browser for this read-only request, then call agentrouter_complete_handoff with the structured result.",
+      reload_after_bridge_update: false
+    },
+    handoff: { ...handoff, capability: "social_post_read" },
+    fallback_allowed: true,
+    local_execution_plan: localExecutionPlan
+  };
+}
+
+export function localBrowserCompletionRequest(message) {
+  if (message?.method !== "tools/call" || message?.params?.name !== "agentrouter_complete_handoff") return null;
+  return message.params?.arguments || {};
 }
 
 function parseXStatusUrl(value) {

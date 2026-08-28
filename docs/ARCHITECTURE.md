@@ -70,7 +70,7 @@ plugin/
 ```
 
 - `plugin.json` is metadata only — skills and MCP servers are found at the fixed `skills/` and `mcp.json` locations; the schema is `additionalProperties: false` and declares no `skills`/`mcpServers` fields.
-- `mcp.json` declares the **stdio** bridge running `@agentrouternetwork/mcp@latest`. Both modes are expressible here, but the plugin ships stdio specifically so the free local-browser reads (X, YouTube, Bilibili, Reddit, Xiaohongshu, Zhihu, Weibo, TikTok via OpenCLI) survive — a remote-only `streamable-http` plugin would silently lose the product's main differentiator against resold-scraping competitors.
+- `mcp.json` declares the **stdio** bridge running `@agentrouternetwork/mcp@latest`. The browser boundary is capability-negotiated: Codex/Claude native browsers are preferred when declared, while OpenCLI remains the portable local fallback for X, YouTube, Bilibili, Reddit, Xiaohongshu, Zhihu, Weibo, and TikTok. Native results return through `agentrouter_complete_handoff`, preserving provenance and feedback without exposing browser state. A remote-only `streamable-http` plugin cannot execute the OpenCLI fallback and therefore loses part of this coverage.
 - `plugin/skills/agentrouter/SKILL.md` is synced from the hosted skill (`GET /SKILL.md`); `scripts/sync-plugin-skill.js` (`npm run plugin:skill:sync`) refreshes it, and `test/agent-plugin.test.js` fails on drift.
 
 Keeping the two channels in sync is deliberate: the installer serves clients without plugin support; the plugin serves conformant clients. They should not diverge in the Skill or bridge package they install.

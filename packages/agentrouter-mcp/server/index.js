@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
-import { localSocialPostRequest, runLocalSocialPostRead } from "./local-social-post.js";
+import {
+  localBrowserCompletionRequest,
+  localBrowserHandoffRequest,
+  localSocialPostRequest,
+  runLocalSocialPostRead
+} from "./local-social-post.js";
 import { localSocialSearchRequest, runLocalSocialSearch } from "./local-social-search.js";
 import { readStoredCredential, writeStoredCredential } from "./credential-store.js";
 import { submitSponsoredFeedback } from "./bsc-feedback.js";
 import { readOrCreateFeedbackSigner } from "./feedback-wallet.js";
 import { decorateBrowserAuthorization, resolveMcpClientAction } from "./action-state.js";
 import { agentRouterConnectTool, bridgeMcpTools } from "./tool-catalog.js";
+import { completeLocalBrowserHandoff } from "../../../src/local-browser-connector.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const remoteOrigins = parseRemoteOrigins(baseUrl, process.env.AGENT_ROUTER_FALLBACK_URLS);
@@ -96,6 +102,20 @@ async function forwardRequest(message) {
       send({ jsonrpc: "2.0", id: message.id, result: await handleConnectRequest(message) });
       return;
     }
+    const browserCompletion = localBrowserCompletionRequest(message);
+    if (browserCompletion) {
+      const result = completeLocalBrowserHandoff(browserCompletion);
+      await attachLocalFeedbackGrant(result);
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          isError: result.ok === false
+        }
+      });
+      return;
+    }
     // Keyword search only works where a browser is: the hosted server has none.
     const localSearch = localSocialSearchRequest(message);
     if (localSearch) {
@@ -113,6 +133,18 @@ async function forwardRequest(message) {
     }
     const localSocialPost = localSocialPostRequest(message);
     if (localSocialPost) {
+      const nativeHandoff = localBrowserHandoffRequest(message, localSocialPost);
+      if (nativeHandoff) {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            content: [{ type: "text", text: JSON.stringify(nativeHandoff, null, 2) }],
+            isError: false
+          }
+        });
+        return;
+      }
       const result = await runLocalSocialPostRead(localSocialPost.canonical_url);
       await attachLocalFeedbackGrant(result);
       send({
@@ -253,7 +285,9 @@ async function discoverTools(message) {
     const payload = safeJson(await response.text());
     const tools = payload?.result?.tools;
     if (!Array.isArray(tools)) return { tools: bridgeMcpTools };
-    if (!tools.some((tool) => tool?.name === agentRouterConnectTool.name)) tools.unshift(agentRouterConnectTool);
+    for (const tool of [...bridgeMcpTools].reverse()) {
+      if (!tools.some((candidate) => candidate?.name === tool.name)) tools.unshift(tool);
+    }
     return { tools };
   } catch {
     return { tools: bridgeMcpTools };

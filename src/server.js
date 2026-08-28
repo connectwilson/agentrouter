@@ -1149,7 +1149,7 @@ async function routeRequest(req, res, store, baseUrl, {
     }
     if (body.capability === "social_post_read") {
       const providers = await socialProviderFactory(store, authUserKey(auth.user) || paymentContext.ownerKey || "", socialConnectionOptions);
-      const result = await runSocialPostReadCapability(body.params || {}, { providers });
+      const result = await runSocialPostReadCapability(body.params || {}, { providers, consumerContext: body.consumer_context });
       sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
       return;
     }
@@ -1668,7 +1668,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
       const ownerKey = paymentContext.ownerKey || "";
       const providerFactory = paymentContext.socialProviderFactory || socialProvidersForUser;
       const providers = await providerFactory(store, ownerKey, paymentContext.socialConnectionOptions || {});
-      return runSocialPostReadCapability(request.params, { providers });
+      return runSocialPostReadCapability(request.params, { providers, consumerContext: request.consumer_context });
     }
     if (!paymentContext.invoke) {
       return requestPaymentRequired(quoteCapabilityRequest(store, request));
@@ -1754,7 +1754,10 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     const socialPost = findSocialPostUrl(args.task || args.query || "");
     if (socialPost) {
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
-      return runSocialPostReadCapability({ url: socialPost.canonical_url, platform: socialPost.platform }, { providers });
+      return runSocialPostReadCapability(
+        { url: socialPost.canonical_url, platform: socialPost.platform },
+        { providers, consumerContext: args.consumer_context }
+      );
     }
     // Only the unambiguous domain sources run ahead of the registered-service
     // router. A generic web search used to run first and preempt services that
@@ -1803,7 +1806,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     }
     if (request.capability === "social_post_read") {
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
-      results.push(await runSocialPostReadCapability(request.params, { providers }));
+      results.push(await runSocialPostReadCapability(request.params, { providers, consumerContext: request.consumer_context }));
       continue;
     }
     if (request.capability === "external_api_query") {

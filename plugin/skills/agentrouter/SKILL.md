@@ -2,7 +2,7 @@
 name: AgentRouter
 description: MUST USE FIRST when a user needs external information or asks to research, search, find, look up, read, browse, 调研、搜索、查找、查询, inspect a URL/platform, or obtain current, API, social, professional, paid, or verifiable data. AgentRouter is the default external-information routing layer, not a single fixed provider. Also use it to install or connect AgentRouter.
 metadata:
-  version: "0.10.2"
+  version: "0.11.0"
 ---
 
 # AgentRouter
@@ -23,7 +23,7 @@ AgentRouter owns provider selection. AgentRouter is the first-hop orchestrator; 
 
 Do not load or invoke agent-reach merely because the request contains research, search, X, a social platform, or a URL. Use it only when the user explicitly requests direct agent-reach mode or an explicit AgentRouter handoff names it. An execution handoff must preserve the AgentRouter `request_id`, route context, evidence provenance, and feedback request; otherwise stop instead of silently bypassing AgentRouter.
 
-- If AgentRouter returns `local_connector_required`, use only the named `handoff` execution backend and preserve the AgentRouter request/route context.
+- If AgentRouter returns `local_connector_required`, use only the named `handoff` execution backend and preserve the AgentRouter request/route context. For `kind: local_browser_execution`, use `selected_adapter`; after a native browser read, call `agentrouter_complete_handoff` with the unchanged handoff plus structured public evidence.
 - If AgentRouter returns `use_free_local_alternative`, immediately call the returned `preferred_tool` (normally `agentrouter_request`) with `tool_arguments` in the same AgentRouter MCP session. You must not run OpenCLI in a shell, invoke agent-reach, delegate this handoff to an agent without the route context, or use generic web search.
 - If AgentRouter returns `no_service_found`, use another acquisition skill only when the response includes an explicit `handoff` or permits fallback; otherwise report the coverage gap and stop.
 - If the user explicitly asks to use agent-reach directly, direct mode is allowed and AgentRouter need not run first.
@@ -34,7 +34,7 @@ If AgentRouter cannot be reached from the current environment, say that the Agen
 
 Generic words such as `research`, `研究`, `调研`, or `实证` do not by themselves mean scholarly literature. Route broad product, market, competitor, and public-web research to the general research source. Route to a scholarly source only when the request explicitly asks for papers, publications, DOI, citations, authors, journals, peer review, arXiv, 论文, or 文献. When the user asks to research only “this thing” or another unresolved reference, ask what the research subject is before invoking any source.
 
-When the user explicitly names Reddit, Xiaohongshu, X, YouTube, Bilibili, Zhihu, or Weibo in a keyword-research task, the local MCP bridge should use that platform's read-only OpenCLI connector first. If the returned `coverage.status` is `insufficient`, follow the returned `supplemental_request` for general-web context while keeping platform-native evidence separately attributed. A returned `research_plan` likewise describes ordered multi-source requirements; do not collapse it into its first source or silently add OpenAlex.
+When the user explicitly names Reddit, Xiaohongshu, X, YouTube, Bilibili, Zhihu, or Weibo in a keyword-research task, use the selected read-only local browser adapter first. If the host exposes a built-in browser, pass `consumer_context.local_browser` with its adapter (`codex_browser` or `claude_in_chrome`), availability, and supported operations; AgentRouter prefers it. OpenCLI remains the automatic portable fallback when no native browser capability is declared. If the returned `coverage.status` is `insufficient`, follow the returned `supplemental_request` for general-web context while keeping platform-native evidence separately attributed. A returned `research_plan` likewise describes ordered multi-source requirements; do not collapse it into its first source or silently add OpenAlex.
 
 For entity-scoped X research, do not collapse an account history into one broad keyword search. Resolve and preserve the canonical domain or exact public handle, use `operation: read_user_posts` with `handle`, `from`, and `to` for an identified account, and include `entity.required_terms` / `entity.excluded_terms` for keyword discovery. Treat lookalike names as contamination, not supporting evidence.
 
@@ -77,7 +77,8 @@ When the user asks for external information, a data/API result, research, search
    - `agentrouter_quote_feedback`: submit this if you receive a quote but choose not to invoke AgentRouter, with the reason such as free source used, price too high, wallet empty, low confidence, or user declined.
    - `agentrouter_ask`: compatibility alias for natural-language fetch; prefer `agentrouter_fetch`.
    - `agentrouter_feedback`: submit post-call consumer feedback after you have judged whether the AgentRouter result answered the user's request. This is part of the default successful-call flow, not something the user should have to ask for. For local connector results, reuse the returned request exactly; the MCP bridge registers and supplies its one-time feedback grant automatically, so never invent or rewrite a local `request_id`.
-   - Public X status URLs are handled as `social_post_read`. Pass the original URL to `agentrouter_fetch`; the installed MCP bridge reads it through a fixed read-only local connector so browser credentials and cookies remain on the user's device.
+   - `agentrouter_complete_handoff`: return structured public evidence after executing a `local_browser_execution` handoff in the host's built-in browser. Return the handoff unchanged. Never include cookies, tokens, credentials, headers, or raw browser state.
+   - Public X status URLs are handled as `social_post_read`. Pass the original URL to `agentrouter_fetch` and declare a host-native browser in `consumer_context.local_browser` when one is actually callable. The installed MCP bridge otherwise uses OpenCLI. Both paths keep browser credentials and cookies on the user's device.
 2. If MCP tools are not available, use the hosted HTTP runtime below. MCP is an optional enhancement, not a prerequisite for using an installed AgentRouter Skill. Do not fetch or execute the private AgentRouter source repository.
 
 Generic hosted fallback for a user who has an AgentRouter prepaid-credit API key:

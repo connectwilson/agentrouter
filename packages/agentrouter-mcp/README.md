@@ -9,11 +9,14 @@ from drifting away from production. Data calls are forwarded to
 `https://agentrouter.network/mcp`.
 
 For a public X status URL, `agentrouter_fetch` and the structured
-`social_post_read` capability execute through a fixed read-only connector on
-the user's device. OpenCLI is the default connector: its browser extension reads
-the public post inside the already signed-in browser without exporting or
-decrypting cookies. Browser login state remains local; credentials, cookies, and
-raw connector output are not uploaded to AgentRouter.
+`social_post_read` capability execute through a negotiated read-only connector
+on the user's device. A caller can declare `consumer_context.local_browser`
+with `adapter: codex_browser` or `claude_in_chrome`; AgentRouter then returns a
+`local_browser_execution` handoff and the caller returns structured public
+evidence with `agentrouter_complete_handoff`. When no host-native browser is
+declared, OpenCLI remains the default portable connector. Browser login state
+stays local in every mode; credentials, cookies, and raw browser state are never
+returned to AgentRouter.
 
 Entity-scoped X research supports typed `search` and `read_user_posts`
 operations. Use an exact `handle` plus `from`/`to` for account history, or

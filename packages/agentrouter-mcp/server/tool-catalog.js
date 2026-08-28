@@ -129,4 +129,28 @@ export const agentRouterConnectTool = {
   }
 };
 
-export const bridgeMcpTools = [agentRouterConnectTool, ...remoteMcpTools];
+export const agentRouterCompleteHandoffTool = {
+  name: "agentrouter_complete_handoff",
+  description: "Return a read-only result produced by the AI client's built-in browser for an AgentRouter local_browser_execution handoff. Send only public page evidence; never include cookies, tokens, credentials, or raw browser state. AgentRouter validates origin and target, normalizes provenance, and creates the normal feedback request.",
+  inputSchema: {
+    type: "object",
+    required: ["handoff", "result"],
+    properties: {
+      handoff: { type: "object", description: "The unchanged handoff object returned by AgentRouter." },
+      result: {
+        type: "object",
+        description: "Structured public evidence from the built-in browser.",
+        properties: {
+          canonical_url: { type: "string" },
+          post_id: { type: "string" },
+          text: { type: "string" },
+          author_handle: { type: "string" },
+          published_at: { type: "string" },
+          engagement: { type: "object" }
+        }
+      }
+    }
+  }
+};
+
+export const bridgeMcpTools = [agentRouterConnectTool, agentRouterCompleteHandoffTool, ...remoteMcpTools];

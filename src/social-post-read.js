@@ -1,4 +1,5 @@
 import { buildLocalSocialExecutionPlan } from "./local-social-privacy.js";
+import { buildLocalBrowserHandoff } from "./local-browser-connector.js";
 
 export function parseSocialPostUrl(value) {
   try {
@@ -62,7 +63,7 @@ export async function runSocialPostReadCapability(params = {}, options = {}) {
     }
   }
 
-  return localConnectorRequired(parsed, attempts);
+  return localConnectorRequired(parsed, attempts, options.consumerContext);
 }
 
 export function completedSocialPostReadResult(parsed, row, backendId, attempts = []) {
@@ -104,7 +105,21 @@ function completedResult(parsed, row, backendId, attempts) {
   };
 }
 
-function localConnectorRequired(parsed, attempts) {
+function localConnectorRequired(parsed, attempts, consumerContext = {}) {
+  const localExecutionPlan = buildLocalSocialExecutionPlan({
+    platform: parsed.platform,
+    operation: "read_post",
+    target: parsed.canonical_url,
+    limit: 1
+  });
+  const handoff = buildLocalBrowserHandoff({
+    platform: parsed.platform,
+    operation: "read_post",
+    target: parsed.canonical_url,
+    localExecutionPlan,
+    consumerContext
+  });
+  const nativeBrowser = handoff.selected_adapter !== "opencli";
   return {
     ok: false,
     status: "local_connector_required",
@@ -114,23 +129,14 @@ function localConnectorRequired(parsed, attempts) {
     },
     action_required: {
       code: "LOCAL_CONNECTOR_REQUIRED",
-      message: "Read this X post through the AgentRouter MCP bridge on the user's device, where the browser login remains local.",
-      reload_after_bridge_update: true
+      message: nativeBrowser
+        ? "Read this X post with the AI client's built-in browser, then return the structured result through agentrouter_complete_handoff. Browser login remains local."
+        : "Read this X post through the AgentRouter MCP bridge on the user's device, where the browser login remains local.",
+      reload_after_bridge_update: !nativeBrowser
     },
-    handoff: {
-      kind: "local_execution",
-      backend: "agentrouter_mcp_local_connector",
-      adapter: "opencli",
-      capability: "social_post_read",
-      preserve_route_context: true
-    },
-    fallback_allowed: false,
-    local_execution_plan: buildLocalSocialExecutionPlan({
-      platform: parsed.platform,
-      operation: "read_post",
-      target: parsed.canonical_url,
-      limit: 1
-    }),
+    handoff: { ...handoff, capability: "social_post_read" },
+    fallback_allowed: nativeBrowser,
+    local_execution_plan: localExecutionPlan,
     attempts
   };
 }
