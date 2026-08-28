@@ -81,6 +81,7 @@ test("native browser completion normalizes evidence and never returns browser se
   assert.equal(completed.ok, true);
   assert.equal(completed.status, "completed");
   assert.equal(completed.source.backend_id, "codex_browser");
+  assert.match(completed.request_id, /^local_post_x_/);
   assert.equal(completed.result.post.text, "Native browser result");
   assert.equal(completed.verification.source_url_preserved, true);
   assert.equal(completed.consumer_feedback_request.tool, "agentrouter_feedback");
