@@ -10,9 +10,12 @@ import {
 } from "../src/social-post-read.js";
 import {
   buildLocalCliEnvironment,
+  localBrowserCompletionRequest,
+  localBrowserHandoffRequest,
   localSocialPostRequest,
   runLocalSocialPostRead
 } from "../packages/agentrouter-mcp/server/local-social-post.js";
+import { bridgeMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
 
 const xUrl = "https://x.com/marclou/status/2081890388298874880";
 
@@ -272,6 +275,35 @@ test("public MCP bridge intercepts natural and structured X reads only", () => {
     method: "tools/call",
     params: { name: "agentrouter_fetch", arguments: { task: "BTC price" } }
   }), null);
+});
+
+test("MCP bridge exposes native browser handoff completion without replacing OpenCLI fallback", () => {
+  const message = {
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: {
+        task: `读取 ${xUrl}`,
+        consumer_context: {
+          local_browser: { adapter: "claude_in_chrome", available: true, operations: ["read_post"] }
+        }
+      }
+    }
+  };
+  const parsed = localSocialPostRequest(message);
+  const nativeHandoff = localBrowserHandoffRequest(message, parsed);
+  assert.equal(nativeHandoff.handoff.selected_adapter, "claude_in_chrome");
+  assert.deepEqual(nativeHandoff.handoff.fallback_adapters, ["opencli"]);
+
+  const completion = localBrowserCompletionRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_complete_handoff",
+      arguments: { handoff: nativeHandoff.handoff, result: { canonical_url: xUrl, text: "result" } }
+    }
+  });
+  assert.equal(completion.result.text, "result");
+  assert.ok(bridgeMcpTools.some((tool) => tool.name === "agentrouter_complete_handoff"));
 });
 
 test("MCP bridge frames stdout as newline-delimited JSON, not LSP Content-Length", async () => {
