@@ -71,7 +71,12 @@ export async function routeTaskWithLocalWallet({ baseUrl, task, constraints = {}
     verification,
     quote: resolved.quote,
     feedback: invocation.feedback,
-    evidence: invocation.evidence_recording?.evidence
+    evidence: invocation.evidence_recording?.evidence,
+    request: {
+      capability: resolved.intent?.capability,
+      params: resolved.intent || inferred
+    },
+    input: resolved.input
   });
 
   return {
@@ -196,7 +201,9 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
     verification,
     quote: quoted.quote,
     feedback: invocation.feedback,
-    evidence: invocation.evidence_recording?.evidence
+    evidence: invocation.evidence_recording?.evidence,
+    request: requested,
+    input: quoted.input
   });
 
   return {

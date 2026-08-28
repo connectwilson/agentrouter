@@ -13,19 +13,23 @@ function heatmapResult() {
     status: "success",
     request_id: "req_xlm_heatmap",
     data: {
-      y_axis: [0.09, 0.1, 0.11],
-      liquidation_leverage_data: [
-        [4, 0, 999],
-        [5, 0, 10],
-        [5, 1, 20],
-        [5, 2, 80],
-        [5, 99, 10000],
-        ["invalid", 2, 10000]
-      ],
-      price_candlesticks: [
-        [1787900000, "0.099", "0.102", "0.098", "0.1", "100000"],
-        [1787910000, "0.1", "0.103", "0.099", "0.101", "120000"]
-      ]
+      code: "0",
+      msg: "success",
+      data: {
+        y_axis: [0.09, 0.1, 0.11],
+        liquidation_leverage_data: [
+          [4, 0, 999],
+          [5, 0, 10],
+          [5, 1, 20],
+          [5, 2, 80],
+          [5, 99, 10000],
+          ["invalid", 2, 10000]
+        ],
+        price_candlesticks: [
+          [1787900000, "0.099", "0.102", "0.098", "0.1", "100000"],
+          [1787910000, "0.1", "0.103", "0.099", "0.101", "120000"]
+        ]
+      }
     },
     summary: "Liquidation heatmap data."
   };
@@ -92,4 +96,3 @@ test("natural-language summaries name the requested asset instead of hard-coding
   assert.match(answer, /Short liquidations/);
   assert.match(answer, /current price 0\.101/);
 });
-

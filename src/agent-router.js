@@ -4,6 +4,7 @@ import { createPaymentQuote } from "./payment-adapter.js";
 import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agentrouter-connection.js";
 import { inferExternalApiRequest } from "./external-api-capability.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
+import { deriveLiquidationHeatmapInsight, liquidationInsightSummary } from "./compact-result.js";
 
 // The natural-language paths must agree on where a question goes: the MCP fetch
 // route already infers an API source, so the HTTP ask route has to as well or
@@ -1199,7 +1200,7 @@ function serviceSearchHaystack(service) {
   ].join(" ").toLowerCase();
 }
 
-export function summarize(_task, envelope) {
+export function summarize(task, envelope) {
   const rows = Array.isArray(envelope?.data?.data) ? envelope.data.data : [];
   if (rows.length) {
     const first = rows[0];
@@ -1210,10 +1211,15 @@ export function summarize(_task, envelope) {
       Array.isArray(first.tokens) ? `Tokens: ${first.tokens.join(", ")}.` : ""
     ].filter(Boolean).join(" ");
   }
+  const heatmapInsight = deriveLiquidationHeatmapInsight(envelope, {
+    params: { asset: liquidationAssetFromTask(task) }
+  });
+  if (heatmapInsight) return liquidationInsightSummary(heatmapInsight);
   if (envelope?.data?.max_liquidation_pain_price) {
     const data = envelope.data;
+    const asset = liquidationAssetFromTask(task) || String(envelope?.query?.asset || "Asset").toUpperCase();
     return [
-      `BTC perp liquidation max-pain is ${data.max_liquidation_pain_price}.`,
+      `${asset} perp liquidation max-pain is ${data.max_liquidation_pain_price}.`,
       data.direction ? `Direction: ${data.direction}.` : "",
       data.estimated_liquidation_notional_usd ? `Estimated notional: ${data.estimated_liquidation_notional_usd} USD.` : ""
     ].filter(Boolean).join(" ");
@@ -1222,6 +1228,12 @@ export function summarize(_task, envelope) {
     return `Found address: ${envelope.data.address}${envelope.data.tag ? ` (${envelope.data.tag})` : ""}.`;
   }
   return envelope?.summary || "AgentRouter completed the request.";
+}
+
+function liquidationAssetFromTask(task) {
+  const match = String(task || "").toUpperCase().match(/\b([A-Z0-9]{2,12})(?:USDT|USDC|USD)?\b(?=[^\n]{0,40}(?:LIQUIDATION|MAX[\s-]?PAIN))/) ||
+    String(task || "").toUpperCase().match(/(?:查|查询|研究|分析)?\s*([A-Z0-9]{2,12})(?=[^\n]{0,24}(?:爆仓|清算))/);
+  return match?.[1]?.replace(/(?:USDT|USDC|USD)$/i, "") || "";
 }
 
 function publicSelectedService(service) {

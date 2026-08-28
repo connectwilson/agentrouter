@@ -54,6 +54,7 @@ import {
 } from "./public-api-pipeline.js";
 import { remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
 import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
+import { compactAgentFacingResult } from "./compact-result.js";
 
 const clientLogoPaths = {
   "claude.svg": new URL("../public/assets/client-logos/claude.svg", import.meta.url),
@@ -1965,7 +1966,7 @@ function remoteMcpError(id, code, message) {
 
 function sanitizeAgentToolResult(result) {
   if (!result || typeof result !== "object") return result;
-  const sanitized = sanitizeProviderFields(result);
+  const sanitized = sanitizeProviderFields(compactAgentFacingResult(result));
   if (result.selected_service) {
     sanitized.service_match = {
       matched: true,

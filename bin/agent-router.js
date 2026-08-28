@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { askAgentRouterRemote } from "../src/agent-router.js";
+import { compactAgentFacingResult } from "../src/compact-result.js";
 
 const [command = "ask", ...args] = process.argv.slice(2);
 const baseUrl = (process.env.AGENT_ROUTER_URL || process.env.ADN_REGISTRY_URL || "https://agentrouter.network").replace(/\/$/, "");
@@ -40,7 +41,7 @@ try {
         print(localPaymentNotReadyResponse(readiness));
       } else {
         const { routeTaskWithLocalWallet } = await import("../src/local-route.js");
-        print(await routeTaskWithLocalWallet({
+        print(compactAgentFacingResult(await routeTaskWithLocalWallet({
           baseUrl,
           task,
           constraints: {
@@ -50,7 +51,7 @@ try {
             max_amount: process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
             currency: "USDC"
           }
-        }));
+        })));
       }
     } else {
       print(await askAgentRouterRemote({
@@ -378,7 +379,7 @@ function localPaymentNotReadyResponse(readiness) {
 
 function sanitizeAgentCliResult(result) {
   if (!result || typeof result !== "object") return result;
-  const sanitized = sanitizeProviderFields(result);
+  const sanitized = sanitizeProviderFields(compactAgentFacingResult(result));
   if (result.selected_service) {
     sanitized.service_match = {
       matched: true,

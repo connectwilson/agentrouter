@@ -710,7 +710,9 @@ export async function routeCapabilityRequest(store, {
     feedback: invocation.body.feedback,
     verification,
     quote,
-    evidence
+    evidence,
+    request,
+    input
   });
   const retryPlan = verification.sanity_valid === false || verification.data_non_empty === false
     ? createRetryPlan({
