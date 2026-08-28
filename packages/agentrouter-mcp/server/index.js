@@ -11,7 +11,11 @@ import { readStoredCredential, writeStoredCredential } from "./credential-store.
 import { submitSponsoredFeedback } from "./bsc-feedback.js";
 import { readOrCreateFeedbackSigner } from "./feedback-wallet.js";
 import { decorateBrowserAuthorization, resolveMcpClientAction } from "./action-state.js";
-import { agentRouterConnectTool, bridgeMcpTools } from "./tool-catalog.js";
+import {
+  agentRouterCompleteHandoffTool,
+  agentRouterConnectTool,
+  bridgeMcpTools
+} from "./tool-catalog.js";
 import { completeLocalBrowserHandoff } from "../../../src/local-browser-connector.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
@@ -285,7 +289,7 @@ async function discoverTools(message) {
     const payload = safeJson(await response.text());
     const tools = payload?.result?.tools;
     if (!Array.isArray(tools)) return { tools: bridgeMcpTools };
-    for (const tool of [...bridgeMcpTools].reverse()) {
+    for (const tool of [agentRouterCompleteHandoffTool, agentRouterConnectTool]) {
       if (!tools.some((candidate) => candidate?.name === tool.name)) tools.unshift(tool);
     }
     return { tools };
