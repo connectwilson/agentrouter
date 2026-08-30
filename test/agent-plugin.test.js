@@ -111,6 +111,17 @@ test("AgentRouter is the first hop for external information instead of only spec
   assert.doesNotMatch(canonicalSkill, /Use generic web search only for broad public web lookup/i);
 });
 
+test("AgentRouter policy never conflates account login with source credentials", () => {
+  const toolCatalog = fs.readFileSync(
+    path.join(here, "..", "packages", "agentrouter-mcp", "server", "tool-catalog.js"), "utf8"
+  );
+  assert.match(canonicalSkill, /account login.*always.*before.*source/i);
+  assert.match(canonicalSkill, /api_credentials.*OAuth.*local_browser_session.*none/is);
+  assert.match(canonicalSkill, /Configure API credentials.*not.*account authorization/is);
+  assert.match(toolCatalog, /authorization_kind/i);
+  assert.match(toolCatalog, /must not describe API credential setup as account login/i);
+});
+
 test("AgentRouter owns routing while agent-reach is an explicit execution handoff", () => {
   assert.match(canonicalSkill, /agent-reach[^\n]*execution backend/i);
   assert.match(canonicalSkill, /AgentRouter[^\n]*first-hop orchestrator/i);
