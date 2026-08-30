@@ -213,6 +213,14 @@ async function forwardRequest(message) {
       });
       return;
     }
+    if (clientAction.state === "authorize_source") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: await openSourceAccessPage(clientAction, message)
+      });
+      return;
+    }
     await completeSponsoredFeedback(message, payload);
     if (attachedFeedbackRequestId && !payload.error && payload.result?.isError !== true) {
       localFeedbackTokens.delete(attachedFeedbackRequestId);
@@ -236,6 +244,43 @@ async function forwardRequest(message) {
       }
     });
   }
+}
+
+async function openSourceAccessPage(clientAction, originalRequest) {
+  const value = clientAction.value || {};
+  const source = value.action_required?.tool_arguments?.source
+    || value.connection_action?.tool_arguments?.source
+    || value.source?.source
+    || value.source;
+  if (!source || typeof source !== "string") return toolResult(value);
+
+  const response = await postRemote({
+    jsonrpc: "2.0",
+    id: originalRequest?.id,
+    method: "tools/call",
+    params: { name: "agentrouter_connect_source", arguments: { source } }
+  });
+  const rpc = safeJson(await response.text());
+  const result = rpc?.result;
+  const block = result?.content?.find((item) => item?.type === "text" && item.text);
+  const access = safeJson(block?.text || "");
+  if (!response.ok || !access) return result || toolResult(value);
+
+  const target = access.verification_uri_complete || access.verification_uri;
+  const browserOpen = target
+    ? await launchBrowserAuthorization(target, {
+      allowedOrigins: remoteOrigins,
+      disabled: process.env.AGENTROUTER_DISABLE_BROWSER_OPEN === "1"
+    })
+    : { attempted: false, opened: false, status: "missing_url" };
+  block.text = JSON.stringify({
+    ...access,
+    browser_open: browserOpen,
+    retry_original_request: true,
+    original_tool: originalRequest?.params?.name || null,
+    do_not_fallback_outside_agentrouter: true
+  }, null, 2);
+  return result;
 }
 
 async function attachLocalFeedbackGrant(result) {
