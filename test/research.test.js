@@ -106,6 +106,24 @@ test("research page and project API are available without social account authori
   }
 });
 
+test("a source access link requires AgentRouter login before exposing source configuration", async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const response = await fetch(`${baseUrl}/research?connect_source=openalex`);
+    assert.equal(response.status, 200);
+    const page = await response.text();
+    assert.match(page, /data-login-modal-open="true"/);
+    assert.match(page, /return_to=%2Fresearch%3Fconnect_source%3Dopenalex/);
+    assert.match(page, /const hasAgentRouterAccount=false/);
+    assert.match(page, /requestedSource&&hasAgentRouterAccount/);
+    assert.match(page, /登录 AgentRouter 后继续配置该数据源/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("public discussion search exposes provider diagnostics and review-only candidates", async () => {
   const fetchImpl = async (_url, request) => {
     const body = JSON.parse(request.body);
