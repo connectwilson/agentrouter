@@ -1,9 +1,9 @@
-import { decodeFunctionData, parseTransaction, recoverTransactionAddress } from "viem";
+import { decodeFunctionData, isAddress, parseTransaction, recoverTransactionAddress } from "viem";
 
 import { settlementChain } from "./chains.js";
 import { ERC8004_IDENTITY_ABI } from "./erc8004.js";
 
-const ALLOWED_METHODS = new Set(["pm_isSponsorable", "eth_sendRawTransaction"]);
+const ALLOWED_METHODS = new Set(["eth_getTransactionCount", "pm_isSponsorable", "eth_sendRawTransaction"]);
 
 export async function relaySponsoredErc8004Registration({
   method,
@@ -24,6 +24,27 @@ export async function relaySponsoredErc8004Registration({
     return { ...failure("paymaster_not_configured", "AgentRouter gas sponsorship is not configured.", baseSponsorship), statusCode: 503 };
   }
 
+  const paymasterRpc = suppliedPaymasterRpc || createPaymasterRpc(paymasterUrl);
+  if (method === "eth_getTransactionCount") {
+    const [address, blockTag] = params;
+    if (params.length !== 2 || !isAddress(String(address || "")) || blockTag !== "pending") {
+      return failure("invalid_paymaster_params", "Only the authenticated Vendor wallet's pending nonce can be queried.", baseSponsorship);
+    }
+    try {
+      const result = await paymasterRpc(method, params);
+      return {
+        ok: true,
+        statusCode: 200,
+        status: "nonce_ready",
+        result,
+        owner_address: address,
+        gas_sponsorship: baseSponsorship
+      };
+    } catch (error) {
+      return { ...failure("paymaster_unavailable", error.message || "AgentRouter Paymaster is unavailable.", baseSponsorship), statusCode: 502 };
+    }
+  }
+
   let transaction;
   let ownerAddress = "";
   try {
@@ -40,7 +61,6 @@ export async function relaySponsoredErc8004Registration({
   const validationError = validateRegistrationTransaction({ method, transaction, registration, chain });
   if (validationError) return failure("invalid_paymaster_transaction", validationError, baseSponsorship);
 
-  const paymasterRpc = suppliedPaymasterRpc || createPaymasterRpc(paymasterUrl);
   try {
     const result = await paymasterRpc(method, params);
     if (method === "pm_isSponsorable") {

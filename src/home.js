@@ -1459,7 +1459,10 @@ export function accountHtml({ auth = {} } = {}) {
             const [owner] = await window.ethereum.request({ method: "eth_requestAccounts" });
             await ensurePlatformChain(info);
             if (!info.gas_sponsorship?.available) throw new Error("AgentRouter gas sponsorship is temporarily unavailable. No Vendor-paid transaction was sent.");
-            const nonce = await window.ethereum.request({ method: "eth_getTransactionCount", params: [owner, "pending"] });
+            const nonceResponse = await fetch(info.gas_sponsorship.endpoint, { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ method:"eth_getTransactionCount", params:[owner, "pending"] }) });
+            const nonceResult = await nonceResponse.json();
+            if (!nonceResponse.ok || !nonceResult.result) throw new Error(nonceResult.error || "AgentRouter could not obtain a sponsored transaction nonce.");
+            const nonce = nonceResult.result;
             const gas = await window.ethereum.request({ method: "eth_estimateGas", params: [{ from:owner, ...info.transaction }] });
             const sponsoredTransaction = { from:owner, ...info.transaction, gas, gasPrice:"0x0", nonce, chainId:"0x" + Number(info.chain_id).toString(16) };
             button.textContent = "Checking sponsorship…";

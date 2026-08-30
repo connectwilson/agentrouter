@@ -30,7 +30,7 @@ services:
       - key: ADN_SETTLEMENT_ASSET
         value: USDC
       - key: ADN_BSC_PAYMASTER_URL
-        sync: false
+        value: https://bsc-megafuel.nodereal.io/
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
@@ -79,7 +79,7 @@ services:
       - key: ADN_SETTLEMENT_ASSET
         value: USDC
       - key: ADN_BSC_PAYMASTER_URL
-        sync: false
+        value: https://bsc-megafuel.nodereal.io/
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
