@@ -22,7 +22,8 @@ export function createMemoryStore() {
     deviceAuthorizations: new Map(),
     socialConnections: new Map(),
     publicApiCatalog: new Map(),
-    publicApiPipelineRuns: []
+    publicApiPipelineRuns: [],
+    erc8004PlatformIdentities: new Map()
   };
 }
 

@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, decodeFunctionData, http } from "viem";
+import { createPublicClient, createWalletClient, decodeEventLog, decodeFunctionData, encodeFunctionData, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
 import { erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl, settlementChain } from "./chains.js";
@@ -34,6 +34,16 @@ export const ERC8004_REPUTATION_ABI = [
 
 export const ERC8004_IDENTITY_ABI = [
   {
+    type: "event",
+    name: "Registered",
+    anonymous: false,
+    inputs: [
+      { name: "agentId", type: "uint256", indexed: true },
+      { name: "agentURI", type: "string", indexed: false },
+      { name: "owner", type: "address", indexed: true }
+    ]
+  },
+  {
     type: "function",
     name: "register",
     stateMutability: "nonpayable",
@@ -55,6 +65,90 @@ export const ERC8004_IDENTITY_ABI = [
     outputs: [{ name: "", type: "address" }]
   }
 ];
+
+export function createErc8004RegistrationTransaction({ agentUri } = {}) {
+  const chain = settlementChain();
+  const registryAddress = erc8004Registries().identityRegistry;
+  const uri = String(agentUri || "").trim();
+  if (!uri) throw erc8004VerificationError("ERC8004_AGENT_URI_REQUIRED", "An ERC-8004 agent URI is required.");
+  if (!isEvmAddress(registryAddress)) throw erc8004VerificationError("ERC8004_IDENTITY_REGISTRY_INVALID", "The ERC-8004 Identity Registry is not configured.");
+  return {
+    standard: "ERC-8004",
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
+    chain_name: chain.name,
+    rpc_url: chain.rpcUrls.default.http[0],
+    explorer: chain.blockExplorers.default.url,
+    agent_uri: uri,
+    transaction: {
+      to: registryAddress,
+      data: encodeFunctionData({ abi: ERC8004_IDENTITY_ABI, functionName: "register", args: [uri] }),
+      value: "0x0"
+    }
+  };
+}
+
+export async function verifyErc8004IdentityRegistrationTransaction({ txHash, expected = {}, publicClient } = {}) {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(txHash || ""))) {
+    throw erc8004VerificationError("ERC8004_INVALID_TX_HASH", "A valid transaction hash is required.");
+  }
+  const chain = settlementChain();
+  const client = publicClient || createPublicClient({ chain, transport: http(chain.rpcUrls.default.http[0]) });
+  const receipt = await client.getTransactionReceipt({ hash: txHash }).catch(() => null);
+  if (!receipt) throw erc8004VerificationError("ERC8004_RECEIPT_NOT_FOUND", "The ERC-8004 registration transaction is still pending or was not found.");
+  if (receipt.status !== "success") throw erc8004VerificationError("ERC8004_TRANSACTION_REVERTED", "The ERC-8004 registration transaction reverted.");
+  const chainId = await client.getChainId();
+  if (Number(chainId) !== Number(expected.chainId)) throw erc8004VerificationError("ERC8004_CHAIN_MISMATCH", `Transaction is on chain ${chainId}, expected ${expected.chainId}.`);
+  const transaction = await client.getTransaction({ hash: txHash }).catch(() => null);
+  if (!transaction) throw erc8004VerificationError("ERC8004_TRANSACTION_NOT_FOUND", "The ERC-8004 registration transaction was not found.");
+  if (transaction.chainId != null && Number(transaction.chainId) !== Number(expected.chainId)) {
+    throw erc8004VerificationError("ERC8004_CHAIN_MISMATCH", `Transaction declares chain ${transaction.chainId}, expected ${expected.chainId}.`);
+  }
+  if (String(transaction.to || "").toLowerCase() !== String(expected.registryAddress || "").toLowerCase()) {
+    throw erc8004VerificationError("ERC8004_REGISTRY_MISMATCH", "Transaction target is not the expected ERC-8004 Identity Registry.");
+  }
+  if (expected.ownerAddress && String(transaction.from || "").toLowerCase() !== String(expected.ownerAddress).toLowerCase()) {
+    throw erc8004VerificationError("ERC8004_OWNER_MISMATCH", "The connected wallet did not send this registration transaction.");
+  }
+  let decoded;
+  try {
+    decoded = decodeFunctionData({ abi: ERC8004_IDENTITY_ABI, data: transaction.input || transaction.data });
+  } catch {
+    throw erc8004VerificationError("ERC8004_CALL_INVALID", "Transaction input is not a valid ERC-8004 registration call.");
+  }
+  if (decoded.functionName !== "register" || String(decoded.args?.[0] || "") !== String(expected.agentUri || "")) {
+    throw erc8004VerificationError("ERC8004_AGENT_URI_MISMATCH", "The registration transaction does not contain the expected AgentRouter metadata URI.");
+  }
+  const registered = (receipt.logs || []).filter((log) =>
+    String(log.address || "").toLowerCase() === String(expected.registryAddress || "").toLowerCase()
+  ).map((log) => {
+    try { return decodeEventLog({ abi: ERC8004_IDENTITY_ABI, data: log.data, topics: log.topics, eventName: "Registered" }); }
+    catch { return null; }
+  }).find((event) => event?.eventName === "Registered");
+  if (registered?.args?.agentId == null) throw erc8004VerificationError("ERC8004_REGISTERED_EVENT_MISSING", "The Identity Registry did not emit a Registered event.");
+  if (String(registered.args.agentURI || "") !== String(expected.agentUri || "")) throw erc8004VerificationError("ERC8004_AGENT_URI_MISMATCH", "The Registered event contains a different metadata URI.");
+  if (expected.ownerAddress && String(registered.args.owner || "").toLowerCase() !== String(expected.ownerAddress).toLowerCase()) {
+    throw erc8004VerificationError("ERC8004_OWNER_MISMATCH", "The Registered event belongs to a different wallet.");
+  }
+  return {
+    standard: "ERC-8004",
+    registry_type: "identity",
+    status: "registered",
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
+    registry_address: expected.registryAddress,
+    reputation_registry_address: erc8004Registries().reputationRegistry,
+    validation_registry_address: erc8004Registries().validationRegistry,
+    agent_id: registered.args.agentId.toString(),
+    owner_address: transaction.from,
+    metadata_uri: expected.agentUri,
+    tx_hash: txHash,
+    block_number: receipt.blockNumber?.toString?.() || null,
+    explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`
+  };
+}
 
 export function erc8004Configured({ serviceId, manifest } = {}) {
   return Boolean(
@@ -201,6 +295,7 @@ export async function assertRegistryImplements({ publicClient, address, abi, fun
 }
 
 export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", metadataUri = "" } = {}) {
+  const chain = settlementChain();
   const serviceId = manifest?.service_id || "";
   const identityRegistry = identityRegistryAddress();
   const tokenUri = metadataUri || defaultErc8004MetadataUri({ manifest, baseUrl });
@@ -208,9 +303,9 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
     standard: "ERC-8004",
     registry_type: "identity",
     event_type: "AgentRouterProviderIdentity",
-    network: ARC_TESTNET.network,
-    caip2: ARC_TESTNET.caip2,
-    chain_id: ARC_TESTNET.id,
+    network: chain.network,
+    caip2: chain.caip2,
+    chain_id: chain.id,
     registry_address: identityRegistry || null,
     reputation_registry_address: erc8004Registries().reputationRegistry,
     validation_registry_address: erc8004Registries().validationRegistry,
@@ -232,7 +327,7 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
       owner_address: `0x${"4".repeat(40)}`,
       tx_hash: `0x${"4".repeat(64)}`,
       block_number: "0",
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/0x${"4".repeat(64)}`
+      explorer_url: `${chain.blockExplorers.default.url}/tx/0x${"4".repeat(64)}`
     };
   }
   if (!tokenUri) {
@@ -261,13 +356,13 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
     const privateKey = process.env.ADN_ERC8004_OWNER_PRIVATE_KEY || process.env.ADN_ERC8004_PRIVATE_KEY;
     const account = privateKeyToAccount(normalizePrivateKey(privateKey));
     const publicClient = createPublicClient({
-      chain: ARC_TESTNET,
-      transport: http(ARC_TESTNET.rpcUrls.default.http[0])
+      chain,
+      transport: http(chain.rpcUrls.default.http[0])
     });
     const walletClient = createWalletClient({
       account,
-      chain: ARC_TESTNET,
-      transport: http(ARC_TESTNET.rpcUrls.default.http[0])
+      chain,
+      transport: http(chain.rpcUrls.default.http[0])
     });
     const simulation = await publicClient.simulateContract({
       address: identityRegistry,
@@ -290,7 +385,7 @@ export async function registerErc8004AgentIdentity({ manifest, baseUrl = "", met
       owner_address: account.address,
       tx_hash: txHash,
       block_number: receipt.blockNumber?.toString?.(),
-      explorer_url: `${ARC_TESTNET.blockExplorers.default.url}/tx/${txHash}`
+      explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`
     };
   } catch (error) {
     return {

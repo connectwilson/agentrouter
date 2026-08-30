@@ -76,6 +76,13 @@ test("platform operator registers the BSC identity with a browser wallet and fee
       assert.equal(registeredResponse.status, 200);
       assert.equal(registered.identity.agent_id, "73352");
       assert.equal(store.erc8004PlatformIdentities.get("bsc").agent_id, "73352");
+      const repeatedResponse = await fetch(`${baseUrl}/agent-router/erc8004/platform-registration`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ tx_hash: TX_HASH, owner_address: OWNER })
+      });
+      assert.equal(repeatedResponse.status, 200, "a lost HTTP response must not turn the confirmed registration into an error");
+      assert.equal((await repeatedResponse.json()).status, "already_registered");
 
       const call = await runExternalApiQuery(store, "local:local-development-user", {
         source: "gdelt", operation: "search", query: "agent payments"

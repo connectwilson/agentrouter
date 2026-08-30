@@ -17,7 +17,7 @@ import { claimPersistentBrowserHandoff, persistenceReadiness, writePersistentSer
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { isArcNetwork, verifyArcUsdcTransfer } from "./arc-payment.js";
 import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
-import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, ERC8004_REPUTATION_ABI, verifyErc8004FeedbackTransaction } from "./erc8004.js";
+import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, createErc8004RegistrationTransaction, ERC8004_REPUTATION_ABI, verifyErc8004FeedbackTransaction, verifyErc8004IdentityRegistrationTransaction } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
@@ -85,7 +85,8 @@ export function createServer({
   publicApiPipelineOptions = {},
   writeRateLimit = {},
   readinessProbe = agentRouterReadiness,
-  browserHandoffClaim = claimPersistentBrowserHandoff
+  browserHandoffClaim = claimPersistentBrowserHandoff,
+  erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
@@ -102,7 +103,8 @@ export function createServer({
         publicApiPipelineOptions: resolvedPublicApiPipelineOptions,
         writeRateLimiter,
         readinessProbe,
-        browserHandoffClaim
+        browserHandoffClaim,
+        erc8004RegistrationVerifier
       });
     } catch (error) {
       const statusCode = error.statusCode || 500;
@@ -128,7 +130,8 @@ async function routeRequest(req, res, store, baseUrl, {
   publicApiPipelineOptions = {},
   writeRateLimiter,
   readinessProbe = agentRouterReadiness,
-  browserHandoffClaim = claimPersistentBrowserHandoff
+  browserHandoffClaim = claimPersistentBrowserHandoff,
+  erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
@@ -190,6 +193,63 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "GET" && url.pathname === "/health") {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/.well-known/erc8004/platform.json") {
+    sendJson(res, 200, createErc8004AgentMetadata({ manifest: platformIdentityManifest(store), baseUrl }), { "cache-control": "public, max-age=300" });
+    return;
+  }
+
+  if (["GET", "POST"].includes(req.method) && url.pathname === "/agent-router/erc8004/platform-registration") {
+    if (!requirePlatformOperator(req, res, auth)) return;
+    const agentUri = `${String(baseUrl).replace(/\/$/, "")}/.well-known/erc8004/platform.json`;
+    const registration = createErc8004RegistrationTransaction({ agentUri });
+    const currentIdentity = store.erc8004PlatformIdentities?.get(registration.network) || null;
+    if (req.method === "GET") {
+      sendJson(res, 200, { ...registration, current_identity: currentIdentity });
+      return;
+    }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
+    const body = await readJson(req);
+    if (currentIdentity) {
+      if (String(currentIdentity.tx_hash || "").toLowerCase() === String(body.tx_hash || "").toLowerCase()) {
+        sendJson(res, 200, { ok: true, status: "already_registered", identity: currentIdentity });
+        return;
+      }
+      sendJson(res, 409, { error: { code: "ERC8004_PLATFORM_IDENTITY_EXISTS", message: "The platform identity is already registered on this chain." }, identity: currentIdentity });
+      return;
+    }
+    let identity;
+    try {
+      identity = await erc8004RegistrationVerifier({
+        txHash: body.tx_hash,
+        expected: {
+          chainId: registration.chain_id,
+          registryAddress: registration.transaction.to,
+          agentUri,
+          ownerAddress: body.owner_address
+        }
+      });
+    } catch (error) {
+      error.statusCode = error.code === "ERC8004_RECEIPT_NOT_FOUND" ? 409 : 422;
+      throw error;
+    }
+    const event = {
+      event_version: "agent_router_erc8004_platform_identity_v1",
+      ...identity,
+      registered_by: authUserKey(auth.user),
+      created_at: new Date().toISOString()
+    };
+    store.erc8004PlatformIdentities ||= new Map();
+    store.erc8004PlatformIdentities.set(identity.network, event);
+    await writePersistentServiceEvent({
+      eventType: "erc8004_platform_identity",
+      serviceId: "agentrouter_external_api_platform",
+      requestId: identity.tx_hash,
+      event
+    });
+    sendJson(res, 200, { ok: true, status: "registered", identity: event });
     return;
   }
 
@@ -1470,6 +1530,29 @@ function requireAdminToken(req, res, auth) {
     }
   });
   return false;
+}
+
+function requirePlatformOperator(req, res, auth) {
+  if (!auth.user) {
+    sendJson(res, 401, { error: { code: "AUTH_REQUIRED", message: "Sign in before registering the AgentRouter platform identity." } });
+    return false;
+  }
+  const actorKey = authUserKey(auth.user);
+  const allowed = String(process.env.ADN_PLATFORM_OPERATOR_OWNER_KEY || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const githubLogin = String(process.env.ADN_PLATFORM_OPERATOR_GITHUB_LOGIN || "").trim().toLowerCase();
+  const githubLoginMatches = githubLogin && auth.user.provider === "github" && String(auth.user.handle || "").toLowerCase() === githubLogin;
+  if (!allowed.length && !githubLogin) {
+    sendJson(res, 503, { error: { code: "PLATFORM_OPERATOR_NOT_CONFIGURED", message: "Platform identity registration is not enabled for an operator account." } });
+    return false;
+  }
+  if (!allowed.includes(actorKey) && !githubLoginMatches) {
+    sendJson(res, 403, { error: { code: "PLATFORM_OPERATOR_REQUIRED", message: "Only the configured AgentRouter platform operator can register this identity." } });
+    return false;
+  }
+  return true;
 }
 
 function sendAuthRequired(res, message) {
@@ -3600,13 +3683,18 @@ function resolveFeedbackServiceId(store, requestId) {
 async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "") {
   const record = store.services.get(feedbackResult.service_id);
   const providerId = record?.manifest?.provider?.provider_id || feedbackResult.provider_id || "";
+  const feedbackManifest = record?.manifest || (
+    String(feedbackResult.service_id || "").startsWith("external_api_")
+      ? platformIdentityManifest(store)
+      : null
+  );
   const anchor = {
     status: "not_used",
     recorded_offchain: true,
     superseded_by: "ERC-8004",
     reason: "ERC-8004 is the single public onchain record for consumer feedback."
   };
-  const erc8004 = createConsumerRequiredErc8004Feedback({ feedbackResult, record, providerId, baseUrl });
+  const erc8004 = createConsumerRequiredErc8004Feedback({ feedbackResult, manifest: feedbackManifest, providerId, baseUrl });
   const trustAnchor = {
     trust_anchor_version: "agent_router_trust_anchor_v1",
     primary_standard: erc8004.status === "not_configured" ? "offchain_feedback" : "ERC-8004",
@@ -3648,12 +3736,12 @@ async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "")
   return trustAnchor;
 }
 
-function createConsumerRequiredErc8004Feedback({ feedbackResult, record, providerId, baseUrl = "" }) {
+function createConsumerRequiredErc8004Feedback({ feedbackResult, manifest, providerId, baseUrl = "" }) {
   const descriptor = createErc8004FeedbackDescriptor({
     requestId: feedbackResult.request_id,
     serviceId: feedbackResult.service_id,
     providerId,
-    manifest: record?.manifest,
+    manifest,
     feedback: feedbackResult.consumer_feedback,
     baseUrl
   });
@@ -3674,6 +3762,24 @@ function createConsumerRequiredErc8004Feedback({ feedbackResult, record, provide
     reason: "ERC-8004 Reputation feedback must be submitted by the consumer wallet, not the provider/operator wallet.",
     submit_endpoint: "/agent-router/feedback/erc8004",
     feedback_uri: `${String(baseUrl || "").replace(/\/$/, "")}/agent-router/feedback?request_id=${encodeURIComponent(feedbackResult.request_id)}`
+  };
+}
+
+function platformIdentityManifest(store) {
+  const chain = settlementChain();
+  const identity = store.erc8004PlatformIdentities?.get(chain.network) || null;
+  return {
+    manifest_type: "agentrouter_platform_identity",
+    service_id: "agentrouter_external_api_platform",
+    version: "1.0.0",
+    title: "AgentRouter External API Platform",
+    description_for_agent: "AgentRouter-operated identity for read-only external API connectors and their consumer feedback.",
+    image: "",
+    status: "published",
+    provider: { provider_id: "agentrouter_network" },
+    capabilities: ["external_api_query", "consumer_feedback"],
+    pricing: { amount: "0", currency: "USDC", protocol: "none" },
+    registration: identity ? { erc8004: identity } : {}
   };
 }
 

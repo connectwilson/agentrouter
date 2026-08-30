@@ -126,7 +126,8 @@ function serviceEventIdempotencyKey({ eventType, serviceId, requestId, event }) 
     "consumer_feedback_erc8004_client",
     "feedback_grant",
     "issued_quote",
-    "quote_feedback"
+    "quote_feedback",
+    "erc8004_platform_identity"
   ]);
   if (!idempotentTypes.has(eventType) || !requestId) return null;
   return crypto.createHash("sha256").update(JSON.stringify([

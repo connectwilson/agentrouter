@@ -1168,6 +1168,13 @@ export async function hydrateServiceEventRows(store, events = []) {
       }
       continue;
     }
+    if (row.event_type === "erc8004_platform_identity") {
+      store.erc8004PlatformIdentities ||= new Map();
+      if (event?.network && event?.agent_id) {
+        store.erc8004PlatformIdentities.set(event.network, event);
+      }
+      continue;
+    }
     if (row.event_type === "quality_event") {
       const record = store.services.get(row.service_id);
       if (record) {

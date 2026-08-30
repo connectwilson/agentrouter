@@ -35,6 +35,10 @@ services:
         sync: false
       - key: ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC
         sync: false
+      - key: ADN_PLATFORM_OPERATOR_OWNER_KEY
+        sync: false
+      - key: ADN_PLATFORM_OPERATOR_GITHUB_LOGIN
+        sync: false
       - key: ADN_UPSTREAM_X402_PRIVATE_KEY
         sync: false
   - type: web
@@ -79,6 +83,10 @@ services:
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
         sync: false
       - key: ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC
+        sync: false
+      - key: ADN_PLATFORM_OPERATOR_OWNER_KEY
+        sync: false
+      - key: ADN_PLATFORM_OPERATOR_GITHUB_LOGIN
         sync: false
       - key: ADN_UPSTREAM_X402_PRIVATE_KEY
         sync: false

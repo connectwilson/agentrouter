@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { encodeFunctionData } from "viem";
+import { encodeAbiParameters, encodeEventTopics, encodeFunctionData } from "viem";
 
 import {
   anchorConsumerFeedbackOnArc,
@@ -12,12 +12,17 @@ import {
 } from "../src/arc-anchor.js";
 import {
   ERC8004_REPUTATION_ABI,
-  verifyErc8004FeedbackTransaction
+  ERC8004_IDENTITY_ABI,
+  verifyErc8004FeedbackTransaction,
+  verifyErc8004IdentityRegistrationTransaction
 } from "../src/erc8004.js";
 
 const BSC_REPUTATION_REGISTRY = "0x8004B663056A597Dffe9eCcC1965A193B7388713";
 const FEEDBACK_HASH = `0x${"a".repeat(64)}`;
 const TX_HASH = `0x${"b".repeat(64)}`;
+const BSC_IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
+const OWNER = "0x3333333333333333333333333333333333333333";
+const AGENT_URI = "https://agentrouter.network/.well-known/erc8004/platform.json";
 
 function withEnv(values, run) {
   const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
@@ -180,4 +185,41 @@ test("ERC-8004 client feedback rejects fake, reverted, foreign-chain and mismatc
     verifyErc8004FeedbackTransaction({ txHash: TX_HASH, expected, publicClient: publicClient({ getTransaction: async () => ({ chainId: 56, to: BSC_REPUTATION_REGISTRY, input: wrongValueInput }) }) }),
     (error) => error.code === "ERC8004_FEEDBACK_VALUE_MISMATCH"
   );
+});
+
+test("platform identity registration trusts only the BSC receipt, register call, owner, and Registered event", async () => {
+  await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc" }, async () => {
+    const input = encodeFunctionData({ abi: ERC8004_IDENTITY_ABI, functionName: "register", args: [AGENT_URI] });
+    const topics = encodeEventTopics({
+      abi: ERC8004_IDENTITY_ABI,
+      eventName: "Registered",
+      args: { agentId: 73352n, owner: OWNER }
+    });
+    const client = {
+      getChainId: async () => 56,
+      getTransactionReceipt: async () => ({
+        status: "success",
+        blockNumber: 321n,
+        logs: [{ address: BSC_IDENTITY_REGISTRY, topics, data: encodeAbiParameters([{ type: "string" }], [AGENT_URI]) }]
+      }),
+      getTransaction: async () => ({ chainId: 56, to: BSC_IDENTITY_REGISTRY, from: OWNER, input })
+    };
+    const registered = await verifyErc8004IdentityRegistrationTransaction({
+      txHash: TX_HASH,
+      expected: { chainId: 56, registryAddress: BSC_IDENTITY_REGISTRY, agentUri: AGENT_URI, ownerAddress: OWNER },
+      publicClient: client
+    });
+    assert.equal(registered.agent_id, "73352");
+    assert.equal(registered.owner_address, OWNER);
+    assert.equal(registered.network, "bsc");
+
+    await assert.rejects(
+      verifyErc8004IdentityRegistrationTransaction({
+        txHash: TX_HASH,
+        expected: { chainId: 56, registryAddress: BSC_IDENTITY_REGISTRY, agentUri: AGENT_URI, ownerAddress: "0x4444444444444444444444444444444444444444" },
+        publicClient: client
+      }),
+      (error) => error.code === "ERC8004_OWNER_MISMATCH"
+    );
+  });
 });
