@@ -47,7 +47,7 @@ export const remoteMcpTools = [
   },
   {
     name: "agentrouter_connect_source",
-    description: "Open AgentRouter's browser authorization flow for one upstream API/data source after a result returns action_required: connect_api_source. This is distinct from agentrouter_connect, which connects the AI client to the AgentRouter account. Never ask the user to paste an upstream API key into chat. After the browser flow is complete, call this tool again and retry the original AgentRouter request.",
+    description: "Open the exact AgentRouter source-access page after a result returns a source action. Inspect authorization_kind: api_credentials means configure credentials securely on AgentRouter, oauth means log in to and authorize the upstream source, local_browser_session means use the user's existing signed-in browser, and none means no source action is needed. This is distinct from agentrouter_connect, which performs AgentRouter account login and always takes priority. You must not describe API credential setup as account login or ask the user to paste a key into chat. Call this tool immediately without another textual confirmation; after access is complete, retry the original AgentRouter request.",
     inputSchema: {
       type: "object",
       required: ["source"],
