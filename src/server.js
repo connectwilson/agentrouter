@@ -55,6 +55,7 @@ import {
 import { agentRouterConnectTool, remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
 import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
 import { compactAgentFacingResult } from "./compact-result.js";
+import { relaySponsoredErc8004Registration } from "./bsc-registration-paymaster.js";
 
 const mcpPackageMetadata = JSON.parse(await fs.readFile(new URL("../packages/agentrouter-mcp/package.json", import.meta.url), "utf8"));
 
@@ -86,7 +87,8 @@ export function createServer({
   writeRateLimit = {},
   readinessProbe = agentRouterReadiness,
   browserHandoffClaim = claimPersistentBrowserHandoff,
-  erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction
+  erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
+  registrationPaymasterRelay = relaySponsoredErc8004Registration
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
@@ -104,7 +106,8 @@ export function createServer({
         writeRateLimiter,
         readinessProbe,
         browserHandoffClaim,
-        erc8004RegistrationVerifier
+        erc8004RegistrationVerifier,
+        registrationPaymasterRelay
       });
     } catch (error) {
       const statusCode = error.statusCode || 500;
@@ -131,7 +134,8 @@ async function routeRequest(req, res, store, baseUrl, {
   writeRateLimiter,
   readinessProbe = agentRouterReadiness,
   browserHandoffClaim = claimPersistentBrowserHandoff,
-  erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction
+  erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
+  registrationPaymasterRelay = relaySponsoredErc8004Registration
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
@@ -279,7 +283,18 @@ async function routeRequest(req, res, store, baseUrl, {
     const registration = createErc8004RegistrationTransaction({ agentUri });
     const currentIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId, registration.network)) || null;
     if (req.method === "GET") {
-      sendJson(res, 200, { ...registration, provider_id: providerId, current_identity: currentIdentity });
+      sendJson(res, 200, {
+        ...registration,
+        provider_id: providerId,
+        current_identity: currentIdentity,
+        gas_sponsorship: {
+          required: true,
+          available: Boolean(String(process.env.ADN_BSC_PAYMASTER_URL || "").trim()),
+          vendor_pays_gas: false,
+          standard: "BEP-414",
+          endpoint: `/agent-router/erc8004/vendors/${encodeURIComponent(providerId)}/registration/paymaster`
+        }
+      });
       return;
     }
     if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
@@ -322,6 +337,27 @@ async function routeRequest(req, res, store, baseUrl, {
       event
     });
     sendJson(res, 200, { ok: true, status: "registered", identity: event });
+    return;
+  }
+
+  const vendorRegistrationPaymasterMatch = url.pathname.match(/^\/agent-router\/erc8004\/vendors\/([^/]+)\/registration\/paymaster$/);
+  if (req.method === "POST" && vendorRegistrationPaymasterMatch) {
+    if (!requireAuth(req, res, auth, url)) return;
+    const providerId = decodeURIComponent(vendorRegistrationPaymasterMatch[1]);
+    const manifest = vendorIdentityManifest(store, providerId, baseUrl);
+    if (!manifest) return sendNotFound(res, "VENDOR_NOT_FOUND");
+    if (!requireVendorIdentityOwner(req, res, auth, store, providerId)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
+    const agentUri = `${String(baseUrl).replace(/\/$/, "")}/.well-known/erc8004/vendors/${encodeURIComponent(providerId)}.json`;
+    const registration = createErc8004RegistrationTransaction({ agentUri });
+    const currentIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId, registration.network)) || null;
+    if (currentIdentity) {
+      sendJson(res, 409, { ok: false, status: "already_registered", error: "This Vendor already has an ERC-8004 identity on this chain.", identity: currentIdentity });
+      return;
+    }
+    const body = await readJson(req);
+    const result = await registrationPaymasterRelay({ method: body.method, params: body.params, registration });
+    sendJson(res, result.ok ? 200 : (result.statusCode || 422), result);
     return;
   }
 

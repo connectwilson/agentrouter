@@ -15,6 +15,7 @@ const registration = {
   agent_uri: AGENT_URI,
   transaction: { to: REGISTRY, data, value: "0x0" }
 };
+const bsc = { id: 56 };
 
 test("BNB Paymaster sponsors an exact Vendor registration while Vendor remains transaction sender", async () => {
   const calls = [];
@@ -32,11 +33,11 @@ test("BNB Paymaster sponsors an exact Vendor registration while Vendor remains t
   const check = await relaySponsoredErc8004Registration({
     method: "pm_isSponsorable",
     params: [{ from: account.address, to: REGISTRY, value: "0x0", data, gas: "0x2bf20" }],
-    registration,
+    registration, chain: bsc,
     paymasterRpc
   });
   const submission = await relaySponsoredErc8004Registration({
-    method: "eth_sendRawTransaction", params: [signed], registration, paymasterRpc
+    method: "eth_sendRawTransaction", params: [signed], registration, paymasterRpc, chain: bsc
   });
 
   assert.equal(check.ok, true);
@@ -58,7 +59,7 @@ test("registration sponsorship fails closed for wrong URI, nonzero gas price, an
   const wrongUri = await relaySponsoredErc8004Registration({
     method: "pm_isSponsorable",
     params: [{ from: account.address, to: REGISTRY, value: "0x0", data: wrongData, gas: "0x2bf20" }],
-    registration,
+    registration, chain: bsc,
     paymasterRpc
   });
   const paidRaw = await account.signTransaction({
@@ -66,12 +67,12 @@ test("registration sponsorship fails closed for wrong URI, nonzero gas price, an
     to: REGISTRY, value: 0n, data
   });
   const nonzeroGas = await relaySponsoredErc8004Registration({
-    method: "eth_sendRawTransaction", params: [paidRaw], registration, paymasterRpc
+    method: "eth_sendRawTransaction", params: [paidRaw], registration, paymasterRpc, chain: bsc
   });
   const denied = await relaySponsoredErc8004Registration({
     method: "pm_isSponsorable",
     params: [{ from: account.address, to: REGISTRY, value: "0x0", data, gas: "0x2bf20" }],
-    registration,
+    registration, chain: bsc,
     paymasterRpc
   });
 
