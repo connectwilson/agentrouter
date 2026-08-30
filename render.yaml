@@ -29,6 +29,8 @@ services:
         value: https://bsc-dataseed.binance.org
       - key: ADN_SETTLEMENT_ASSET
         value: USDC
+      - key: ADN_BSC_PAYMASTER_URL
+        sync: false
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
@@ -76,6 +78,8 @@ services:
         value: https://bsc-dataseed.binance.org
       - key: ADN_SETTLEMENT_ASSET
         value: USDC
+      - key: ADN_BSC_PAYMASTER_URL
+        sync: false
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY

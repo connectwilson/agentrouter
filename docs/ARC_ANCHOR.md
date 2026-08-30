@@ -88,14 +88,16 @@ ADN_ARC_ANCHOR_PRIVATE_KEY=0x...
 
 `ADN_ARC_ANCHOR_PRIVATE_KEY` is the server-side anchoring wallet. It is not a provider API key and should not be used for user payments.
 
-To enable gas-sponsored ERC-8004 feedback on BNB Chain:
+To enable gas-sponsored ERC-8004 feedback and Vendor identity registration on BNB Chain:
 
 ```bash
 ADN_SETTLEMENT_CHAIN=bsc
 ADN_BSC_PAYMASTER_URL=https://your-bnb-eoa-paymaster-rpc
 ```
 
-`ADN_BSC_PAYMASTER_URL` belongs on the AgentRouter server (for example Render). The local MCP bridge signs with a local encrypted reviewer wallet and sends only the signed transaction through AgentRouter's authenticated Paymaster proxy. If sponsorship is unavailable, feedback remains recorded offchain and the bridge does not fall back to spending the consumer's BNB.
+`ADN_BSC_PAYMASTER_URL` belongs on the AgentRouter server (for example Render) and must implement the BEP-414 `pm_isSponsorable` and `eth_sendRawTransaction` methods. The local MCP bridge signs feedback with a local encrypted reviewer wallet. For Vendor registration, the authenticated dashboard asks the Vendor wallet to sign the exact `register(agentURI)` transaction with a zero gas price, then relays only that signed transaction through AgentRouter's Paymaster proxy. The Vendor remains the transaction sender and final ERC-8004 owner while AgentRouter pays the gas.
+
+Both paths fail closed: if the Paymaster is missing, declines the policy, or becomes unavailable, AgentRouter does not submit a Vendor- or consumer-paid fallback. Registration sponsorship is restricted to the configured Identity Registry, the authenticated Vendor's exact metadata URI, zero BNB value, zero gas price, the active BNB chain, and `ADN_ERC8004_REGISTRATION_MAX_GAS` (default `500000`). Browser wallets must support `eth_signTransaction`; unsupported wallets receive a clear error without spending BNB.
 
 For legacy direct ERC-8004 submission without BNB sponsorship:
 
