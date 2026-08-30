@@ -8,6 +8,7 @@ import { createSocialConnection } from "../src/social-connections.js";
 import { getExternalApiCatalog, runExternalApiQuery } from "../src/external-api-capability.js";
 import { researchHtml } from "../src/research.js";
 import { createCreditApiKey, ensureCreditAccount } from "../src/credits.js";
+import { createErc8004FeedbackDescriptor } from "../src/erc8004.js";
 
 function secrets() {
   const values = new Map();
@@ -473,7 +474,7 @@ test("public connector failures identify stage, category, retryability, and trac
   assert.equal(result.error.diagnostics.upstream_code, "ENETUNREACH");
 });
 
-test("GDELT keeps its provider identity when direct transport needs the read-only proxy fallback", async () => {
+test("GDELT normalizes unsupported short keywords and falls back to its direct HTTP endpoint before a proxy", async () => {
   const requests = [];
   const result = await runExternalApiQuery(createMemoryStore(), "", {
     source: "gdelt",
@@ -487,7 +488,7 @@ test("GDELT keeps its provider identity when direct transport needs the read-onl
       return {
         ok: true,
         status: 200,
-        text: async () => 'Markdown Content:\n{"articles":[{"title":"Agent payments","url":"https://news.example/item","domain":"news.example","seendate":"20260830T010000Z"}]}'
+        json: async () => ({ articles: [{ title: "Agent payments", url: "https://news.example/item", domain: "news.example", seendate: "20260830T010000Z" }] })
       };
     }
   });
@@ -495,9 +496,31 @@ test("GDELT keeps its provider identity when direct transport needs the read-onl
   assert.equal(result.ok, true);
   assert.equal(result.source.source, "gdelt");
   assert.equal(result.coverage.provider, "gdelt");
-  assert.equal(result.coverage.retrieval_path, "jina_transport_proxy");
+  assert.equal(result.coverage.retrieval_path, "direct_http_fallback");
   assert.equal(result.result.items[0].url, "https://news.example/item");
-  assert.ok(requests[1].startsWith("https://r.jina.ai/http://api.gdeltproject.org/"));
+  assert.ok(requests[1].startsWith("http://api.gdeltproject.org/"));
+  assert.equal(new URL(requests[0]).searchParams.get("query"), "artificial intelligence Agent payments");
+});
+
+test("external API feedback uses a chain-specific platform identity instead of a provider or cross-chain token", () => {
+  const previousExternal = process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID;
+  const previousGlobal = process.env.ADN_ERC8004_AGENT_ID;
+  try {
+    process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID = "7004";
+    process.env.ADN_ERC8004_AGENT_ID = "9001";
+    const external = createErc8004FeedbackDescriptor({ serviceId: "external_api_open_meteo" });
+    const provider = createErc8004FeedbackDescriptor({ serviceId: "provider_owned_service" });
+
+    assert.equal(external.agent_id, "7004");
+    assert.equal(external.agent_id_source, "external_api_platform");
+    assert.equal(provider.agent_id, "9001");
+    assert.equal(provider.agent_id_source, "global_fallback");
+  } finally {
+    if (previousExternal === undefined) delete process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID;
+    else process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID = previousExternal;
+    if (previousGlobal === undefined) delete process.env.ADN_ERC8004_AGENT_ID;
+    else process.env.ADN_ERC8004_AGENT_ID = previousGlobal;
+  }
 });
 
 test("SEC EDGAR public provider resolves a ticker and preserves filing URLs", async () => {
