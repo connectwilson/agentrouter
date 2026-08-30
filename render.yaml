@@ -38,7 +38,7 @@ services:
       - key: ADN_PLATFORM_OPERATOR_OWNER_KEY
         sync: false
       - key: ADN_PLATFORM_OPERATOR_GITHUB_LOGIN
-        sync: false
+        value: connectwilson
       - key: ADN_UPSTREAM_X402_PRIVATE_KEY
         sync: false
   - type: web
@@ -87,7 +87,7 @@ services:
       - key: ADN_PLATFORM_OPERATOR_OWNER_KEY
         sync: false
       - key: ADN_PLATFORM_OPERATOR_GITHUB_LOGIN
-        sync: false
+        value: connectwilson
       - key: ADN_UPSTREAM_X402_PRIVATE_KEY
         sync: false
   - type: worker
