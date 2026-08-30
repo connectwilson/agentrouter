@@ -102,7 +102,46 @@ test("account dashboard exposes Vendor identity registration without accepting a
   const page = accountHtml({ auth: { user: { name: "Vendor owner" } } });
   assert.match(page, /Vendor identities/);
   assert.match(page, /agent-router\/erc8004\/vendors/);
+  assert.match(page, /eth_signTransaction/);
+  assert.match(page, /Vendor pays 0 BNB|AgentRouter sponsors/i);
   assert.doesNotMatch(page, /name=["']agent[_-]?id|id=["']agent[_-]?id/i);
+});
+
+test("Vendor registration exposes an authenticated Paymaster proxy and never asks Vendor to pay gas", async () => {
+  await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc", ADN_BSC_PAYMASTER_URL: "https://paymaster.example/rpc" }, async () => {
+    const store = createMemoryStore();
+    const session = createDevSession(store, "http://127.0.0.1");
+    registerService(store, ownedManifest("vendor_sponsored", "vendor_sponsored", "local:local-development-user", "/data"), "http://127.0.0.1");
+    const relayCalls = [];
+    const server = createServer({
+      store,
+      registrationPaymasterRelay: async (request) => {
+        relayCalls.push(request);
+        return { ok: true, statusCode: 200, result: { Sponsorable: true }, gas_sponsorship: { sponsored: true, vendor_pays_gas: false } };
+      }
+    });
+    const baseUrl = await listen(server);
+    const headers = { cookie: session.cookie.split(";")[0] };
+    try {
+      const configResponse = await fetch(`${baseUrl}/agent-router/erc8004/vendors/vendor_sponsored/registration`, { headers });
+      const config = await configResponse.json();
+      assert.equal(config.gas_sponsorship.required, true);
+      assert.equal(config.gas_sponsorship.vendor_pays_gas, false);
+      assert.match(config.gas_sponsorship.endpoint, /\/registration\/paymaster$/);
+
+      const sponsorResponse = await fetch(`${baseUrl}${config.gas_sponsorship.endpoint}`, {
+        method: "POST", headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ method: "pm_isSponsorable", params: [{ from: OWNER, ...config.transaction, gas: "0x2bf20" }] })
+      });
+      const sponsor = await sponsorResponse.json();
+      assert.equal(sponsorResponse.status, 200);
+      assert.equal(sponsor.gas_sponsorship.vendor_pays_gas, false);
+      assert.equal(relayCalls.length, 1);
+      assert.equal(relayCalls[0].registration.agent_uri, config.agent_uri);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });
 
 test("an AgentRouter-managed external Vendor gets its own identity instead of inheriting the Platform ID", async () => {
