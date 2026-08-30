@@ -705,6 +705,33 @@ export function freeLocalAlternative(sourceId, params = {}) {
   };
 }
 
+export function externalSourceAccessAction(definition = {}) {
+  const mode = definition.authorization_mode || (definition.connection_required ? "api_credentials" : "none");
+  const title = definition.title || definition.source || "data source";
+  if (mode === "api_credentials") {
+    return {
+      action: "configure_api_credentials",
+      preferred_tool: "agentrouter_connect_source",
+      authorization_kind: "api_credentials",
+      user_facing_label: `Configure ${title} API credentials in AgentRouter`,
+      requires_agentrouter_login: true,
+      tool_arguments: { source: definition.source },
+      instructions: `Open AgentRouter's secure credential page for ${title}. Sign in to AgentRouter first if needed. This is source credential setup, not AgentRouter account authorization, and credentials must never be pasted into chat.`
+    };
+  }
+  if (mode === "local_browser_session") {
+    return {
+      action: "authorize_local_browser_session",
+      preferred_tool: "agentrouter_connect_source",
+      authorization_kind: "local_browser_session",
+      user_facing_label: `Continue to ${title} in your signed-in browser`,
+      requires_agentrouter_login: false,
+      tool_arguments: { source: definition.source }
+    };
+  }
+  return null;
+}
+
 export async function runExternalApiQuery(store, ownerKey, params = {}, options = {}) {
   const sourceId = clean(params.source, 64).toLowerCase();
   const query = clean(params.query, 500);
@@ -735,21 +762,17 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
       item.owner_key === ownerKey && item.platform === sourceId && item.provider_type === definition.provider_type);
     if (!connection) {
       const alternative = freeLocalAlternative(sourceId, { query, limit: params.limit });
+      const connectionAction = externalSourceAccessAction(definition);
       return {
         ...failure(
-          "connection_required",
+          alternative ? "connection_required" : "source_credentials_required",
           alternative
             ? `${definition.title} needs a paid platform API key. Use the free local browser path instead: call social_search with platform "${alternative.call.params.platform}".`
-            : `Connect ${definition.title} before invoking this source.`
+            : `Configure ${definition.title} API credentials in AgentRouter before invoking this source.`
         ),
-        action_required: alternative ? "use_free_local_alternative" : "connect_api_source",
+        action_required: alternative ? "use_free_local_alternative" : connectionAction.action,
         ...(!alternative ? {
-          connection_action: {
-            action: "connect_api_source",
-            preferred_tool: "agentrouter_connect_source",
-            tool_arguments: { source: sourceId },
-            instructions: "Call agentrouter_connect_source, open its browser authorization URL, then retry the original request. Never ask the user to paste the source API key into chat."
-          },
+          connection_action: connectionAction,
           retry_original_request_after_connection: true,
           do_not_fallback_outside_agentrouter: true
         } : {}),
@@ -1971,6 +1994,13 @@ function gdeltDate(value) {
 function source(id, category, title, implementationStatus, providerType, operations) {
   const connectionRequired = Boolean(providerType && providerType !== "local_browser");
   const credentialField = providerType === "amadeus_api" ? "access_token" : connectionRequired ? "api_key" : null;
+  const authorizationMode = providerType === "local_browser"
+    ? "local_browser_session"
+    : implementationStatus !== "available"
+      ? "unavailable"
+      : connectionRequired
+        ? "api_credentials"
+        : "none";
   return {
     source: id,
     category,
@@ -1982,6 +2012,7 @@ function source(id, category, title, implementationStatus, providerType, operati
     capability_manual: capabilityManual(id, category, title, operations),
     credential_field: credentialField,
     connection_required: connectionRequired,
+    authorization_mode: authorizationMode,
     read_only: true
   };
 }
@@ -2004,7 +2035,12 @@ function extractSearchQuery(text) {
 }
 
 function publicSource(definition) {
-  return { source: definition.source, title: definition.title, category: definition.category };
+  return {
+    source: definition.source,
+    title: definition.title,
+    category: definition.category,
+    authorization_mode: definition.authorization_mode
+  };
 }
 
 function get(url, headers = {}) {

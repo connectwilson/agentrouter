@@ -39,7 +39,7 @@ import { runSocialResearchCapability } from "./research-capability.js";
 import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
 import { getExternalApiCatalog,
-  freeLocalAlternative, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
+  externalSourceAccessAction, freeLocalAlternative, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import { listCapabilityPacks, serviceMatchesCapabilityPack } from "./capability-packs.js";
@@ -2041,18 +2041,22 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
         message: `${definition.title} is connected. Retry the original AgentRouter request now.`
       };
     }
+    const sourceAction = externalSourceAccessAction(definition);
     const authorizationUrl = new URL("/research", baseUrl || "https://agentrouter.network");
     authorizationUrl.searchParams.set("connect_source", sourceId);
     return {
       ok: false,
-      status: "authorization_required",
-      action: "connect_api_source",
+      status: "source_credentials_required",
+      action: sourceAction.action,
+      authorization_kind: sourceAction.authorization_kind,
+      user_facing_label: sourceAction.user_facing_label,
+      requires_agentrouter_login: sourceAction.requires_agentrouter_login,
       source: sourceId,
       source_title: definition.title,
       verification_uri: authorizationUrl.toString(),
       retry_original_request: true,
       do_not_fallback_outside_agentrouter: true,
-      message: `Open the authorization link to connect ${definition.title}. The credential is entered only on AgentRouter's website and must never be pasted into chat. After saving it, call this tool again and retry the original request.`
+      message: `${sourceAction.instructions} After saving it, call this tool again and retry the original request.`
     };
   }
   if (name === "agentrouter_request") {
