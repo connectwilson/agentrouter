@@ -111,7 +111,8 @@ test("an explicitly named social vendor bypasses local platform interception and
     assert.deepEqual(routed?.params.platforms, entry.platforms);
 
     const result = await runExternalApiQuery(createMemoryStore(), "acceptance-user", routed.params);
-    assert.equal(result.status, "connection_required");
+    assert.equal(result.status, "source_credentials_required");
+    assert.equal(result.connection_action.authorization_kind, "api_credentials");
     assert.deepEqual(result.connection_action.tool_arguments, { source: entry.source });
   }
 });
@@ -263,7 +264,8 @@ test("flight language is normalized before Amadeus authorization", async () => {
   assert.equal(routed.params.non_stop, true);
 
   const result = await runExternalApiQuery(createMemoryStore(), "acceptance-user", routed.params);
-  assert.equal(result.status, "connection_required");
+  assert.equal(result.status, "source_credentials_required");
+  assert.equal(result.connection_action.authorization_kind, "api_credentials");
   assert.equal(result.connection_action.preferred_tool, "agentrouter_connect_source");
 });
 
@@ -310,11 +312,12 @@ test("a vague research object asks for clarification before any external route",
   assert.equal(result.suggested_route, undefined);
 });
 
-test("credential-backed sources consistently hand off to browser authorization", async () => {
+test("credential-backed sources consistently hand off to secure source setup", async () => {
   for (const index of [19, 20, 22, 25, 26]) {
     const routed = sourceFor(PROMPTS[index]);
     const result = await runExternalApiQuery(createMemoryStore(), "acceptance-user", routed.params);
-    assert.equal(result.status, "connection_required", PROMPTS[index]);
+    assert.equal(result.status, "source_credentials_required", PROMPTS[index]);
+    assert.equal(result.connection_action.authorization_kind, "api_credentials", PROMPTS[index]);
     assert.equal(result.connection_action.preferred_tool, "agentrouter_connect_source", PROMPTS[index]);
   }
 });

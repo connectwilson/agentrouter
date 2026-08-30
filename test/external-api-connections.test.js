@@ -1116,7 +1116,8 @@ test("sources with a key-free browser path steer agents there instead of a dead 
   const noAlternative = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
     source: "exa", operation: "search", query: "x"
   });
-  assert.equal(noAlternative.action_required, "connect_api_source");
+  assert.equal(noAlternative.action_required, "configure_api_credentials");
+  assert.equal(noAlternative.connection_action.authorization_kind, "api_credentials");
   assert.equal(noAlternative.free_alternative, undefined);
   assert.equal(freeLocalAlternative("exa"), null);
 
