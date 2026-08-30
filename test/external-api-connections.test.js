@@ -60,6 +60,11 @@ test("external API catalog separates callable connectors from planned sources", 
   assert.equal(exa.total_calls, null);
   assert.equal(exa.connection_state, "unknown");
   assert.equal(exa.connected, null);
+  assert.ok(catalog.every((item) => ["none", "api_credentials", "local_browser_session", "unavailable"].includes(item.authorization_mode)));
+  assert.equal(catalog.find((item) => item.source === "github").authorization_mode, "none");
+  assert.equal(catalog.find((item) => item.source === "openalex").authorization_mode, "api_credentials");
+  assert.equal(catalog.find((item) => item.source === "xiaohongshu").authorization_mode, "local_browser_session");
+  assert.equal(catalog.find((item) => item.source === "linkedin").authorization_mode, "unavailable");
   assert.ok(catalog.every((item) => item.capability_manual?.best_for?.length));
   assert.ok(catalog.every((item) => item.capability_manual?.not_for?.length));
   assert.ok(catalog.every((item) => item.capability_manual?.route_only_when?.length));
@@ -328,9 +333,13 @@ test("external API query fails clearly when the user has not connected the sourc
     query: "test"
   });
   assert.equal(result.ok, false);
-  assert.equal(result.status, "connection_required");
-  assert.equal(result.action_required, "connect_api_source");
+  assert.equal(result.status, "source_credentials_required");
+  assert.equal(result.action_required, "configure_api_credentials");
   assert.equal(result.connection_action.preferred_tool, "agentrouter_connect_source");
+  assert.equal(result.connection_action.authorization_kind, "api_credentials");
+  assert.equal(result.connection_action.user_facing_label, "Configure Exa API credentials in AgentRouter");
+  assert.equal(result.connection_action.requires_agentrouter_login, true);
+  assert.match(result.connection_action.instructions, /not AgentRouter account authorization/i);
   assert.deepEqual(result.connection_action.tool_arguments, { source: "exa" });
   assert.equal(result.do_not_fallback_outside_agentrouter, true);
 });
@@ -871,11 +880,16 @@ test("remote MCP turns a missing upstream source into a browser authorization ha
       arguments: { source: "openalex" }
     });
     const authorization = JSON.parse(first.content[0].text);
-    assert.equal(authorization.status, "authorization_required");
+    assert.equal(authorization.status, "source_credentials_required");
+    assert.equal(authorization.action, "configure_api_credentials");
+    assert.equal(authorization.authorization_kind, "api_credentials");
+    assert.equal(authorization.user_facing_label, "Configure OpenAlex API credentials in AgentRouter");
+    assert.equal(authorization.requires_agentrouter_login, true);
     assert.equal(authorization.source, "openalex");
     assert.match(authorization.verification_uri, /^http:\/\/127\.0\.0\.1:\d+\/research\?connect_source=openalex/);
     assert.equal(authorization.retry_original_request, true);
     assert.equal(authorization.do_not_fallback_outside_agentrouter, true);
+    assert.match(authorization.message, /not AgentRouter account authorization/i);
 
     await createSocialConnection(store, ownerKey, {
       platform: "openalex",
