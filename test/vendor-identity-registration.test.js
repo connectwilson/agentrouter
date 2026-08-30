@@ -63,6 +63,11 @@ test("one chain-generated Vendor Agent ID is shared by every service from that V
     const baseUrl = await listen(server);
     const headers = { cookie: session.cookie.split(";")[0] };
     try {
+      const vendorsResponse = await fetch(`${baseUrl}/agent-router/erc8004/vendors`, { headers });
+      const vendors = await vendorsResponse.json();
+      assert.equal(vendorsResponse.status, 200);
+      assert.deepEqual(vendors.vendors.map((item) => item.provider_id), ["vendor_alpha"]);
+
       const configResponse = await fetch(`${baseUrl}/agent-router/erc8004/vendors/vendor_alpha/registration`, { headers });
       const config = await configResponse.json();
       assert.equal(configResponse.status, 200);
@@ -90,6 +95,14 @@ test("one chain-generated Vendor Agent ID is shared by every service from that V
       await new Promise((resolve) => server.close(resolve));
     }
   });
+});
+
+test("account dashboard exposes Vendor identity registration without accepting a manual Agent ID", async () => {
+  const { accountHtml } = await import("../src/home.js");
+  const page = accountHtml({ auth: { user: { name: "Vendor owner" } } });
+  assert.match(page, /Vendor identities/);
+  assert.match(page, /agent-router\/erc8004\/vendors/);
+  assert.doesNotMatch(page, /name=["']agent[_-]?id|id=["']agent[_-]?id/i);
 });
 
 test("an AgentRouter-managed external Vendor gets its own identity instead of inheriting the Platform ID", async () => {
