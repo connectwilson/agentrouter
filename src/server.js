@@ -830,7 +830,18 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "GET" && url.pathname === "/research") {
-    sendHtml(res, 200, researchHtml(auth));
+    const requestedSource = url.searchParams.get("connect_source");
+    const sourceLoginRequired = Boolean(requestedSource && !auth.user);
+    sendHtml(res, 200, researchHtml({
+      ...auth,
+      loginModal: auth.loginModal || sourceLoginRequired,
+      loginReturnTo: sourceLoginRequired
+        ? `/research?connect_source=${encodeURIComponent(requestedSource)}`
+        : auth.loginReturnTo,
+      loginMessage: sourceLoginRequired
+        ? "登录 AgentRouter 后继续配置该数据源。登录完成后会自动返回此页面。"
+        : auth.loginMessage
+    }));
     return;
   }
 

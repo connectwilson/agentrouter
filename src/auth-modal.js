@@ -29,7 +29,7 @@ export function authModalHtml({ auth = {}, returnTo = "/" } = {}) {
       <div class="auth-modal-content">
         <span class="auth-modal-kicker">AgentRouter account</span>
         <h2 id="auth-modal-title">Welcome back</h2>
-        <p>Sign in to continue to your AgentRouter account.</p>
+        <p>${escapeHtml(auth.loginMessage || "Sign in to continue to your AgentRouter account.")}</p>
         ${auth.loginError ? `<div class="auth-modal-error" role="alert">${escapeHtml(auth.loginError)}</div>` : ""}
         <div class="auth-modal-options">${options}${devLogin}</div>
         <small class="auth-modal-note">Authentication is handled by GitHub. AgentRouter never receives your GitHub password.</small>
