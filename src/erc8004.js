@@ -65,21 +65,33 @@ export function erc8004Configured({ serviceId, manifest } = {}) {
 }
 
 export function resolveErc8004AgentId({ serviceId, manifest } = {}) {
+  return resolveErc8004AgentIdentity({ serviceId, manifest }).agentId;
+}
+
+function resolveErc8004AgentIdentity({ serviceId, manifest } = {}) {
   const registration = manifest?.registration?.erc8004;
   if (registration?.agent_id != null && registration.agent_id !== "" && registrationMatchesSettlementChain(registration)) {
-    return String(registration.agent_id);
+    return { agentId: String(registration.agent_id), source: "manifest_registration" };
   }
 
   const serviceEnvName = serviceId ? `ADN_ERC8004_AGENT_ID_${envKey(serviceId)}` : "";
-  if (serviceEnvName && process.env[serviceEnvName]) return process.env[serviceEnvName];
-  if (process.env.ADN_ERC8004_AGENT_ID) return process.env.ADN_ERC8004_AGENT_ID;
+  if (serviceEnvName && process.env[serviceEnvName]) return { agentId: process.env[serviceEnvName], source: "service_override" };
+  const externalApiEnvName = `ADN_ERC8004_EXTERNAL_API_AGENT_ID_${envKey(settlementChain().network)}`;
+  if (String(serviceId || "").startsWith("external_api_")) {
+    return process.env[externalApiEnvName]
+      ? { agentId: process.env[externalApiEnvName], source: "external_api_platform" }
+      : { agentId: "", source: "external_api_platform_not_configured" };
+  }
+  if (process.env.ADN_ERC8004_AGENT_ID) return { agentId: process.env.ADN_ERC8004_AGENT_ID, source: "global_fallback" };
 
   // Legacy manifests sometimes stored only a token id under provider. Accept
   // those only when there is no explicit cross-chain registration proving the
   // id belongs elsewhere; token ids are local to a registry and chain.
-  if (registration?.agent_id != null && registration.agent_id !== "") return "";
+  if (registration?.agent_id != null && registration.agent_id !== "") return { agentId: "", source: "cross_chain_registration_rejected" };
   const legacy = manifest?.provider?.erc8004_agent_id || manifest?.provider?.agent_id || manifest?.erc8004?.agent_id;
-  return legacy != null && legacy !== "" ? String(legacy) : "";
+  return legacy != null && legacy !== ""
+    ? { agentId: String(legacy), source: "legacy_manifest" }
+    : { agentId: "", source: "not_configured" };
 }
 
 function registrationMatchesSettlementChain(registration = {}) {
@@ -416,7 +428,8 @@ export async function submitErc8004Feedback({
 
 export function createErc8004FeedbackDescriptor({ requestId, serviceId, providerId, manifest, feedback, baseUrl = "" } = {}) {
   const chain = settlementChain();
-  const agentId = resolveErc8004AgentId({ serviceId, manifest });
+  const identity = resolveErc8004AgentIdentity({ serviceId, manifest });
+  const agentId = identity.agentId;
   const registry = reputationRegistryAddress();
   const endpoint = endpointFor(baseUrl, requestId);
   return {
@@ -430,6 +443,7 @@ export function createErc8004FeedbackDescriptor({ requestId, serviceId, provider
     identity_registry_address: erc8004Registries().identityRegistry,
     validation_registry_address: erc8004Registries().validationRegistry,
     agent_id: agentId || null,
+    agent_id_source: identity.source,
     function_name: "giveFeedback",
     value: feedbackValue(feedback),
     value_decimals: 2,

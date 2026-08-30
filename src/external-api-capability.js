@@ -1262,7 +1262,7 @@ function buildRequest(sourceId, context) {
   }
   if (sourceId === "gdelt") {
     const url = new URL("https://api.gdeltproject.org/api/v2/doc/doc");
-    url.searchParams.set("query", query);
+    url.searchParams.set("query", gdeltQuery(query));
     url.searchParams.set("mode", "artlist");
     url.searchParams.set("format", "json");
     url.searchParams.set("maxrecords", String(limit));
@@ -1625,10 +1625,29 @@ async function invokeGdelt(context) {
     };
   }
 
+  // GDELT's DOC endpoint is also intentionally published over HTTP. Some
+  // hosted networks can reach that endpoint while its HTTPS listener stalls,
+  // so try the same provider directly before introducing a proxy dependency.
+  const httpUrl = new URL(request.url);
+  httpUrl.protocol = "http:";
+  const directHttp = await fetchJson(context.fetchImpl, httpUrl, request.options, {
+    stage: "gdelt_direct_http_fallback",
+    retries: 0,
+    timeoutMs: Math.min(Number(context.fetchTimeoutMs) || 6_000, 6_000)
+  });
+  if (directHttp.ok) {
+    return {
+      ok: true,
+      status: "completed",
+      items: normalizeItems("gdelt", directHttp.payload, context).slice(0, context.limit),
+      coverage: { provider: "gdelt", retrieval_path: "direct_http_fallback" }
+    };
+  }
+
   // GDELT's public DOC endpoint periodically accepts a connection without
   // completing the response. Jina's reader proxy fetches that exact public
   // endpoint; it is a transport fallback, not a different news/search source.
-  const upstreamUrl = String(request.url).replace(/^https:/, "http:");
+  const upstreamUrl = String(httpUrl);
   const proxyUrl = `https://r.jina.ai/${upstreamUrl}`;
   const proxied = await fetchTextJson(context.fetchImpl, proxyUrl, {
     headers: { accept: "text/plain", "user-agent": "AgentRouter/0.13 (+https://agentrouter.network)" }
@@ -1642,6 +1661,7 @@ async function invokeGdelt(context) {
       diagnostics: {
         ...direct.diagnostics,
         fallback_attempted: true,
+        direct_http_fallback: directHttp.diagnostics,
         fallback: proxied.diagnostics
       }
     };
@@ -1656,6 +1676,21 @@ async function invokeGdelt(context) {
       upstream_url: String(request.url)
     }
   };
+}
+
+function gdeltQuery(query) {
+  const expansions = new Map([
+    ["ai", "artificial intelligence"],
+    ["eu", "European Union"],
+    ["uk", "United Kingdom"],
+    ["us", "United States"]
+  ]);
+  return String(query || "")
+    .trim()
+    .split(/\s+/)
+    .map((token) => expansions.get(token.toLowerCase()) || token)
+    .filter((token) => !/^[A-Za-z0-9]{1,2}$/.test(token))
+    .join(" ") || String(query || "").trim();
 }
 
 async function fetchTextJson(fetchImpl, url, options = {}, { stage, timeoutMs }) {

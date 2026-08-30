@@ -503,10 +503,12 @@ test("GDELT normalizes unsupported short keywords and falls back to its direct H
 });
 
 test("external API feedback uses a chain-specific platform identity instead of a provider or cross-chain token", () => {
-  const previousExternal = process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID;
+  const previousChain = process.env.ADN_SETTLEMENT_CHAIN;
+  const previousExternal = process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC;
   const previousGlobal = process.env.ADN_ERC8004_AGENT_ID;
   try {
-    process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID = "7004";
+    process.env.ADN_SETTLEMENT_CHAIN = "bsc";
+    process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC = "7004";
     process.env.ADN_ERC8004_AGENT_ID = "9001";
     const external = createErc8004FeedbackDescriptor({ serviceId: "external_api_open_meteo" });
     const provider = createErc8004FeedbackDescriptor({ serviceId: "provider_owned_service" });
@@ -515,9 +517,16 @@ test("external API feedback uses a chain-specific platform identity instead of a
     assert.equal(external.agent_id_source, "external_api_platform");
     assert.equal(provider.agent_id, "9001");
     assert.equal(provider.agent_id_source, "global_fallback");
+
+    process.env.ADN_SETTLEMENT_CHAIN = "arc-testnet";
+    const otherChain = createErc8004FeedbackDescriptor({ serviceId: "external_api_open_meteo" });
+    assert.equal(otherChain.agent_id, null, "a BSC platform token must not leak onto Arc");
+    assert.equal(otherChain.agent_id_source, "external_api_platform_not_configured");
   } finally {
-    if (previousExternal === undefined) delete process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID;
-    else process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID = previousExternal;
+    if (previousChain === undefined) delete process.env.ADN_SETTLEMENT_CHAIN;
+    else process.env.ADN_SETTLEMENT_CHAIN = previousChain;
+    if (previousExternal === undefined) delete process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC;
+    else process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC = previousExternal;
     if (previousGlobal === undefined) delete process.env.ADN_ERC8004_AGENT_ID;
     else process.env.ADN_ERC8004_AGENT_ID = previousGlobal;
   }
