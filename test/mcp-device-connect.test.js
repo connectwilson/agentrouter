@@ -224,6 +224,74 @@ test("agentrouter_fetch turns an account-connection action into browser authoriz
   }
 });
 
+test("agentrouter_fetch opens the exact source access page without confusing it with account login", async () => {
+  let sourceToolCalls = 0;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+    response.setHeader("content-type", "application/json");
+    if (request.url !== "/mcp") {
+      response.writeHead(404);
+      response.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+    let value;
+    if (body.params?.name === "agentrouter_connect_source") {
+      sourceToolCalls += 1;
+      value = {
+        ok: false,
+        status: "source_credentials_required",
+        action: "configure_api_credentials",
+        authorization_kind: "api_credentials",
+        user_facing_label: "Configure OpenAlex API credentials in AgentRouter",
+        source: "openalex",
+        verification_uri: `${baseUrl}/research?connect_source=openalex`,
+        retry_original_request: true,
+        message: "Configure OpenAlex API credentials in AgentRouter. This is not AgentRouter account authorization."
+      };
+    } else {
+      value = {
+        ok: false,
+        status: "source_credentials_required",
+        connection_action: {
+          action: "configure_api_credentials",
+          preferred_tool: "agentrouter_connect_source",
+          authorization_kind: "api_credentials",
+          tool_arguments: { source: "openalex" }
+        }
+      };
+    }
+    response.end(JSON.stringify({
+      jsonrpc: "2.0",
+      id: body.id,
+      result: { content: [{ type: "text", text: JSON.stringify(value) }], isError: false }
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const client = createMcpClient({ AGENT_ROUTER_URL: baseUrl, AGENT_ROUTER_API_KEY: "ar_test_connected" });
+  try {
+    const result = await client.request("tools/call", {
+      name: "agentrouter_fetch",
+      arguments: { task: "Find peer-reviewed agent routing papers" }
+    });
+    const access = JSON.parse(result.content[0].text);
+    assert.equal(sourceToolCalls, 1);
+    assert.equal(access.status, "source_credentials_required");
+    assert.equal(access.authorization_kind, "api_credentials");
+    assert.equal(access.user_facing_label, "Configure OpenAlex API credentials in AgentRouter");
+    assert.equal(access.browser_open.status, "disabled");
+    assert.equal(access.retry_original_request, true);
+    assert.equal(access.original_tool, "agentrouter_fetch");
+    assert.match(access.message, /not AgentRouter account authorization/i);
+    assert.doesNotMatch(JSON.stringify(access), /paste.*api key|log in and authorize the data source/i);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("browser account authorization fails over when the canonical origin cannot resolve or connect", async () => {
   const primary = await unusedLocalOrigin();
   const server = http.createServer(async (request, response) => {
