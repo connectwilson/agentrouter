@@ -48,6 +48,42 @@ test("BNB Paymaster sponsors an exact Vendor registration while Vendor remains t
   assert.deepEqual(calls.map((call) => call.method), ["pm_isSponsorable", "eth_sendRawTransaction"]);
 });
 
+test("registration Paymaster returns the Vendor pending nonce from MegaFuel", async () => {
+  const calls = [];
+  const paymasterRpc = async (method, params) => {
+    calls.push({ method, params });
+    return "0x7";
+  };
+  const result = await relaySponsoredErc8004Registration({
+    method: "eth_getTransactionCount",
+    params: [account.address, "pending"],
+    registration,
+    chain: bsc,
+    paymasterRpc
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "nonce_ready");
+  assert.equal(result.result, "0x7");
+  assert.deepEqual(calls, [{ method: "eth_getTransactionCount", params: [account.address, "pending"] }]);
+});
+
+test("registration Paymaster rejects unsafe nonce queries", async () => {
+  let calls = 0;
+  const paymasterRpc = async () => { calls += 1; return "0x0"; };
+  const result = await relaySponsoredErc8004Registration({
+    method: "eth_getTransactionCount",
+    params: ["not-an-address", "latest"],
+    registration,
+    chain: bsc,
+    paymasterRpc
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "invalid_paymaster_params");
+  assert.equal(calls, 0);
+});
+
 test("registration sponsorship fails closed for wrong URI, nonzero gas price, and Paymaster denial", async () => {
   let submissions = 0;
   const paymasterRpc = async (method) => {

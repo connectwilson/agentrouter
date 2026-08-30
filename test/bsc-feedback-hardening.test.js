@@ -46,6 +46,7 @@ test("Render services declare BSC explicitly and do not reuse the Arc anchor add
   assert.doesNotMatch(blueprint, /0x65274c73f39bf1654f9aaf261ea16d0b08fdb8d0/i);
   assert.equal((blueprint.match(/key: ADN_EVIDENCE_ANCHOR_CONTRACT/g) || []).length, 2);
   assert.equal((blueprint.match(/key: ADN_BSC_PAYMASTER_URL/g) || []).length, 2, "both web regions require the same BNB sponsorship endpoint");
+  assert.equal((blueprint.match(/value: https:\/\/bsc-megafuel\.nodereal\.io\//g) || []).length, 2, "both web regions use the public MegaFuel BSC endpoint");
 });
 
 test("evidence anchor config prefers chain-neutral names and preflight rejects an empty BSC address", async () => {

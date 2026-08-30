@@ -103,6 +103,8 @@ test("account dashboard exposes Vendor identity registration without accepting a
   assert.match(page, /Vendor identities/);
   assert.match(page, /agent-router\/erc8004\/vendors/);
   assert.match(page, /eth_signTransaction/);
+  assert.match(page, /method:\s*["']eth_getTransactionCount["']/);
+  assert.doesNotMatch(page, /window\.ethereum\.request\(\{ method: ["']eth_getTransactionCount["']/);
   assert.match(page, /Vendor pays 0 BNB|AgentRouter sponsors/i);
   assert.doesNotMatch(page, /name=["']agent[_-]?id|id=["']agent[_-]?id/i);
 });
