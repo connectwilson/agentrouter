@@ -1,30 +1,66 @@
 export function resolveMcpClientAction(payload) {
   const value = readMcpToolPayload(payload);
   if (!value) return { state: "none", value: null };
-  const action = value.action_required?.action
-    || value.connection_action?.action
-    || (value.error?.code === "AGENTROUTER_CONNECTION_REQUIRED" ? "connect_agentrouter_account" : null);
-  const preferredTool = value.action_required?.preferred_tool
-    || value.connection_action?.preferred_tool
-    || null;
+  const actionRequired = value.action_required && typeof value.action_required === "object"
+    ? value.action_required
+    : null;
+  const connectionAction = value.connection_action && typeof value.connection_action === "object"
+    ? value.connection_action
+    : null;
+  const action = actionRequired?.action || connectionAction?.action || null;
+  const preferredTool = actionRequired?.preferred_tool || connectionAction?.preferred_tool || null;
 
-  if (action === "connect_agentrouter_account" || preferredTool === "agentrouter_connect") {
+  // Account authorization is the outer trust boundary. It must win over stale
+  // or nested source metadata because a source cannot be authorized until the
+  // AI client itself is connected to the user's AgentRouter account.
+  const accountRequired = value.error?.code === "AGENTROUTER_CONNECTION_REQUIRED"
+    || value.status === "account_authorization_required"
+    || action === "connect_agentrouter_account"
+    || preferredTool === "agentrouter_connect";
+
+  if (accountRequired) {
     return {
       state: "authorize_account",
       action: "connect_agentrouter_account",
       preferred_tool: "agentrouter_connect",
+      authorization_kind: "agentrouter_account_login",
+      user_facing_label: "Log in and authorize AgentRouter",
       value
     };
   }
-  if (action === "connect_api_source" || preferredTool === "agentrouter_connect_source") {
+
+  const sourceActions = new Set([
+    "connect_api_source",
+    "reconnect_api_source",
+    "configure_api_credentials",
+    "authorize_source_account",
+    "authorize_local_browser_session"
+  ]);
+  const sourceRequired = sourceActions.has(action)
+    || preferredTool === "agentrouter_connect_source"
+    || value.status === "source_credentials_required";
+  if (sourceRequired) {
+    const authorizationKind = actionRequired?.authorization_kind
+      || connectionAction?.authorization_kind
+      || value.source?.authorization_mode
+      || "source_access";
     return {
       state: "authorize_source",
-      action: "connect_api_source",
+      action: action || "connect_api_source",
       preferred_tool: "agentrouter_connect_source",
+      authorization_kind: authorizationKind,
+      user_facing_label: sourceAuthorizationLabel(authorizationKind),
       value
     };
   }
   return { state: "none", value };
+}
+
+function sourceAuthorizationLabel(kind) {
+  if (kind === "api_credentials") return "Configure API credentials in AgentRouter";
+  if (kind === "oauth") return "Log in and authorize the data source";
+  if (kind === "local_browser_session") return "Continue in your signed-in browser";
+  return "Authorize data source access";
 }
 
 export function readMcpToolPayload(payload) {
