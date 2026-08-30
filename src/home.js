@@ -1199,7 +1199,7 @@ export function accountHtml({ auth = {} } = {}) {
             <div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Top services by spend</h2><p>Derived from your own service-call ledger.</p></div></div><div class="dash-services" id="top-services"></div></article><aside class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Routing safeguards</h2><p>Every call is bounded by your policy.</p></div></div><div class="dash-actions"><div class="dash-action"><i>✓</i><span><b>Server-side credentials</b><small>Provider API keys remain private to AgentRouter.</small></span></div><div class="dash-action"><i>✓</i><span><b>Payment precision</b><small>Credit ledger uses six decimal places.</small></span></div></div></aside></div>
           </section>
 
-          <section class="dash-view" data-panel="keys" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Connected agents</h2><p>No API key needs to be copied into an MCP configuration. On the first paid call, AgentRouter opens a short browser approval flow and stores the connection privately on your device.</p></div><a class="dash-link" href="/agent">Install AgentRouter →</a></div><div id="agent-connection-list"></div></article><div class="dash-grid dash-section"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Developer API keys</h2><p>An advanced fallback for CI and headless servers that cannot open a browser. Most people never need one.</p></div></div><form class="dash-form" id="api-key-form"><label for="api-key-label">Client label</label><div class="dash-form-row"><input id="api-key-label" name="label" value="CI server" maxlength="120"><button class="dash-button" type="submit">Create key</button></div></form><div class="dash-key-result" id="api-key-result" hidden><b>Copy this key now. It will not be shown again.</b><code id="api-key-value"></code><button class="dash-button secondary" id="copy-api-key" type="button">Copy key</button><small>Use this only for CI or a headless server. Never paste it into a chat.</small></div><div class="dash-card-head dash-section"><div><h3>Your keys</h3><p>The full secret is stored only as a hash and is never shown again. The hint below is enough to tell one key from another.</p></div></div><div id="api-key-list"></div></article><aside class="dash-panel dash-card"><h2>Security model</h2><p>Browser-approved connections can use only this account's prepaid balance. They never expose GitHub credentials or provider API keys and can be disconnected at any time.</p><p>Every call, from a browser connection or a key, is capped by the per-call spending limit set on the Credits page.</p></aside></div><article class="dash-panel dash-card dash-section" id="platform-identity-card"><div class="dash-card-head"><div><h2>BNB Chain platform identity</h2><p>Register the shared ERC-8004 identity used for external connector feedback. Your browser wallet signs the registration; AgentRouter verifies and stores the resulting ID.</p></div><button class="dash-button" id="platform-identity-button" type="button">Register BSC identity</button></div><p class="dash-status" id="platform-identity-status" role="status">Checking registration status…</p></article></section>
+          <section class="dash-view" data-panel="keys" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Connected agents</h2><p>No API key needs to be copied into an MCP configuration. On the first paid call, AgentRouter opens a short browser approval flow and stores the connection privately on your device.</p></div><a class="dash-link" href="/agent">Install AgentRouter →</a></div><div id="agent-connection-list"></div></article><div class="dash-grid dash-section"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Developer API keys</h2><p>An advanced fallback for CI and headless servers that cannot open a browser. Most people never need one.</p></div></div><form class="dash-form" id="api-key-form"><label for="api-key-label">Client label</label><div class="dash-form-row"><input id="api-key-label" name="label" value="CI server" maxlength="120"><button class="dash-button" type="submit">Create key</button></div></form><div class="dash-key-result" id="api-key-result" hidden><b>Copy this key now. It will not be shown again.</b><code id="api-key-value"></code><button class="dash-button secondary" id="copy-api-key" type="button">Copy key</button><small>Use this only for CI or a headless server. Never paste it into a chat.</small></div><div class="dash-card-head dash-section"><div><h3>Your keys</h3><p>The full secret is stored only as a hash and is never shown again. The hint below is enough to tell one key from another.</p></div></div><div id="api-key-list"></div></article><aside class="dash-panel dash-card"><h2>Security model</h2><p>Browser-approved connections can use only this account's prepaid balance. They never expose GitHub credentials or provider API keys and can be disconnected at any time.</p><p>Every call, from a browser connection or a key, is capped by the per-call spending limit set on the Credits page.</p></aside></div><article class="dash-panel dash-card dash-section" id="platform-identity-card"><div class="dash-card-head"><div><h2>BNB Chain platform identity</h2><p>Register the ERC-8004 identity for AgentRouter-operated services. Third-party Vendor reputation is kept on separate Vendor Agent IDs.</p></div><button class="dash-button" id="platform-identity-button" type="button">Register BSC identity</button></div><p class="dash-status" id="platform-identity-status" role="status">Checking registration status…</p></article><article class="dash-panel dash-card dash-section" id="vendor-identities-card"><div class="dash-card-head"><div><h2>Vendor identities</h2><p>Each Vendor receives one chain-generated ERC-8004 Agent ID shared by its services, so feedback never contaminates another Vendor's reputation.</p></div></div><div class="dash-actions" id="vendor-identities-list"><p class="dash-status">Loading Vendor identities…</p></div></article></section>
 
           <section class="dash-view" data-panel="activity" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Account activity</h2><p>Top-ups and billable service calls from your account ledger.</p></div></div><div class="dash-activity" id="activity-list"></div></article></section>
 
@@ -1408,6 +1408,72 @@ export function accountHtml({ auth = {} } = {}) {
             status.textContent = error?.code === 4001 ? "Registration cancelled." : (error.message || "Registration failed.");
           } finally { button.disabled = false; }
         });
+        async function loadVendorIdentities() {
+          const card = document.getElementById("vendor-identities-card");
+          const list = document.getElementById("vendor-identities-list");
+          const response = await fetch("/agent-router/erc8004/vendors");
+          if (!response.ok) { card.hidden = true; return; }
+          const payload = await response.json();
+          card.hidden = false;
+          list.replaceChildren();
+          for (const vendor of payload.vendors || []) {
+            const row = document.createElement("div");
+            row.className = "dash-action";
+            const copy = document.createElement("span");
+            const title = document.createElement("b");
+            title.textContent = vendor.title || vendor.provider_id;
+            const detail = document.createElement("small");
+            detail.textContent = vendor.agent_id
+              ? "ERC-8004 agent #" + vendor.agent_id + " · " + vendor.service_count + " service(s)"
+              : vendor.service_count + " service(s) · identity not registered";
+            copy.append(title, detail);
+            const button = document.createElement("button");
+            button.className = "dash-button";
+            button.type = "button";
+            button.dataset.vendorRegistration = vendor.registration_endpoint;
+            button.textContent = vendor.agent_id ? "Registered #" + vendor.agent_id : "Register Vendor";
+            button.disabled = Boolean(vendor.agent_id);
+            row.append(copy, button);
+            list.append(row);
+          }
+          if (!list.childElementCount) {
+            const empty = document.createElement("p");
+            empty.className = "dash-status";
+            empty.textContent = "No Vendor identities are available for this account.";
+            list.append(empty);
+          }
+        }
+        document.getElementById("vendor-identities-list").addEventListener("click", async (event) => {
+          const button = event.target.closest("[data-vendor-registration]");
+          if (!button) return;
+          button.disabled = true;
+          const original = button.textContent;
+          try {
+            if (!window.ethereum) throw new Error("No browser wallet detected. Open this page in a browser with an EVM wallet.");
+            const endpoint = button.dataset.vendorRegistration;
+            const configResponse = await fetch(endpoint);
+            const info = await configResponse.json();
+            if (!configResponse.ok) throw new Error(info.error?.message || "Vendor registration is unavailable.");
+            if (info.current_identity) { await loadVendorIdentities(); return; }
+            button.textContent = "Connect wallet…";
+            const [owner] = await window.ethereum.request({ method: "eth_requestAccounts" });
+            await ensurePlatformChain(info);
+            button.textContent = "Confirm in wallet…";
+            const txHash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from:owner, ...info.transaction }] });
+            for (let attempt = 0; attempt < 40; attempt++) {
+              button.textContent = "Confirming " + (attempt + 1) + "/40";
+              const response = await fetch(endpoint, { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ tx_hash:txHash, owner_address:owner }) });
+              const result = await response.json();
+              if (response.ok) { await loadVendorIdentities(); return; }
+              if (result.error?.code !== "ERC8004_RECEIPT_NOT_FOUND") throw new Error(result.error?.message || "Vendor registration could not be verified.");
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+            }
+            throw new Error("The Vendor registration transaction is still pending.");
+          } catch (error) {
+            button.textContent = error?.code === 4001 ? "Cancelled" : (error.message || "Registration failed");
+            setTimeout(() => { button.textContent = original; button.disabled = false; }, 3000);
+          }
+        });
         // The deposit needs confirmations before it can be credited, so the
         // claim is retried rather than failing the moment the block is young.
         async function claimWhenConfirmed(txHash, status) {
@@ -1503,8 +1569,9 @@ export function accountHtml({ auth = {} } = {}) {
           } catch (error) { status.className = "dash-status error"; status.textContent = error.message; }
           finally { button.disabled = false; }
         });
-        loadDepositInstructions();
-        loadPlatformIdentity().catch(() => {});
+            loadDepositInstructions();
+            loadPlatformIdentity().catch(() => {});
+            loadVendorIdentities().catch(() => {});
         document.getElementById("api-key-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/account/api-keys", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ label:document.getElementById("api-key-label").value }) }); const payload = await response.json(); if (!response.ok) { alert(payload.error?.message || "Key creation failed."); return; } document.getElementById("api-key-value").textContent = payload.api_key; document.getElementById("api-key-result").hidden = false; await loadDashboard(); });
         document.getElementById("copy-api-key").addEventListener("click", async () => { await navigator.clipboard.writeText(document.getElementById("api-key-value").textContent); document.getElementById("copy-api-key").textContent = "Copied"; });
                 for (const listId of ["agent-connection-list", "api-key-list"]) document.getElementById(listId).addEventListener("click", async (event) => { const button = event.target.closest("[data-revoke-key]"); if (!button) return; button.disabled = true; const response = await fetch("/account/api-keys/" + encodeURIComponent(button.dataset.revokeKey) + "/revoke", { method:"POST" }); const payload = await response.json(); if (!response.ok) { alert(payload.error?.message || "Could not disconnect this agent."); button.disabled = false; return; } await loadDashboard(); });

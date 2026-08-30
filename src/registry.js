@@ -59,6 +59,8 @@ export function registerService(store, manifest, baseUrl) {
   };
   store.providers.set(normalized.provider.provider_id, normalized.provider);
   store.services.set(normalized.service_id, record);
+  const vendorIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(normalized.provider.provider_id));
+  if (vendorIdentity) applyErc8004RegistrationToManifest(record.manifest, vendorIdentity);
   return record;
 }
 
@@ -135,10 +137,26 @@ export async function registerServiceErc8004Identity(store, serviceId, { baseUrl
     error.code = "SERVICE_NOT_FOUND";
     throw error;
   }
+  const providerId = record.manifest.provider.provider_id;
+  const existing = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId));
+  if (existing) {
+    applyErc8004VendorIdentity(store, providerId, existing);
+    return {
+      ok: true,
+      service_id: serviceId,
+      provider_id: providerId,
+      reused: true,
+      persisted: true,
+      erc8004: existing,
+      manifest: record.manifest,
+      service: publicServiceRecord(record)
+    };
+  }
+  const vendorMetadataUri = metadataUri || `${String(baseUrl).replace(/\/$/, "")}/.well-known/erc8004/vendors/${encodeURIComponent(providerId)}.json`;
   const registration = await registerErc8004AgentIdentity({
     manifest: record.manifest,
     baseUrl,
-    metadataUri
+    metadataUri: vendorMetadataUri
   });
   if (!["registered", "submitted"].includes(registration.status)) {
     const error = new Error(registration.error || "ERC-8004 identity registration failed.");
@@ -148,7 +166,7 @@ export async function registerServiceErc8004Identity(store, serviceId, { baseUrl
     throw error;
   }
 
-  applyErc8004RegistrationToManifest(record.manifest, registration);
+  applyErc8004VendorIdentity(store, providerId, registration);
   record.updated_at = new Date().toISOString();
   if (record.manifest.provider?.provider_id) {
     store.providers.set(record.manifest.provider.provider_id, record.manifest.provider);
@@ -165,14 +183,13 @@ export async function registerServiceErc8004Identity(store, serviceId, { baseUrl
   }
 
   await writePersistentServiceEvent({
-    eventType: "erc8004_identity",
-    serviceId,
+    eventType: "erc8004_vendor_identity",
+    serviceId: `vendor:${providerId}`,
     requestId: registration.tx_hash || registration.agent_id || null,
     event: {
-      event_version: "agent_router_erc8004_identity_v1",
-      service_id: serviceId,
-      provider_id: record.manifest.provider.provider_id,
-      erc8004: registration,
+      event_version: "agent_router_erc8004_vendor_identity_v1",
+      provider_id: providerId,
+      ...registration,
       created_at: new Date().toISOString()
     }
   });
@@ -180,6 +197,7 @@ export async function registerServiceErc8004Identity(store, serviceId, { baseUrl
   return {
     ok: true,
     service_id: serviceId,
+    provider_id: providerId,
     persisted,
     erc8004: registration,
     manifest: record.manifest,
@@ -195,7 +213,7 @@ function applyPayoutToManifest(manifest, payoutAddress) {
   manifest.pricing.settlement_model = "direct_provider_wallet";
 }
 
-function applyErc8004RegistrationToManifest(manifest, registration = {}) {
+export function applyErc8004RegistrationToManifest(manifest, registration = {}) {
   manifest.registration = {
     ...(manifest.registration || {}),
     erc8004: {
@@ -217,6 +235,28 @@ function applyErc8004RegistrationToManifest(manifest, registration = {}) {
   };
   manifest.provider = manifest.provider || {};
   if (registration.agent_id) manifest.provider.erc8004_agent_id = String(registration.agent_id);
+}
+
+export function vendorIdentityStoreKey(providerId, network = settlementChain().network) {
+  return `${String(network || "").toLowerCase()}:${String(providerId || "").trim()}`;
+}
+
+export function applyErc8004VendorIdentity(store, providerId, registration = {}) {
+  if (!providerId || !registration?.agent_id) return null;
+  const identity = { ...registration, provider_id: providerId };
+  store.erc8004VendorIdentities ||= new Map();
+  store.erc8004VendorIdentities.set(vendorIdentityStoreKey(providerId, identity.network), identity);
+  for (const record of store.services.values()) {
+    if (record.manifest?.provider?.provider_id !== providerId) continue;
+    applyErc8004RegistrationToManifest(record.manifest, identity);
+    record.updated_at = new Date().toISOString();
+  }
+  const provider = store.providers.get(providerId);
+  if (provider) {
+    provider.erc8004_agent_id = String(identity.agent_id);
+    store.providers.set(providerId, provider);
+  }
+  return identity;
 }
 
 function normalizeManifestCapabilities(manifest) {
@@ -1172,6 +1212,12 @@ export async function hydrateServiceEventRows(store, events = []) {
       store.erc8004PlatformIdentities ||= new Map();
       if (event?.network && event?.agent_id) {
         store.erc8004PlatformIdentities.set(event.network, event);
+      }
+      continue;
+    }
+    if (row.event_type === "erc8004_vendor_identity") {
+      if (event?.provider_id && event?.network && event?.agent_id) {
+        applyErc8004VendorIdentity(store, event.provider_id, event);
       }
       continue;
     }

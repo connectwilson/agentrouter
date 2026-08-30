@@ -9,7 +9,7 @@ import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
   fetchApifyActorMetadata,
   handleMockUpstreamApify } from "./provider-runtime.js";
-import { feedbackGrantActorKey, hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
+import { applyErc8004VendorIdentity, feedbackGrantActorKey, hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, vendorIdentityStoreKey, withCurrentRuntimeEndpoint } from "./registry.js";
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
 import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabilityRequest, routeTask } from "./router.js";
@@ -201,6 +201,14 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "GET" && /^\/\.well-known\/erc8004\/vendors\/[^/]+\.json$/.test(url.pathname)) {
+    const providerId = decodeURIComponent(url.pathname.split("/").pop().replace(/\.json$/, ""));
+    const manifest = vendorIdentityManifest(store, providerId, baseUrl);
+    if (!manifest) return sendNotFound(res, "VENDOR_NOT_FOUND");
+    sendJson(res, 200, createErc8004AgentMetadata({ manifest, baseUrl }), { "cache-control": "public, max-age=300" });
+    return;
+  }
+
   if (["GET", "POST"].includes(req.method) && url.pathname === "/agent-router/erc8004/platform-registration") {
     if (!requirePlatformOperator(req, res, auth)) return;
     const agentUri = `${String(baseUrl).replace(/\/$/, "")}/.well-known/erc8004/platform.json`;
@@ -246,6 +254,70 @@ async function routeRequest(req, res, store, baseUrl, {
     await writePersistentServiceEvent({
       eventType: "erc8004_platform_identity",
       serviceId: "agentrouter_external_api_platform",
+      requestId: identity.tx_hash,
+      event
+    });
+    sendJson(res, 200, { ok: true, status: "registered", identity: event });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/erc8004/vendors") {
+    if (!requireAuth(req, res, auth, url)) return;
+    const vendors = listRegisterableVendors(store, auth);
+    sendJson(res, 200, { vendors });
+    return;
+  }
+
+  const vendorRegistrationMatch = url.pathname.match(/^\/agent-router\/erc8004\/vendors\/([^/]+)\/registration$/);
+  if (["GET", "POST"].includes(req.method) && vendorRegistrationMatch) {
+    if (!requireAuth(req, res, auth, url)) return;
+    const providerId = decodeURIComponent(vendorRegistrationMatch[1]);
+    const manifest = vendorIdentityManifest(store, providerId, baseUrl);
+    if (!manifest) return sendNotFound(res, "VENDOR_NOT_FOUND");
+    if (!requireVendorIdentityOwner(req, res, auth, store, providerId)) return;
+    const agentUri = `${String(baseUrl).replace(/\/$/, "")}/.well-known/erc8004/vendors/${encodeURIComponent(providerId)}.json`;
+    const registration = createErc8004RegistrationTransaction({ agentUri });
+    const currentIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId, registration.network)) || null;
+    if (req.method === "GET") {
+      sendJson(res, 200, { ...registration, provider_id: providerId, current_identity: currentIdentity });
+      return;
+    }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
+    const body = await readJson(req);
+    if (currentIdentity) {
+      if (String(currentIdentity.tx_hash || "").toLowerCase() === String(body.tx_hash || "").toLowerCase()) {
+        sendJson(res, 200, { ok: true, status: "already_registered", identity: currentIdentity });
+        return;
+      }
+      sendJson(res, 409, { error: { code: "ERC8004_VENDOR_IDENTITY_EXISTS", message: "This Vendor already has an ERC-8004 identity on this chain." }, identity: currentIdentity });
+      return;
+    }
+    let identity;
+    try {
+      identity = await erc8004RegistrationVerifier({
+        txHash: body.tx_hash,
+        expected: {
+          chainId: registration.chain_id,
+          registryAddress: registration.transaction.to,
+          agentUri,
+          ownerAddress: body.owner_address
+        }
+      });
+    } catch (error) {
+      error.statusCode = error.code === "ERC8004_RECEIPT_NOT_FOUND" ? 409 : 422;
+      throw error;
+    }
+    const event = {
+      event_version: "agent_router_erc8004_vendor_identity_v1",
+      ...identity,
+      provider_id: providerId,
+      registered_by: authUserKey(auth.user),
+      created_at: new Date().toISOString()
+    };
+    applyErc8004VendorIdentity(store, providerId, event);
+    await writePersistentServiceEvent({
+      eventType: "erc8004_vendor_identity",
+      serviceId: `vendor:${providerId}`,
       requestId: identity.tx_hash,
       event
     });
@@ -1537,6 +1609,23 @@ function requirePlatformOperator(req, res, auth) {
     sendJson(res, 401, { error: { code: "AUTH_REQUIRED", message: "Sign in before registering the AgentRouter platform identity." } });
     return false;
   }
+  if (!platformOperatorMatches(auth)) {
+    const configured = Boolean(String(process.env.ADN_PLATFORM_OPERATOR_OWNER_KEY || "").trim() || String(process.env.ADN_PLATFORM_OPERATOR_GITHUB_LOGIN || "").trim());
+    sendJson(res, configured ? 403 : 503, {
+      error: {
+        code: configured ? "PLATFORM_OPERATOR_REQUIRED" : "PLATFORM_OPERATOR_NOT_CONFIGURED",
+        message: configured
+          ? "Only the configured AgentRouter platform operator can register this identity."
+          : "Platform identity registration is not enabled for an operator account."
+      }
+    });
+    return false;
+  }
+  return true;
+}
+
+function platformOperatorMatches(auth) {
+  if (!auth.user) return false;
   const actorKey = authUserKey(auth.user);
   const allowed = String(process.env.ADN_PLATFORM_OPERATOR_OWNER_KEY || "")
     .split(",")
@@ -1544,15 +1633,24 @@ function requirePlatformOperator(req, res, auth) {
     .filter(Boolean);
   const githubLogin = String(process.env.ADN_PLATFORM_OPERATOR_GITHUB_LOGIN || "").trim().toLowerCase();
   const githubLoginMatches = githubLogin && auth.user.provider === "github" && String(auth.user.handle || "").toLowerCase() === githubLogin;
-  if (!allowed.length && !githubLogin) {
-    sendJson(res, 503, { error: { code: "PLATFORM_OPERATOR_NOT_CONFIGURED", message: "Platform identity registration is not enabled for an operator account." } });
-    return false;
-  }
-  if (!allowed.includes(actorKey) && !githubLoginMatches) {
-    sendJson(res, 403, { error: { code: "PLATFORM_OPERATOR_REQUIRED", message: "Only the configured AgentRouter platform operator can register this identity." } });
-    return false;
-  }
-  return true;
+  return allowed.includes(actorKey) || Boolean(githubLoginMatches);
+}
+
+function requireVendorIdentityOwner(req, res, auth, store, providerId) {
+  if (auth.user?.role === "admin" || platformOperatorMatches(auth)) return true;
+  const actorKey = authUserKey(auth.user);
+  const owned = [...store.services.values()].some((record) =>
+    record.manifest?.provider?.provider_id === providerId &&
+    record.manifest?.registration?.owner?.user_key === actorKey
+  );
+  if (owned) return true;
+  sendJson(res, 403, {
+    error: {
+      code: "VENDOR_IDENTITY_OWNER_REQUIRED",
+      message: "Only this Vendor's service owner or the configured platform operator can register its ERC-8004 identity."
+    }
+  });
+  return false;
 }
 
 function sendAuthRequired(res, message) {
@@ -3682,12 +3780,13 @@ function resolveFeedbackServiceId(store, requestId) {
 
 async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "") {
   const record = store.services.get(feedbackResult.service_id);
-  const providerId = record?.manifest?.provider?.provider_id || feedbackResult.provider_id || "";
-  const feedbackManifest = record?.manifest || (
-    String(feedbackResult.service_id || "").startsWith("external_api_")
-      ? platformIdentityManifest(store)
-      : null
+  const invocation = [...(store.feedbackEvents || [])].reverse().find((event) =>
+    event.request_id === feedbackResult.request_id && event.service_id === feedbackResult.service_id
   );
+  const providerId = record?.manifest?.provider?.provider_id || feedbackResult.provider_id || invocation?.provider_id || "";
+  const feedbackManifest = record?.manifest
+    || vendorIdentityManifest(store, providerId, baseUrl)
+    || (providerId === "agentrouter_network" ? platformIdentityManifest(store) : null);
   const anchor = {
     status: "not_used",
     recorded_offchain: true,
@@ -3781,6 +3880,75 @@ function platformIdentityManifest(store) {
     pricing: { amount: "0", currency: "USDC", protocol: "none" },
     registration: identity ? { erc8004: identity } : {}
   };
+}
+
+function vendorIdentityManifest(store, providerId, baseUrl = "") {
+  const records = [...store.services.values()].filter((record) =>
+    record.manifest?.provider?.provider_id === providerId
+  );
+  const external = getExternalApiCatalog(store, "").find((item) => item.provider_id === providerId) || null;
+  if (!records.length && !external) return null;
+  const chain = settlementChain();
+  const identity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId, chain.network)) || null;
+  const provider = store.providers.get(providerId) || {};
+  const services = records.map((record) => ({
+    service_id: record.manifest.service_id,
+    title: record.manifest.title,
+    description_for_agent: record.manifest.description_for_agent,
+    capabilities: record.manifest.capabilities || [],
+    pricing: record.manifest.pricing || {},
+    endpoint: `${String(baseUrl).replace(/\/$/, "")}/agent-router/service?service_id=${encodeURIComponent(record.manifest.service_id)}`
+  }));
+  if (external) {
+    services.push({
+      service_id: external.service_id,
+      title: external.display_title || external.title,
+      description_for_agent: external.description_for_agent,
+      capabilities: external.capabilities || [],
+      pricing: { amount: String(external.agentrouter_price || 0), currency: "USDC", protocol: "none" },
+      endpoint: `${String(baseUrl).replace(/\/$/, "")}/agent-router/service?service_id=${encodeURIComponent(external.service_id)}`
+    });
+  }
+  return {
+    manifest_type: "agentrouter_vendor_identity",
+    service_id: `vendor:${providerId}`,
+    version: "1.0.0",
+    title: provider.provider_name || external?.display_title || external?.title || providerId,
+    description_for_agent: `ERC-8004 identity for ${providerId} services routed through AgentRouter.`,
+    status: "published",
+    provider: { ...provider, provider_id: providerId },
+    capabilities: [...new Set(services.flatMap((service) => service.capabilities || []))],
+    services,
+    pricing: { amount: "0", currency: "USDC", protocol: "none" },
+    registration: identity ? { erc8004: identity } : {}
+  };
+}
+
+function listRegisterableVendors(store, auth) {
+  const actorKey = authUserKey(auth.user);
+  const providerIds = new Set([...store.services.values()]
+    .filter((record) => auth.user?.role === "admin" || record.manifest?.registration?.owner?.user_key === actorKey)
+    .map((record) => record.manifest?.provider?.provider_id)
+    .filter(Boolean));
+  if (platformOperatorMatches(auth)) {
+    for (const source of getExternalApiCatalog(store, actorKey)) {
+      if (source.implementation_status === "available" && source.provider_id) providerIds.add(source.provider_id);
+    }
+  }
+  const chain = settlementChain();
+  return [...providerIds].sort().map((providerId) => {
+    const manifest = vendorIdentityManifest(store, providerId, "");
+    const identity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId, chain.network)) || null;
+    return {
+      provider_id: providerId,
+      title: manifest?.title || providerId,
+      service_count: manifest?.services?.length || 0,
+      chain: chain.network,
+      agent_id: identity?.agent_id || null,
+      identity,
+      registration_endpoint: `/agent-router/erc8004/vendors/${encodeURIComponent(providerId)}/registration`
+    };
+  });
 }
 
 async function recordClientSubmittedErc8004Feedback(store, body = {}) {

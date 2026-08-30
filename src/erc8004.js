@@ -170,11 +170,8 @@ function resolveErc8004AgentIdentity({ serviceId, manifest } = {}) {
 
   const serviceEnvName = serviceId ? `ADN_ERC8004_AGENT_ID_${envKey(serviceId)}` : "";
   if (serviceEnvName && process.env[serviceEnvName]) return { agentId: process.env[serviceEnvName], source: "service_override" };
-  const externalApiEnvName = `ADN_ERC8004_EXTERNAL_API_AGENT_ID_${envKey(settlementChain().network)}`;
   if (String(serviceId || "").startsWith("external_api_")) {
-    return process.env[externalApiEnvName]
-      ? { agentId: process.env[externalApiEnvName], source: "external_api_platform" }
-      : { agentId: "", source: "external_api_platform_not_configured" };
+    return { agentId: "", source: "external_vendor_not_configured" };
   }
   if (process.env.ADN_ERC8004_AGENT_ID) return { agentId: process.env.ADN_ERC8004_AGENT_ID, source: "global_fallback" };
 
@@ -208,6 +205,16 @@ export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
   const detailUrl = origin && serviceId ? `${origin}/agent-router/service?service_id=${encodeURIComponent(serviceId)}` : "";
   const feedbackUrl = origin ? `${origin}/agent-router/feedback` : "/agent-router/feedback";
   const agentId = resolveErc8004AgentId({ serviceId, manifest });
+  const describedServices = Array.isArray(manifest?.services) && manifest.services.length
+    ? manifest.services
+    : [{
+      service_id: serviceId,
+      title: manifest?.title || serviceId,
+      description_for_agent: manifest?.description_for_agent || "",
+      capabilities: manifest?.capabilities || [],
+      pricing: manifest?.pricing || {},
+      endpoint: detailUrl
+    }];
   // Canonical EIP-8004 registration card. The keys below are the ones indexers
   // (8004scan) read: `type` must be the EIP's schema URL, `supportedTrust` is
   // camelCase, and `image` is what renders the agent in a listing — we shipped
@@ -223,23 +230,24 @@ export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
     active: manifest?.status ? manifest.status === "published" : true,
     x402Support: (manifest?.pricing?.protocol || "x402") === "x402",
     supportedTrust: ["reputation", "validation"],
-    services: [
-      {
+    services: describedServices.map((service) => {
+      const describedServiceId = service.service_id || "";
+      return {
         name: "agentrouter_data_api",
-        endpoint: detailUrl,
-        service_id: serviceId,
-        title: manifest?.title || serviceId,
-        description: manifest?.description_for_agent || "",
-        capabilities: manifest?.capabilities || [],
+        endpoint: service.endpoint || (origin && describedServiceId ? `${origin}/agent-router/service?service_id=${encodeURIComponent(describedServiceId)}` : ""),
+        service_id: describedServiceId,
+        title: service.title || describedServiceId,
+        description: service.description_for_agent || service.description || "",
+        capabilities: service.capabilities || [],
         price: {
-          amount: manifest?.pricing?.amount || null,
-          currency: manifest?.pricing?.currency || null,
-          network: manifest?.pricing?.network || null,
-          payment_protocol: manifest?.pricing?.protocol || "x402"
+          amount: service.pricing?.amount || null,
+          currency: service.pricing?.currency || null,
+          network: service.pricing?.network || null,
+          payment_protocol: service.pricing?.protocol || "x402"
         },
         feedback_endpoint: feedbackUrl
-      }
-    ],
+      };
+    }),
     registrations: [
       {
         // Null until the identity is minted — the EIP's own cards carry null
@@ -554,6 +562,7 @@ export function createErc8004FeedbackDescriptor({ requestId, serviceId, provider
       feedback: feedback || null
     }),
     request_id: requestId || null,
+    provider_id: providerId || null,
     service_hash: hashJson(serviceId || ""),
     provider_hash: hashJson(providerId || ""),
     created_at: new Date().toISOString()

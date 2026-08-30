@@ -29,7 +29,7 @@ async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test("platform operator registers the BSC identity with a browser wallet and feedback uses it immediately", async () => {
+test("platform operator registers the BSC identity without leaking it into third-party Vendor feedback", async () => {
   await withEnv({
     ADN_SETTLEMENT_CHAIN: "bsc",
     ADN_PLATFORM_OPERATOR_OWNER_KEY: "local:local-development-user"
@@ -98,9 +98,9 @@ test("platform operator registers the BSC identity with a browser wallet and fee
       });
       const feedback = await feedbackResponse.json();
       assert.equal(feedbackResponse.status, 200);
-      assert.equal(feedback.erc8004.agent_id, "73352");
-      assert.equal(feedback.erc8004.agent_id_source, "manifest_registration");
-      assert.equal(feedback.trust_anchor.state, "onchain_pending");
+      assert.equal(feedback.erc8004.agent_id, null);
+      assert.equal(feedback.erc8004.agent_id_source, "external_vendor_not_configured");
+      assert.equal(feedback.trust_anchor.state, "offchain_recorded");
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

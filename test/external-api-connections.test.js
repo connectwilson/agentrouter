@@ -502,7 +502,7 @@ test("GDELT normalizes unsupported short keywords and falls back to its direct H
   assert.equal(new URL(requests[0]).searchParams.get("query"), "artificial intelligence Agent payments");
 });
 
-test("external API feedback uses a chain-specific platform identity instead of a provider or cross-chain token", () => {
+test("external API feedback requires a Vendor identity and never inherits a platform or cross-chain token", () => {
   const previousChain = process.env.ADN_SETTLEMENT_CHAIN;
   const previousExternal = process.env.ADN_ERC8004_EXTERNAL_API_AGENT_ID_BSC;
   const previousGlobal = process.env.ADN_ERC8004_AGENT_ID;
@@ -513,15 +513,15 @@ test("external API feedback uses a chain-specific platform identity instead of a
     const external = createErc8004FeedbackDescriptor({ serviceId: "external_api_open_meteo" });
     const provider = createErc8004FeedbackDescriptor({ serviceId: "provider_owned_service" });
 
-    assert.equal(external.agent_id, "7004");
-    assert.equal(external.agent_id_source, "external_api_platform");
+    assert.equal(external.agent_id, null);
+    assert.equal(external.agent_id_source, "external_vendor_not_configured");
     assert.equal(provider.agent_id, "9001");
     assert.equal(provider.agent_id_source, "global_fallback");
 
     process.env.ADN_SETTLEMENT_CHAIN = "arc-testnet";
     const otherChain = createErc8004FeedbackDescriptor({ serviceId: "external_api_open_meteo" });
     assert.equal(otherChain.agent_id, null, "a BSC platform token must not leak onto Arc");
-    assert.equal(otherChain.agent_id_source, "external_api_platform_not_configured");
+    assert.equal(otherChain.agent_id_source, "external_vendor_not_configured");
   } finally {
     if (previousChain === undefined) delete process.env.ADN_SETTLEMENT_CHAIN;
     else process.env.ADN_SETTLEMENT_CHAIN = previousChain;
