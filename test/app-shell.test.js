@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentHtml, homeHtml } from "../src/home.js";
+import { agentHtml, homeHtml, serviceDetailHtml } from "../src/home.js";
 import { researchHtml } from "../src/research.js";
 import { studioHtml } from "../src/studio.js";
 
@@ -120,4 +120,45 @@ test("agent hub service grid keeps three equal columns without content-driven ov
   assert.match(hub, /\.market-shell\.list-only > section \{ min-width:0; \}/);
   assert.match(hub, /\.market-grid > \.api-card \{ width:100%; min-width:0; \}/);
   assert.match(hub, /\.api-heading>div:last-child\{min-width:0\}/);
+  assert.match(hub, /\.network-tables>section\{min-width:0\}/);
+  assert.match(hub, /\.pager\{[^}]*flex-wrap:wrap/);
+  assert.match(hub, /\.pager-pages\{[^}]*flex-wrap:wrap/);
+});
+
+test("research mobile header keeps actions readable without duplicate home navigation", () => {
+  const page = researchHtml({ authenticated: false });
+
+  assert.match(page, /class="research-nav"/);
+  assert.match(page, /@media\(max-width:560px\)/);
+  assert.doesNotMatch(page, /<a href="\/">AgentRouter<\/a>/);
+  assert.match(page, /id="question-error" role="alert"/);
+  assert.match(page, /#question:focus:placeholder-shown\+\.question-error\{display:block\}/);
+});
+
+test("service detail explains trust separately from evidence traces", () => {
+  const page = serviceDetailHtml({
+    service: {
+      service_id: "external_api_exa",
+      title: "Exa",
+      trust: {
+        feedback_state: "observed",
+        trust_score: 0.84,
+        trust_score_confidence: 0.96,
+        operational_feedback_count: 118,
+        consumer_feedback_count: 4,
+        success_rate: 1
+      },
+      trust_basis: {
+        model: "observed_call_feedback",
+        caveat: "This score is not proof of claim-level factual accuracy."
+      }
+    },
+    manifest: { service_id: "external_api_exa", pricing: { amount: "0", currency: "USDC" } },
+    recent_evidence_events: [],
+    recent_quality_events: []
+  });
+
+  assert.match(page, /Trust basis/);
+  assert.match(page, /observed_call_feedback/);
+  assert.match(page, /not proof of claim-level factual accuracy/);
 });

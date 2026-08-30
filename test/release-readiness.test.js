@@ -31,6 +31,13 @@ test("release CI runs tests, package smoke checks, and dependency audit", async 
   assert.match(workflow, /mcp-package-smoke/);
 });
 
+test("packed MCP smoke test bounds pack and install subprocess time", async () => {
+  const smoke = await fs.readFile("scripts/mcp-package-smoke.js", "utf8");
+  assert.match(smoke, /timeout:\s*\d+/);
+  assert.match(smoke, /Packing MCP package/);
+  assert.match(smoke, /Installing packed MCP/);
+});
+
 test("hosted readiness requires one shared browser handoff signing secret", async () => {
   const missing = await agentRouterReadiness({
     persistenceProbe: async () => ({ ok: true, checks: { database: { ok: true } } }),

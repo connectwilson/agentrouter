@@ -1,6 +1,13 @@
+import crypto from "node:crypto";
+import dns from "node:dns";
 import { readProviderSecret } from "./provider-secrets.js";
 import { writePersistentServiceEvent } from "./persistence.js";
 import { publicReputation, summarizeTrust } from "./store.js";
+import { hashJson } from "./evidence.js";
+
+// Several hosted runtimes advertise unreachable IPv6 routes. Prefer IPv4
+// before falling back to IPv6 so public connectors do not fail at DNS handoff.
+dns.setDefaultResultOrder("ipv4first");
 
 const AI_SEARCH_SOURCES = new Set([
   "brave_search", "tavily", "serper", "exa", "firecrawl", "jina",
@@ -276,6 +283,14 @@ export function getExternalApiServiceDetail(store, serviceId, ownerKey) {
       verification_status: "verified",
       pricing: manifest.pricing,
       trust: sourceItem.trust,
+      trust_basis: {
+        model: "observed_call_feedback",
+        operational_calls: sourceItem.trust?.operational_feedback_count || 0,
+        consumer_ratings: sourceItem.trust?.consumer_feedback_count || 0,
+        evidence_traces: 0,
+        components: ["runtime success", "schema validity", "consumer intent fit", "consumer usefulness"],
+        caveat: "This score summarizes observed routing and call outcomes. It is not proof of claim-level factual accuracy, and this connector currently has no paid-call evidence trace."
+      },
       health: sourceItem.health,
       pre_call_context: manifest.pre_call_context,
       request_data: manifest.input_schema,
@@ -754,7 +769,9 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     limit,
     params,
     secret,
-    fetchImpl: options.fetchImpl || globalThis.fetch
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    fetchRetries: options.fetchRetries ?? (options.fetchImpl ? 0 : 1),
+    fetchTimeoutMs: options.fetchTimeoutMs
   });
   const invocation = recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, {
     ...options,
@@ -767,7 +784,11 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
       request_id: invocation.requestId,
       service_id: invocation.serviceId,
       source: publicSource(definition),
-      error: { code: response.status.toUpperCase(), message: response.error },
+      error: {
+        code: response.status.toUpperCase(),
+        message: response.error,
+        ...(response.diagnostics ? { diagnostics: response.diagnostics } : {})
+      },
       consumer_feedback_request: consumerFeedbackRequest(invocation, { source: sourceId, operation, query })
     };
   }
@@ -883,6 +904,7 @@ function consumerFeedbackRequest(invocation, { source, operation, query }) {
     method: "POST",
     request_id: invocation.requestId,
     service_id: invocation.serviceId,
+    feedback_token: invocation.feedbackToken,
     tool: "agentrouter_feedback",
     instructions: [
       "Submit after deciding whether these results helped answer the user's task.",
@@ -894,6 +916,7 @@ function consumerFeedbackRequest(invocation, { source, operation, query }) {
     // rejected the moment an agent followed it.
     example: {
       request_id: invocation.requestId,
+      feedback_token: invocation.feedbackToken,
       feedback: {
         intent_fit: "yes",
         answer_useful: "yes",
@@ -909,6 +932,8 @@ function consumerFeedbackRequest(invocation, { source, operation, query }) {
 function recordExternalApiInvocation(store, definition, response, latencyMs, options) {
   const serviceId = `external_api_${definition.source}`;
   const requestId = `external_${definition.source}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const feedbackToken = crypto.randomBytes(32).toString("base64url");
+  const feedbackActorKey = `feedback_grant:${hashJson(feedbackToken)}`;
   const successful = response.ok === true;
   const event = {
     event_version: "agent_external_api_feedback_v1",
@@ -941,7 +966,19 @@ function recordExternalApiInvocation(store, definition, response, latencyMs, opt
   });
   const writer = options.writeServiceEvent || writePersistentServiceEvent;
   Promise.resolve(writer({ eventType: "operational_feedback", serviceId, requestId, event })).catch(() => {});
-  return { requestId, serviceId };
+  const grant = {
+    event_version: "agent_invocation_feedback_grant_v1",
+    request_id: requestId,
+    service_id: serviceId,
+    actor_key: feedbackActorKey,
+    token_hash: hashJson(feedbackToken),
+    created_at: event.created_at,
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  };
+  store.feedbackGrants ||= new Map();
+  store.feedbackGrants.set(requestId, grant);
+  Promise.resolve(writer({ eventType: "invocation_feedback_grant", serviceId, requestId, event: grant })).catch(() => {});
+  return { requestId, serviceId, feedbackToken };
 }
 
 function validateSourceParams(sourceId, operation, params) {
@@ -1159,11 +1196,16 @@ async function invokeSource(sourceId, context) {
   try {
     if (sourceId === "xpoz" || sourceId === "socialdatax") return invokeSocialVendorMcp(sourceId, context);
     if (sourceId === "open_meteo") return invokeOpenMeteo(context);
+    if (sourceId === "gdelt") return invokeGdelt(context);
     if (sourceId === "geckoterminal") return invokeGeckoTerminal(context);
     if (sourceId === "sec_edgar") return invokeSecEdgar(context);
     const request = buildRequest(sourceId, context);
     if (!request) return { ok: false, status: "provider_error", error: "Connector is not implemented.", items: [] };
-    const fetched = await fetchJson(context.fetchImpl, request.url, request.options);
+    const fetched = await fetchJson(context.fetchImpl, request.url, request.options, {
+      stage: `${sourceId}_request`,
+      retries: context.fetchRetries,
+      timeoutMs: context.fetchTimeoutMs
+    });
     if (!fetched.ok) return fetched;
     return { ok: true, status: "completed", items: normalizeItems(sourceId, fetched.payload, context).slice(0, context.limit) };
   } catch (error) {
@@ -1224,7 +1266,8 @@ function buildRequest(sourceId, context) {
     url.searchParams.set("mode", "artlist");
     url.searchParams.set("format", "json");
     url.searchParams.set("maxrecords", String(limit));
-    return get(url);
+    url.searchParams.set("timespan", clean(params.timespan, 20) || "1week");
+    return get(url, { accept: "application/json", "user-agent": "AgentRouter/0.13 (+https://agentrouter.network)" });
   }
   if (sourceId === "youtube") {
     const url = new URL("https://www.googleapis.com/youtube/v3/search");
@@ -1516,12 +1559,16 @@ function normalizeCoinmarketcap(payload) {
   });
 }
 
-async function invokeOpenMeteo({ query, fetchImpl }) {
+async function invokeOpenMeteo({ query, fetchImpl, fetchRetries, fetchTimeoutMs }) {
   const geocodeUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
   geocodeUrl.searchParams.set("name", query);
   geocodeUrl.searchParams.set("count", "1");
   geocodeUrl.searchParams.set("language", "en");
-  const geocoded = await fetchJson(fetchImpl, geocodeUrl, {});
+  const geocoded = await fetchJson(fetchImpl, geocodeUrl, {}, {
+    stage: "open_meteo_geocoding",
+    retries: fetchRetries,
+    timeoutMs: fetchTimeoutMs
+  });
   if (!geocoded.ok) return geocoded;
   const location = geocoded.payload.results?.[0];
   if (!location) return { ok: true, status: "completed", items: [] };
@@ -1530,7 +1577,11 @@ async function invokeOpenMeteo({ query, fetchImpl }) {
   forecastUrl.searchParams.set("longitude", String(location.longitude));
   forecastUrl.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m");
   forecastUrl.searchParams.set("timezone", location.timezone || "auto");
-  const forecast = await fetchJson(fetchImpl, forecastUrl, {});
+  const forecast = await fetchJson(fetchImpl, forecastUrl, {}, {
+    stage: "open_meteo_forecast",
+    retries: fetchRetries,
+    timeoutMs: fetchTimeoutMs
+  });
   if (!forecast.ok) return forecast;
   const current = forecast.payload.current || {};
   const units = forecast.payload.current_units || {};
@@ -1556,6 +1607,89 @@ async function invokeOpenMeteo({ query, fetchImpl }) {
       }
     }]
   };
+}
+
+async function invokeGdelt(context) {
+  const request = buildRequest("gdelt", context);
+  const direct = await fetchJson(context.fetchImpl, request.url, request.options, {
+    stage: "gdelt_direct",
+    retries: 0,
+    timeoutMs: Math.min(Number(context.fetchTimeoutMs) || 6_000, 6_000)
+  });
+  if (direct.ok) {
+    return {
+      ok: true,
+      status: "completed",
+      items: normalizeItems("gdelt", direct.payload, context).slice(0, context.limit),
+      coverage: { provider: "gdelt", retrieval_path: "direct" }
+    };
+  }
+
+  // GDELT's public DOC endpoint periodically accepts a connection without
+  // completing the response. Jina's reader proxy fetches that exact public
+  // endpoint; it is a transport fallback, not a different news/search source.
+  const upstreamUrl = String(request.url).replace(/^https:/, "http:");
+  const proxyUrl = `https://r.jina.ai/${upstreamUrl}`;
+  const proxied = await fetchTextJson(context.fetchImpl, proxyUrl, {
+    headers: { accept: "text/plain", "user-agent": "AgentRouter/0.13 (+https://agentrouter.network)" }
+  }, {
+    stage: "gdelt_jina_transport_fallback",
+    timeoutMs: Math.max(12_000, Number(context.fetchTimeoutMs) || 18_000)
+  });
+  if (!proxied.ok) {
+    return {
+      ...direct,
+      diagnostics: {
+        ...direct.diagnostics,
+        fallback_attempted: true,
+        fallback: proxied.diagnostics
+      }
+    };
+  }
+  return {
+    ok: true,
+    status: "completed",
+    items: normalizeItems("gdelt", proxied.payload, context).slice(0, context.limit),
+    coverage: {
+      provider: "gdelt",
+      retrieval_path: "jina_transport_proxy",
+      upstream_url: String(request.url)
+    }
+  };
+}
+
+async function fetchTextJson(fetchImpl, url, options = {}, { stage, timeoutMs }) {
+  const safeTimeoutMs = Math.max(1_000, Math.min(Number(timeoutMs) || 18_000, 30_000));
+  const traceId = `arup_${crypto.randomBytes(9).toString("base64url")}`;
+  try {
+    const response = await fetchImpl(url, { ...options, signal: options.signal || AbortSignal.timeout(safeTimeoutMs) });
+    if (!response.ok) {
+      return {
+        ok: false,
+        diagnostics: { stage, category: "upstream_server", retryable: response.status >= 500, http_status: response.status, trace_id: traceId }
+      };
+    }
+    const text = await response.text();
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) throw new Error("Proxy response did not contain GDELT JSON.");
+    return { ok: true, payload: JSON.parse(text.slice(start, end + 1)) };
+  } catch (error) {
+    const upstreamCode = clean(error?.cause?.code || error?.code, 80) || null;
+    const timedOut = error?.name === "AbortError" || error?.name === "TimeoutError" || upstreamCode === "UND_ERR_CONNECT_TIMEOUT";
+    return {
+      ok: false,
+      diagnostics: {
+        stage,
+        category: timedOut ? "timeout" : "network",
+        retryable: true,
+        upstream_code: upstreamCode,
+        http_status: null,
+        timeout_ms: safeTimeoutMs,
+        trace_id: traceId
+      }
+    };
+  }
 }
 
 async function invokeSecEdgar({ query, limit, fetchImpl }) {
@@ -1593,20 +1727,60 @@ async function invokeSecEdgar({ query, limit, fetchImpl }) {
   return { ok: true, status: "completed", items };
 }
 
-async function fetchJson(fetchImpl, url, options) {
+async function fetchJson(fetchImpl, url, options = {}, {
+  stage = "upstream_request",
+  retries = 0,
+  timeoutMs = 10_000
+} = {}) {
+  const safeRetries = Math.max(0, Math.min(Number(retries) || 0, 2));
+  const safeTimeoutMs = Math.max(1_000, Math.min(Number(timeoutMs) || 10_000, 30_000));
+  const traceId = `arup_${crypto.randomBytes(9).toString("base64url")}`;
   let response;
   let payload;
-  try {
-    response = await fetchImpl(url, options);
-    payload = await response.json().catch(() => ({}));
-  } catch (error) {
-    return { ok: false, status: "provider_error", error: clean(error.message, 300), items: [] };
+  for (let attempt = 0; attempt <= safeRetries; attempt += 1) {
+    try {
+      const signal = options.signal || AbortSignal.timeout(safeTimeoutMs);
+      response = await fetchImpl(url, { ...options, signal });
+      payload = await response.json().catch(() => ({}));
+      if (response.ok || response.status < 500 || attempt === safeRetries) break;
+    } catch (error) {
+      if (attempt < safeRetries) continue;
+      const upstreamCode = clean(error?.cause?.code || error?.code, 80) || null;
+      const timedOut = error?.name === "AbortError" || error?.name === "TimeoutError" || upstreamCode === "UND_ERR_CONNECT_TIMEOUT";
+      return {
+        ok: false,
+        status: "provider_error",
+        error: timedOut ? "Upstream request timed out." : "Upstream network request failed.",
+        items: [],
+        diagnostics: {
+          stage,
+          category: timedOut ? "timeout" : "network",
+          retryable: true,
+          upstream_code: upstreamCode,
+          http_status: null,
+          attempts: attempt + 1,
+          timeout_ms: safeTimeoutMs,
+          trace_id: traceId
+        }
+      };
+    }
   }
   if (!response.ok) return {
     ok: false,
     status: response.status === 401 || response.status === 403 ? "auth_required" : response.status === 429 ? "rate_limited" : "provider_error",
     error: clean(payload?.message || payload?.detail || payload?.error?.message || payload?.error || `Provider returned HTTP ${response.status}`, 300),
-    items: []
+    items: [],
+    http_status: response.status,
+    diagnostics: {
+      stage,
+      category: response.status === 429 ? "rate_limit" : response.status >= 500 ? "upstream_server" : "upstream_client",
+      retryable: response.status === 429 || response.status >= 500,
+      upstream_code: null,
+      http_status: response.status,
+      attempts: safeRetries + 1,
+      timeout_ms: safeTimeoutMs,
+      trace_id: traceId
+    }
   };
   return { ok: true, payload };
 }

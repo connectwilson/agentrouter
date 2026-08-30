@@ -2086,7 +2086,8 @@ test("public provider endpoints require Arc payment even with direct endpoint ac
 });
 
 test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ baseUrl, authCookie, rawFetch }) => {
+    const packageMetadata = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package.json", "utf8"));
     const initialize = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
@@ -2106,13 +2107,16 @@ test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async (
     });
     assert.equal(initialize.status, 200);
     assert.equal(initialize.headers.get("access-control-allow-origin"), "*");
+    const mcpSessionId = initialize.headers.get("mcp-session-id");
+    assert.ok(mcpSessionId, "initialize must create a remote MCP session");
     const initialized = await initialize.json();
     assert.equal(initialized.result.serverInfo.name, "AgentRouter");
+    assert.equal(initialized.result.serverInfo.version, packageMetadata.version);
     assert.deepEqual(initialized.result.capabilities, { tools: {} });
 
     const listed = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "mcp-session-id": mcpSessionId },
       body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
     });
     assert.equal(listed.status, 200);
@@ -2123,6 +2127,45 @@ test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async (
     assert.match(listPayload.result.tools[0].description, /research, search, URLs, platforms/i);
     assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_request"));
     assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_ask"));
+    assert.ok(listPayload.result.tools.some((tool) => tool.name === "agentrouter_connect"));
+
+    const connectCall = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "mcp-session-id": mcpSessionId },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 20,
+        method: "tools/call",
+        params: { name: "agentrouter_connect", arguments: { client_name: "QA client", wait_seconds: 0 } }
+      })
+    });
+    const connectPayload = await connectCall.json();
+    const connectResult = JSON.parse(connectPayload.result.content[0].text);
+    assert.equal(connectResult.status, "authorization_required");
+    assert.match(connectResult.verification_uri_complete, /\/connect\?user_code=/);
+    assert.equal("access_token" in connectResult, false);
+
+    const approval = await rawFetch(`${baseUrl}/auth/device/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: authCookie },
+      body: JSON.stringify({ user_code: connectResult.user_code })
+    });
+    assert.equal(approval.status, 200);
+
+    const connectedCall = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "mcp-session-id": mcpSessionId },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 21,
+        method: "tools/call",
+        params: { name: "agentrouter_connect", arguments: { client_name: "QA client", wait_seconds: 0 } }
+      })
+    });
+    const connectedPayload = await connectedCall.json();
+    const connectedResult = JSON.parse(connectedPayload.result.content[0].text);
+    assert.equal(connectedResult.status, "connected");
+    assert.equal("access_token" in connectedResult, false);
 
     const capabilityCall = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -2194,6 +2237,44 @@ test("remote MCP endpoint exposes AgentRouter tools over HTTP JSON-RPC", async (
     assert.equal(fetchCallResult.data_returned_count, 1);
     assert.equal(fetchCallResult.results[0].result.data.max_liquidation_pain_price, 103500);
     assert.equal(fetchCallResult.results[0].selected_service, undefined);
+  });
+});
+
+test("public HTTP surface handles HEAD, CORS preflight, malformed JSON, and security headers", async () => {
+  await withServer(async ({ baseUrl, rawFetch }) => {
+    const home = await rawFetch(`${baseUrl}/`);
+    assert.equal(home.status, 200);
+    assert.equal(home.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(home.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+    assert.match(home.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
+
+    const head = await rawFetch(`${baseUrl}/`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+
+    const preflight = await rawFetch(`${baseUrl}/agent-router/fetch`, {
+      method: "OPTIONS",
+      headers: { origin: "https://chatgpt.com", "access-control-request-method": "POST" }
+    });
+    assert.equal(preflight.status, 204);
+    assert.match(preflight.headers.get("access-control-allow-methods") || "", /POST/);
+
+    const malformed = await rawFetch(`${baseUrl}/agent-router/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{bad"
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), {
+      error: { code: "INVALID_JSON", message: "Request body must be valid JSON." }
+    });
+
+    const statsResponse = await rawFetch(`${baseUrl}/agent-router/stats`);
+    assert.match(statsResponse.headers.get("cache-control") || "", /max-age=30/);
+    const stats = await statsResponse.json();
+    assert.equal("sample_request" in stats.services[0], false);
+    assert.equal("endpoint_url" in stats.services[0], false);
+    assert.equal("latest_feedback_event" in stats.services[0], false);
   });
 });
 

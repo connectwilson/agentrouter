@@ -5,19 +5,27 @@ import { spawn, spawnSync } from "node:child_process";
 
 const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "agentrouter-mcp-smoke-"));
 const npmEnvironment = { ...process.env, npm_config_cache: path.join(temporaryDirectory, "npm-cache") };
+process.stdout.write("Packing MCP package...\n");
 const pack = spawnSync("npm", ["pack", "./packages/agentrouter-mcp", "--pack-destination", temporaryDirectory], {
   cwd: process.cwd(),
   env: npmEnvironment,
-  encoding: "utf8"
+  encoding: "utf8",
+  timeout: 120_000,
+  killSignal: "SIGTERM"
 });
+if (pack.error) throw new Error(`npm pack failed: ${pack.error.message}`);
 if (pack.status !== 0) throw new Error(pack.stderr || pack.stdout || "npm pack failed");
 const archive = path.join(temporaryDirectory, pack.stdout.trim().split(/\s+/).at(-1));
 const consumerDirectory = path.join(temporaryDirectory, "consumer");
+process.stdout.write("Installing packed MCP in a clean consumer...\n");
 const install = spawnSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", consumerDirectory, archive], {
   cwd: process.cwd(),
   env: npmEnvironment,
-  encoding: "utf8"
+  encoding: "utf8",
+  timeout: 120_000,
+  killSignal: "SIGTERM"
 });
+if (install.error) throw new Error(`packed MCP install failed: ${install.error.message}`);
 if (install.status !== 0) throw new Error(install.stderr || install.stdout || "packed MCP install failed");
 
 const installedPackage = path.join(consumerDirectory, "node_modules", "@agentrouternetwork", "mcp");

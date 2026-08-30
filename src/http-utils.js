@@ -3,7 +3,14 @@ const MAX_JSON_BODY_BYTES = Number(process.env.ADN_MAX_JSON_BODY_BYTES || 5 * 10
 export async function readJson(req) {
   const raw = await readRawBody(req);
   if (!raw) return {};
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const error = new Error("Request body must be valid JSON.");
+    error.statusCode = 400;
+    error.code = "INVALID_JSON";
+    throw error;
+  }
 }
 
 export async function readRawBody(req) {

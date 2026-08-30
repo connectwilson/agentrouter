@@ -429,12 +429,8 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
     return {
       service_id: record.manifest.service_id,
       title: record.manifest.title,
-      description_for_agent: record.manifest.description_for_agent,
       provider_id: record.manifest.provider.provider_id,
       capabilities: record.manifest.capabilities || [],
-      sample_request: record.manifest.sample_request || {},
-      endpoint_url: record.manifest.endpoint?.url || null,
-      upstream_source: record.manifest.registration?.source_fingerprint || null,
       price: record.manifest.pricing?.amount || "0",
       currency: record.manifest.pricing?.currency || "USDC",
       verification_status: record.verification_status,
@@ -446,9 +442,6 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
       feedback_state: trust.feedback_state,
       success_rate: trust.success_rate,
       average_latency_ms: trust.average_latency_ms,
-      latest_validation: record.validation_runs?.at(-1) || null,
-      latest_quality_event: record.quality_events?.at(-1) || null,
-      latest_feedback_event: record.feedback_events?.at(-1) || null,
       estimated_revenue: Number((Number(record.manifest.pricing?.amount || 0) * trust.operational_feedback_count).toFixed(8)),
       created_at: record.created_at || null,
       updated_at: record.updated_at || null,
@@ -459,12 +452,19 @@ export function summarizeRegistryStats(store, { ownerKey = "" } = {}) {
       badges: publicRecord.badges
     };
   });
+  const calls = canonicalOperationalFeedback(store);
   return {
     stats_version: "agent_router_registry_stats_v1",
+    metric_scope: {
+      total_calls: ownerKey ? "registered services owned by this account" : "all canonical AgentRouter calls, including built-in external and local connectors",
+      total_registered_service_calls: "calls attached to registered provider services",
+      services: "compact per-service summaries; use the service detail endpoint for evidence and validation records"
+    },
     registered_services: services.length,
     verified_services: services.filter((service) => service.verification_status === "verified").length,
-    total_calls: services.reduce((sum, service) => sum + service.total_calls, 0),
-    total_feedback_events: services.reduce((sum, service) => sum + service.feedback_event_count, 0),
+    total_calls: ownerKey ? services.reduce((sum, service) => sum + service.total_calls, 0) : calls.length,
+    total_registered_service_calls: services.reduce((sum, service) => sum + service.total_calls, 0),
+    total_feedback_events: ownerKey ? services.reduce((sum, service) => sum + service.feedback_event_count, 0) : (store.feedbackEvents || []).length,
     total_consumer_feedback: services.reduce((sum, service) => sum + service.consumer_feedback_count, 0),
     estimated_revenue: Number(services.reduce((sum, service) => sum + Number(service.estimated_revenue || 0), 0).toFixed(8)),
     providers: summarizeProviders(services),
@@ -522,6 +522,7 @@ export function summarizeHomeStats(store) {
   });
   return {
     stats_version: "agent_router_home_stats_v2",
+    metric_scope: "all canonical AgentRouter calls, matching /agent-router/stats total_calls",
     generated_at: new Date().toISOString(),
     registered_services: services.length,
     verified_services: services.filter((service) => service.verification_status === "verified").length,
@@ -593,13 +594,13 @@ export function listServiceSummaries(store, {
     if (pack && !serviceMatchesCapabilityPack(manifest, pack)) continue;
     if (!serviceCategoryMatches(manifest, normalizedCategory)) continue;
 
-    const haystack = serviceSummaryHaystack(manifest);
-    const matchCount = terms.filter((term) => haystack.includes(term)).length;
-    if (terms.length && matchCount === 0) continue;
+    const match = serviceSummaryMatch(manifest, terms);
+    if (terms.length && match.score === 0) continue;
 
     services.push({
       ...publicServiceSummary(record),
-      match_score: terms.length ? matchCount / terms.length : 1
+      match_score: terms.length ? match.score / (terms.length * 4) : 1,
+      match_reasons: match.reasons
     });
   }
 
@@ -817,16 +818,25 @@ function compareServiceSummaries(a, b, sort) {
   );
 }
 
-function serviceSummaryHaystack(manifest) {
-  return [
-    manifest.service_id,
-    manifest.title,
-    manifest.description_for_agent,
-    ...(manifest.capabilities || []),
-    manifest.agent_contract?.summary,
-    manifest.agent_contract?.request_shape_summary,
-    manifest.agent_contract?.response_shape_summary
-  ].join(" ").toLowerCase();
+function serviceSummaryMatch(manifest, terms) {
+  if (!terms.length) return { score: 1, reasons: [] };
+  const fields = [
+    ["service ID", String(manifest.service_id || "").toLowerCase(), 4],
+    ["title", String(manifest.title || "").toLowerCase(), 4],
+    ["capability", (manifest.capabilities || []).join(" ").toLowerCase(), 3],
+    ["description", String(manifest.description_for_agent || "").toLowerCase(), 1],
+    ["contract", [manifest.agent_contract?.summary, manifest.agent_contract?.request_shape_summary, manifest.agent_contract?.response_shape_summary].join(" ").toLowerCase(), 1]
+  ];
+  let score = 0;
+  const reasons = new Set();
+  for (const term of terms) {
+    const matches = fields.filter(([, value]) => value.includes(term));
+    if (!matches.length) continue;
+    const best = matches.sort((left, right) => right[2] - left[2])[0];
+    score += best[2];
+    reasons.add(best[0]);
+  }
+  return { score, reasons: [...reasons] };
 }
 
 function serviceCategoryMatches(manifest, category) {

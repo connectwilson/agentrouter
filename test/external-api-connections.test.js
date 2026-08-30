@@ -451,6 +451,55 @@ test("Open-Meteo public provider geocodes a location before returning a forecast
   assert.equal(result.result.items[0].metadata.temperature, 31);
 });
 
+test("public connector failures identify stage, category, retryability, and trace", async () => {
+  const result = await runExternalApiQuery(createMemoryStore(), "", {
+    source: "open_meteo",
+    operation: "forecast",
+    query: "Taipei"
+  }, {
+    fetchImpl: async () => {
+      const error = new TypeError("fetch failed", { cause: { code: "ENETUNREACH" } });
+      throw error;
+    },
+    fetchRetries: 0
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "provider_error");
+  assert.equal(result.error.diagnostics.stage, "open_meteo_geocoding");
+  assert.equal(result.error.diagnostics.category, "network");
+  assert.equal(result.error.diagnostics.retryable, true);
+  assert.match(result.error.diagnostics.trace_id, /^arup_/);
+  assert.equal(result.error.diagnostics.upstream_code, "ENETUNREACH");
+});
+
+test("GDELT keeps its provider identity when direct transport needs the read-only proxy fallback", async () => {
+  const requests = [];
+  const result = await runExternalApiQuery(createMemoryStore(), "", {
+    source: "gdelt",
+    operation: "search",
+    query: "AI Agent payments",
+    limit: 1
+  }, {
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      if (String(url).startsWith("https://api.gdeltproject.org")) throw new TypeError("fetch failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => 'Markdown Content:\n{"articles":[{"title":"Agent payments","url":"https://news.example/item","domain":"news.example","seendate":"20260830T010000Z"}]}'
+      };
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.source.source, "gdelt");
+  assert.equal(result.coverage.provider, "gdelt");
+  assert.equal(result.coverage.retrieval_path, "jina_transport_proxy");
+  assert.equal(result.result.items[0].url, "https://news.example/item");
+  assert.ok(requests[1].startsWith("https://r.jina.ai/http://api.gdeltproject.org/"));
+});
+
 test("SEC EDGAR public provider resolves a ticker and preserves filing URLs", async () => {
   const result = await runExternalApiQuery(createMemoryStore(), "github:user-a", {
     source: "sec_edgar",
@@ -634,9 +683,12 @@ test("AgentRouter permits public providers without login but protects credential
   const server = createServer({
     store,
     socialConnectionOptions: {
-      fetchImpl: async (url) => String(url).includes("geocoding-api")
-        ? { ok: true, status: 200, json: async () => ({ results: [{ name: "Taipei", country: "Taiwan", latitude: 25.04, longitude: 121.56, timezone: "Asia/Taipei" }] }) }
-        : { ok: true, status: 200, json: async () => ({ current: { temperature_2m: 30, weather_code: 1 }, current_units: { temperature_2m: "°C" } }) }
+      fetchImpl: async (url) => {
+        if (String(url).includes("name=Fail")) throw new TypeError("fetch failed", { cause: { code: "ENETUNREACH" } });
+        return String(url).includes("geocoding-api")
+          ? { ok: true, status: 200, json: async () => ({ results: [{ name: "Taipei", country: "Taiwan", latitude: 25.04, longitude: 121.56, timezone: "Asia/Taipei" }] }) }
+          : { ok: true, status: 200, json: async () => ({ current: { temperature_2m: 30, weather_code: 1 }, current_units: { temperature_2m: "°C" } }) };
+      }
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -648,7 +700,20 @@ test("AgentRouter permits public providers without login but protects credential
       body: JSON.stringify({ capability: "external_api_query", params: { source: "open_meteo", operation: "forecast", query: "Taipei" } })
     });
     assert.equal(publicResponse.status, 200);
-    assert.equal((await publicResponse.json()).ok, true);
+    const publicPayload = await publicResponse.json();
+    assert.equal(publicPayload.ok, true);
+    assert.match(publicPayload.consumer_feedback_request.feedback_token, /^[A-Za-z0-9_-]{32,}$/);
+
+    const feedbackResponse = await fetch(`${baseUrl}/agent-router/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...publicPayload.consumer_feedback_request.example,
+        feedback_token: publicPayload.consumer_feedback_request.feedback_token
+      })
+    });
+    assert.equal(feedbackResponse.status, 200);
+    assert.equal((await feedbackResponse.json()).status, "consumer_feedback_recorded");
 
     const privateResponse = await fetch(`${baseUrl}/agent-router/request`, {
       method: "POST",
@@ -659,6 +724,26 @@ test("AgentRouter permits public providers without login but protects credential
     const privatePayload = await privateResponse.json();
     assert.equal(privatePayload.status, "connection_required");
     assert.equal(privatePayload.action_required.preferred_tool, "agentrouter_connect");
+
+    const unknownResponse = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "external_api_query", params: { source: "not_a_real_source", operation: "search", query: "test" } })
+    });
+    assert.equal(unknownResponse.status, 422);
+    const unknownPayload = await unknownResponse.json();
+    assert.equal(unknownPayload.status, "unsupported_source");
+    assert.equal(unknownPayload.error.code, "UNSUPPORTED_SOURCE");
+
+    const providerFailure = await fetch(`${baseUrl}/agent-router/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data_requirements: [{ capability: "external_api_query", params: { source: "open_meteo", operation: "forecast", query: "Fail" } }] })
+    });
+    assert.equal(providerFailure.status, 502);
+    const providerFailurePayload = await providerFailure.json();
+    assert.equal(providerFailurePayload.status, "no_data_returned");
+    assert.equal(providerFailurePayload.results[0].error.diagnostics.category, "network");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

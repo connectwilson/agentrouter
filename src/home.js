@@ -969,6 +969,13 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
     ? ` · <a href="${html(upstreamPricing.source_url)}" target="_blank" rel="noreferrer">Official pricing ↗</a>`
     : "";
   const trust = service.trust || {};
+  const trustBasis = service.trust_basis || {
+    model: "verified_call_feedback_and_evidence",
+    operational_calls: trust.operational_feedback_count || service.total_calls || 0,
+    consumer_ratings: trust.consumer_feedback_count || 0,
+    evidence_traces: (detail.recent_evidence_events || []).length,
+    caveat: "Trust combines observed execution and feedback signals; evidence coverage can be lower than call volume."
+  };
   const health = service.health || {};
   const requestData = service.request_data || {};
   const responseData = service.response_data || {};
@@ -1101,7 +1108,13 @@ export function serviceDetailHtml(detail, { auth = {} } = {}) {
             <span class="eyebrow">Evidence and feedback</span>
             <h2>Evidence traces</h2>
           </div>
+          <div class="notice-box">
+            <strong>Trust basis · ${html(trustBasis.model)}</strong>
+            <span>${html(trustBasis.caveat || "Trust and evidence use different signals and coverage windows.")}</span>
+          </div>
           <div class="detail-kv">
+            <div>Observed calls</div><div>${html(trustBasis.operational_calls ?? 0)}</div>
+            <div>Consumer ratings</div><div>${html(trustBasis.consumer_ratings ?? 0)}</div>
             <div>Trace count</div><div>${html(recentEvidence.length)}</div>
             <div>Latest trace</div><div>${html(latestEvidence?.trace_hash || "No paid-call evidence recorded yet")}</div>
             <div>Latest payment</div><div>${html(latestEvidence?.payment_tx || "No payment tx recorded yet")}</div>
@@ -1564,6 +1577,7 @@ function serviceClientScript() {
             </div>
           </div>
           <p class="api-description">\${escapeHtml(truncate(description, 132))}</p>
+          \${service.match_reasons?.length ? '<small class="match-reason">Matched: ' + escapeHtml(service.match_reasons.join(", ")) + '</small>' : ''}
           <div class="api-core-metrics">
             <div class="api-price"><span>Price</span><strong>\${priceValue}</strong><small>Per call</small></div>
             <div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>\${formatTrustScore(service.trust_score)}</strong><small>Trust score</small></div></div>

@@ -971,6 +971,16 @@ export async function issueLocalFeedbackGrant(store, body = {}, {
   return publicGrant;
 }
 
+export function feedbackGrantActorKey(store, body = {}) {
+  const requestId = String(body.request_id || body.feedback?.request_id || "").trim();
+  const grant = store.feedbackGrants?.get(requestId);
+  const serviceId = String(body.service_id || grant?.service_id || "");
+  const tokenHash = hashJson(String(body.feedback_token || ""));
+  if (!grant || grant.service_id !== serviceId || grant.token_hash !== tokenHash) return "";
+  if (grant.expires_at && Date.parse(grant.expires_at) <= Date.now()) return "";
+  return grant.actor_key || "";
+}
+
 function assertLocalFeedbackGrant(store, { requestId, serviceId, actorKey, feedbackToken }) {
   const grant = store.feedbackGrants?.get(requestId);
   if (!grant || grant.service_id !== serviceId || grant.actor_key !== actorKey || hashJson(String(feedbackToken || "")) !== grant.token_hash) {
@@ -1026,6 +1036,11 @@ export async function hydratePersistentServiceEvents(store) {
 export async function hydrateServiceEventRows(store, events = []) {
   for (const row of events) {
     const event = row.event;
+    if (row.event_type === "invocation_feedback_grant") {
+      store.feedbackGrants ||= new Map();
+      store.feedbackGrants.set(row.request_id, event);
+      continue;
+    }
     if (row.event_type === "feedback_grant" || row.event_type === "feedback_grant_rotation") {
       store.feedbackGrants ||= new Map();
       store.feedbackGrants.set(row.request_id, event);
@@ -1230,6 +1245,10 @@ function createQualityEvent({
 }
 
 export async function loadProviderConfigs(store, baseUrl, { validate = true } = {}) {
+  const now = Date.now();
+  if (!validate && store.providerConfigsLoadedAt && now - store.providerConfigsLoadedAt < 30_000) {
+    return [];
+  }
   const { listProviderConfigs } = await import("./provider-config.js");
   const configs = await listProviderConfigs();
   const loaded = [];
@@ -1294,6 +1313,7 @@ export async function loadProviderConfigs(store, baseUrl, { validate = true } = 
     }
     loaded.push({ service_id: manifest.service_id, record, validation });
   }
+  if (!validate) store.providerConfigsLoadedAt = now;
   return loaded;
 }
 

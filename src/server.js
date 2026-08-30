@@ -9,7 +9,7 @@ import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
   fetchApifyActorMetadata,
   handleMockUpstreamApify } from "./provider-runtime.js";
-import { hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
+import { feedbackGrantActorKey, hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, withCurrentRuntimeEndpoint } from "./registry.js";
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
 import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabilityRequest, routeTask } from "./router.js";
@@ -52,9 +52,11 @@ import {
   startPublicApiConversionJob,
   syncPublicApiCoverage
 } from "./public-api-pipeline.js";
-import { remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
+import { agentRouterConnectTool, remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
 import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
 import { compactAgentFacingResult } from "./compact-result.js";
+
+const mcpPackageMetadata = JSON.parse(await fs.readFile(new URL("../packages/agentrouter-mcp/package.json", import.meta.url), "utf8"));
 
 const clientLogoPaths = {
   "claude.svg": new URL("../public/assets/client-logos/claude.svg", import.meta.url),
@@ -72,6 +74,8 @@ const designFontPaths = {
   "GeistPixel_Square.woff2": new URL("../public/assets/fonts/GeistPixel_Square.woff2", import.meta.url)
 };
 const agentRouterSkillPath = new URL("../claude-skills/agent-router/SKILL.md", import.meta.url);
+const hostedMcpTools = [...remoteMcpTools, agentRouterConnectTool];
+const REMOTE_MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 export function createServer({
   store = createMemoryStore(),
   baseUrl = "",
@@ -89,6 +93,7 @@ export function createServer({
   };
   const writeRateLimiter = createWriteRateLimiter(writeRateLimit);
   const server = http.createServer(async (req, res) => {
+    applySecurityHeaders(res);
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
         socialResearchRunner,
@@ -100,12 +105,13 @@ export function createServer({
         browserHandoffClaim
       });
     } catch (error) {
-      sendJson(res, error.statusCode || 500, {
+      const statusCode = error.statusCode || 500;
+      sendJson(res, statusCode, {
         error: {
           code: error.code || (error.statusCode ? "REQUEST_ERROR" : "INTERNAL_ERROR"),
-          message: error.message
+          message: statusCode >= 500 ? "The server could not complete this request." : error.message
         },
-        validation: error.validation
+        ...(error.validation ? { validation: error.validation } : {})
       });
     }
   });
@@ -135,6 +141,12 @@ async function routeRequest(req, res, store, baseUrl, {
     loginReturnTo
   };
   const paymentContext = await paidInvocationContext(req, baseUrl, store);
+
+  if (req.method === "OPTIONS" && url.pathname.startsWith("/agent-router/")) {
+    res.writeHead(204, apiCorsHeaders());
+    res.end();
+    return;
+  }
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/assets/client-logos/")) {
     await sendClientLogo(req, res, url);
@@ -500,7 +512,9 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "GET" && (url.pathname === "/stats" || url.pathname === "/agent-router/stats")) {
     await loadProviderConfigs(store, baseUrl, { validate: false });
-    sendJson(res, 200, summarizeRegistryStats(store));
+    sendJson(res, 200, summarizeRegistryStats(store), {
+      "cache-control": "public, max-age=30, stale-while-revalidate=120"
+    });
     return;
   }
 
@@ -613,7 +627,7 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/") {
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
     sendHtml(res, 200, homeHtml({ auth }));
     return;
   }
@@ -979,7 +993,8 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/feedback") {
-    const feedbackActorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    const body = await readJson(req);
+    const feedbackActorKey = authUserKey(auth.user) || paymentContext.ownerKey || feedbackGrantActorKey(store, body);
     if (!feedbackActorKey) {
       sendJson(res, 401, {
         error: {
@@ -990,7 +1005,6 @@ async function routeRequest(req, res, store, baseUrl, {
       return;
     }
     if (!allowSensitiveWrite(req, res, writeRateLimiter, feedbackActorKey)) return;
-    const body = await readJson(req);
     if (!body.service_id) {
       body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
     }
@@ -1141,7 +1155,7 @@ async function routeRequest(req, res, store, baseUrl, {
     if (body.capability === "external_api_query") {
       const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(body.params?.source || "").toLowerCase());
-      if (!ownerKey && sourceDefinition?.connection_required !== false) {
+      if (!ownerKey && sourceDefinition?.connection_required === true) {
         // This source genuinely needs a credential, so the 401 stands. But
         // telling the agent only to connect an account is a dead end when the
         // same data is readable for free through the local browser — attach the
@@ -1153,7 +1167,7 @@ async function routeRequest(req, res, store, baseUrl, {
         });
       }
       const result = await runExternalApiQuery(store, ownerKey, body.params || {}, socialConnectionOptions);
-      sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
+      sendJson(res, externalApiStatusCode(result), result);
       return;
     }
     if (body.capability === "social_user_voice_research") {
@@ -1560,6 +1574,114 @@ function sensitiveWriteActorKey(req, actorKey = "") {
   return `anonymous:${crypto.createHash("sha256").update(socketAddress).digest("hex").slice(0, 24)}`;
 }
 
+function remoteMcpSession(req, store, now = Date.now()) {
+  if (!store.remoteMcpSessions) store.remoteMcpSessions = new Map();
+  for (const [id, record] of store.remoteMcpSessions) {
+    if (record.expires_at <= now) store.remoteMcpSessions.delete(id);
+  }
+  const requestedId = String(req.headers["mcp-session-id"] || "").trim();
+  const existing = requestedId ? store.remoteMcpSessions.get(requestedId) : null;
+  if (existing) {
+    existing.expires_at = now + REMOTE_MCP_SESSION_TTL_MS;
+    return existing;
+  }
+  const session = {
+    id: `armcp_${crypto.randomBytes(24).toString("base64url")}`,
+    device_authorization: null,
+    consumer_api_key: "",
+    created_at: now,
+    expires_at: now + REMOTE_MCP_SESSION_TTL_MS
+  };
+  store.remoteMcpSessions.set(session.id, session);
+  return session;
+}
+
+async function remoteMcpPaymentContext(session, store, paymentContext) {
+  if (!session?.consumer_api_key) return paymentContext;
+  const identity = await authenticateCreditRequest(store, {
+    headers: { authorization: `Bearer ${session.consumer_api_key}` }
+  });
+  return {
+    ...paymentContext,
+    invoke: true,
+    consumerApiKey: session.consumer_api_key,
+    ownerKey: identity?.account?.owner_key || ""
+  };
+}
+
+async function connectRemoteMcpSession(store, session, baseUrl, args = {}) {
+  if (!session) {
+    return {
+      ok: false,
+      status: "session_required",
+      message: "Initialize the AgentRouter MCP connection before authorizing an account."
+    };
+  }
+  if (session.consumer_api_key) {
+    return {
+      ok: true,
+      status: "connected",
+      retry_original_request: true,
+      message: "This MCP session is connected to AgentRouter. Retry the original request now."
+    };
+  }
+  if (args.restart === true || !session.device_authorization) {
+    session.device_authorization = beginDeviceAuthorization(store, {
+      baseUrl,
+      clientName: args.client_name || "Remote MCP client"
+    });
+    return remoteMcpAuthorizationRequired(session.device_authorization);
+  }
+  const result = await pollDeviceAuthorization(store, {
+    deviceCode: session.device_authorization.device_code,
+    issueCredential: ({ account, clientName }) => createCreditApiKey(store, {
+      account,
+      label: `Connected remote MCP · ${clientName}`,
+      authMethod: "device",
+      clientName,
+      prefix: "ar_device"
+    })
+  });
+  if (result.access_token) {
+    session.consumer_api_key = result.access_token;
+    session.device_authorization = null;
+    return {
+      ok: true,
+      status: "connected",
+      retry_original_request: true,
+      message: "Browser approval succeeded. Retry the original AgentRouter request now."
+    };
+  }
+  if (result.error === "expired_token") session.device_authorization = null;
+  return {
+    ...remoteMcpAuthorizationRequired(session.device_authorization),
+    status: result.error === "expired_token" ? "authorization_expired" : "authorization_required",
+    pending_reason: result.error || "authorization_pending"
+  };
+}
+
+function remoteMcpAuthorizationRequired(authorization) {
+  if (!authorization) {
+    return {
+      ok: false,
+      status: "authorization_expired",
+      action: "call_agentrouter_connect_again"
+    };
+  }
+  return {
+    ok: false,
+    status: "authorization_required",
+    action: "open_browser_authorization",
+    user_code: authorization.user_code,
+    verification_uri: authorization.verification_uri,
+    verification_uri_complete: authorization.verification_uri_complete,
+    expires_in: authorization.expires_in,
+    interval: authorization.interval,
+    retry_original_request: true,
+    message: "Open the authorization link and approve this agent. Then call agentrouter_connect again. No API key should be pasted into chat."
+  };
+}
+
 async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
   const headers = remoteMcpHeaders();
   if (req.method === "OPTIONS") {
@@ -1573,9 +1695,9 @@ async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
       ok: true,
       transport: "streamable_http_jsonrpc",
       endpoint: `${baseUrl.replace(/\/$/, "")}/mcp`,
-      serverInfo: { name: "AgentRouter", version: "0.1.0" },
+      serverInfo: { name: "AgentRouter", version: mcpPackageMetadata.version },
       capabilities: { tools: {} },
-      tools: remoteMcpTools
+      tools: hostedMcpTools
     });
     return;
   }
@@ -1602,9 +1724,11 @@ async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
   }
 
   const messages = Array.isArray(payload) ? payload : [payload];
+  const session = remoteMcpSession(req, store);
+  const sessionPaymentContext = await remoteMcpPaymentContext(session, store, paymentContext);
   const responses = [];
   for (const message of messages) {
-    const response = await dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext);
+    const response = await dispatchRemoteMcpMessage(message, store, baseUrl, sessionPaymentContext, session);
     if (response) responses.push(response);
   }
   if (!responses.length) {
@@ -1612,10 +1736,12 @@ async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
     res.end();
     return;
   }
-  sendRemoteMcpJson(res, 200, Array.isArray(payload) ? responses : responses[0]);
+  sendRemoteMcpJson(res, 200, Array.isArray(payload) ? responses : responses[0], {
+    "mcp-session-id": session.id
+  });
 }
 
-async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext = {}) {
+async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext = {}, session = null) {
   if (!message || typeof message !== "object") {
     return remoteMcpError(null, -32600, "Invalid JSON-RPC message.");
   }
@@ -1628,15 +1754,15 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext 
       return remoteMcpResult(id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "AgentRouter", version: "0.1.0" }
+        serverInfo: { name: "AgentRouter", version: mcpPackageMetadata.version }
       });
     }
     if (message.method === "ping") return remoteMcpResult(id, {});
     if (message.method === "tools/list") {
-      return remoteMcpResult(id, { tools: remoteMcpTools });
+      return remoteMcpResult(id, { tools: hostedMcpTools });
     }
     if (message.method === "tools/call") {
-      const result = await callRemoteMcpTool(message.params?.name, message.params?.arguments || {}, store, baseUrl, paymentContext);
+      const result = await callRemoteMcpTool(message.params?.name, message.params?.arguments || {}, store, baseUrl, paymentContext, session);
       const presentation = sanitizeAgentToolResult(result);
       return remoteMcpResult(id, {
         content: [{ type: "text", text: JSON.stringify(presentation, null, 2) }],
@@ -1649,8 +1775,11 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext 
   }
 }
 
-async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}) {
+async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}, session = null) {
   await loadProviderConfigs(store, baseUrl, { validate: false });
+  if (name === "agentrouter_connect") {
+    return connectRemoteMcpSession(store, session, baseUrl, args);
+  }
   if (name === "agentrouter_complete_handoff") {
     return completeHostedBrowserHandoff(args, paymentContext.browserHandoffClaim || claimPersistentBrowserHandoff);
   }
@@ -1714,7 +1843,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     if (request.capability === "external_api_query") {
       const ownerKey = paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(request.params?.source || "").toLowerCase());
-      if (sourceDefinition?.connection_required !== false && !ownerKey) {
+      if (sourceDefinition?.connection_required === true && !ownerKey) {
         return agentRouterConnectionRequired();
       }
       return runExternalApiQuery(store, ownerKey, request.params, paymentContext.socialConnectionOptions || {});
@@ -1760,11 +1889,12 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     };
   }
   if (name === "agentrouter_feedback") {
-    if (!paymentContext.ownerKey) return agentRouterConnectionRequired();
     const body = { ...args };
     if (!body.service_id) body.service_id = resolveFeedbackServiceId(store, body.request_id || body.feedback?.request_id);
+    const actorKey = paymentContext.ownerKey || feedbackGrantActorKey(store, body);
+    if (!actorKey) return agentRouterConnectionRequired();
     const result = await recordConsumerFeedback(store, body, {
-      actorKey: paymentContext.ownerKey,
+      actorKey,
       requireKnownInvocation: true
     });
     const trustAnchor = result.status === "consumer_feedback_already_recorded" && result.trust_anchor
@@ -1790,7 +1920,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     ok: false,
     status: "unknown_tool",
     tool: name,
-    available_tools: remoteMcpTools.map((tool) => tool.name)
+    available_tools: hostedMcpTools.map((tool) => tool.name)
   };
 }
 
@@ -1874,7 +2004,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     if (request.capability === "external_api_query") {
       const sourceDefinition = getExternalApiCatalog(store, ownerKey)
         .find((item) => item.source === String(request.params?.source || "").toLowerCase());
-      if (!ownerKey && sourceDefinition?.connection_required !== false) {
+      if (!ownerKey && sourceDefinition?.connection_required === true) {
         results.push(agentRouterConnectionRequired());
       } else {
         results.push(await runExternalApiQuery(store, ownerKey, request.params, socialConnectionOptions));
@@ -2018,10 +2148,48 @@ function remoteMcpHeaders() {
   };
 }
 
-function sendRemoteMcpJson(res, statusCode, body) {
+function apiCorsHeaders() {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
+    "access-control-allow-headers": "content-type, authorization, x-api-key, x-agentrouter-api-key",
+    "access-control-max-age": "600"
+  };
+}
+
+function applySecurityHeaders(res) {
+  res.setHeader("content-security-policy", [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: https:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'"
+  ].join("; "));
+  res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+}
+
+function externalApiStatusCode(result) {
+  if (result?.ok !== false) return 200;
+  if (["invalid_request", "unsupported_source", "unsupported_operation"].includes(result.status)) return 422;
+  if (result.status === "connection_required" || result.status === "auth_required") return 401;
+  if (result.status === "rate_limited") return 429;
+  if (result.status === "provider_error") return 502;
+  return 400;
+}
+
+function sendRemoteMcpJson(res, statusCode, body, headers = {}) {
   res.writeHead(statusCode, {
     ...remoteMcpHeaders(),
-    "content-type": "application/json; charset=utf-8"
+    "content-type": "application/json; charset=utf-8",
+    ...headers
   });
   res.end(JSON.stringify(body, null, 2));
 }
@@ -2493,6 +2661,12 @@ function paymentBoundaryStatusCode(payload) {
   if (payload?.status === "invalid_request") return 422;
   if (payload?.status === "connection_required") return 401;
   if (payload?.status === "payment_required" || payload?.status === "quote_blocked") return 402;
+  if (payload?.status === "no_data_returned") {
+    const statuses = (payload.results || []).map((result) => result?.status);
+    if (statuses.some((status) => ["unsupported_source", "unsupported_operation", "invalid_request"].includes(status))) return 422;
+    if (statuses.some((status) => status === "rate_limited")) return 429;
+    if (statuses.some((status) => status === "provider_error")) return 502;
+  }
   return 200;
 }
 
