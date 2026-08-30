@@ -284,6 +284,8 @@ test("AgentRouter skill can be installed without cloning GitHub", async () => {
     assert.equal(health.ok, true);
     assert.deepEqual(health.runtime_modes, ["http", "remote_mcp"]);
     assert.equal(health.http_fetch, `${baseUrl}/agent-router/fetch`);
+    assert.equal(health.features.vendor_registration_paymaster.configured, false);
+    assert.equal(health.features.vendor_registration_paymaster.standard, "BEP-414");
 
     const legacySkill = await fetch(`${baseUrl}/skills/AgentRouter/SKILL.md`);
     assert.equal(legacySkill.status, 200);
