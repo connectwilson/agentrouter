@@ -15,3 +15,13 @@ node_modules/
 .env.local*
 .env.*.local
 server.log
+/-H
+/-d
+video/agentrouter-launch/frames/
+video/agentrouter-launch/frames-v2/
+video/agentrouter-launch/frames-v3/
+video/agentrouter-launch/frames-v4-intro/
+video/agentrouter-launch/frames-v4-outro/
+video/agentrouter-launch/real-claude-frames/
+video/agentrouter-launch/real-claude-free-frames/
+video/agentrouter-launch/real-claude-success-frames/
