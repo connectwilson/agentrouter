@@ -119,7 +119,9 @@ When `DATABASE_URL` is present, Provider Studio writes provider configs to Postg
 
 `ADN_PROVIDER_SECRET_PASSPHRASE` is a platform encryption key, not a provider API key. It must stay stable across deploys. Rotating it without re-encrypting secrets will make existing provider credentials unreadable.
 
-`ADN_BROWSER_HANDOFF_SECRET` signs short-lived native-browser handoffs. Hosted instances must use the same stable value so a request created on one instance can be completed on another; `/agent-router/ready` rejects production traffic when it is missing or shorter than 32 characters.
+`ADN_BROWSER_HANDOFF_SECRET` signs short-lived native-browser handoffs and derives a separate encryption key for browser login sessions and OAuth state. Hosted instances must use the same stable value so requests and logins remain valid across instances and deploys; `/agent-router/ready` rejects production traffic when it is missing or shorter than 32 characters. Rotating this secret intentionally signs every browser user out.
+
+The first deployment that moves from legacy in-memory login cookies to sealed sessions requires existing browser users to sign in once. Sessions issued after that deployment survive normal restarts and rolling deploys for their existing 14-day lifetime. Installed MCP bridges keep their AgentRouter credential in the user's local credential store and do not normally need to reconnect after a server deployment.
 
 `ADN_ERC8004_DISCOVERY_ENABLED=0` is the operational rollback switch for external 8004scan discovery, import, and Hire handoffs; it does not disable Vendor identity registration or the rest of AgentRouter. `ADN_ERC8004_VERIFICATION_TTL_MS` controls how long a verified external endpoint can be hired before re-verification and is capped at 24 hours.
 
