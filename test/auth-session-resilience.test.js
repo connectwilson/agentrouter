@@ -76,7 +76,13 @@ test("signed browser sessions fail closed after tampering or secret rotation", (
     now: 1_000
   });
   const cookie = issued.cookie.split(";")[0];
-  const tampered = `${cookie.slice(0, -1)}${cookie.endsWith("a") ? "b" : "a"}`;
+  const [cookieName, token] = cookie.split("=");
+  const segments = token.split(".");
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const tag = segments.at(-1);
+  const canonicalIndex = alphabet.indexOf(tag.at(-1));
+  segments[segments.length - 1] = `${tag.slice(0, -1)}${alphabet[canonicalIndex + 1]}`;
+  const tampered = `${cookieName}=${segments.join(".")}`;
   assert.equal(currentUser({ headers: { cookie: tampered } }, createMemoryStore(), {
     sessionSecret: SESSION_SECRET,
     now: 2_000
