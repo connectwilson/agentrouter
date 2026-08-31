@@ -58,6 +58,8 @@ export function publicServiceRecord(record) {
     source_provenance: provenance,
     quality_profile: summarizeQuality(record),
     health,
+    erc8004: publicErc8004(record),
+    erc8004_status: publicErc8004Status(record),
     badges: summarizeBadges(record),
     created_at: record.created_at || null,
     updated_at: record.updated_at || null
@@ -660,6 +662,7 @@ export function publicServiceSummary(record) {
     source_provenance_level: summarizeProvenance(record).source_provenance_level,
     reputation: publicReputation(record, trust, health),
     erc8004: publicErc8004(record),
+    erc8004_status: publicErc8004Status(record),
     created_at: record.created_at || null,
     updated_at: record.updated_at || null
   };
@@ -677,6 +680,7 @@ export function publicErc8004(record) {
   const agentId = registration?.agent_id || record?.manifest?.provider?.erc8004_agent_id || null;
   if (!agentId) return null;
   const chain = registration?.network || settlementChain().network;
+  if (chain !== settlementChain().network) return null;
   return {
     agent_id: String(agentId),
     chain,
@@ -685,6 +689,30 @@ export function publicErc8004(record) {
     // Null off BSC: 8004scan indexes nothing else, and a link that 404s is
     // worse than no link.
     explorer_url: erc8004ExplorerUrl(String(agentId), chain)
+  };
+}
+
+export function publicErc8004Status(record) {
+  const registration = record?.manifest?.registration?.erc8004;
+  const agentId = registration?.agent_id || record?.manifest?.provider?.erc8004_agent_id || null;
+  const activeChain = settlementChain().network;
+  const registeredChain = registration?.network || (agentId ? activeChain : null);
+  if (!agentId) {
+    return { state: "not_registered", active_chain: activeChain, registered_chain: null, agent_id: null };
+  }
+  if (registeredChain !== activeChain) {
+    return {
+      state: "legacy_other_chain",
+      active_chain: activeChain,
+      registered_chain: registeredChain,
+      agent_id: String(agentId)
+    };
+  }
+  return {
+    state: registration?.status === "submitted" ? "submitted" : "registered",
+    active_chain: activeChain,
+    registered_chain: registeredChain,
+    agent_id: String(agentId)
   };
 }
 

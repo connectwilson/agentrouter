@@ -150,18 +150,19 @@ test("a placeholder registry is reported, not paid for in gas", async () => {
 
 test("an agent's explorer link follows the chain it was registered on", async () => {
   const { publicErc8004 } = await import("../src/store.js");
-  const onArc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "22197", network: "arc-testnet", chain_id: 5042002 } } } });
-  // 8004scan indexes BSC only. Linking an Arc agent into BSC's registry — which
-  // is what using the ambient chain did — produces a link to a different agent.
-  assert.equal(onArc.explorer_url, null);
-  assert.equal(onArc.registry, "0x8004A818BFB912233c491871b3d84c89A494BD9e");
+  await withChain("bsc", () => {
+    // A legacy Arc token id must disappear from the active BSC marketplace. It
+    // is not the same identity and must never link to an unrelated BSC agent.
+    const onArc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "22197", network: "arc-testnet", chain_id: 5042002 } } } });
+    assert.equal(onArc, null);
 
-  const onBsc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "7", network: "bsc", chain_id: 56 } } } });
-  assert.equal(onBsc.explorer_url, "https://8004scan.io/agents/56/7");
+    const onBsc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "7", network: "bsc", chain_id: 56 } } } });
+    assert.equal(onBsc.explorer_url, "https://8004scan.io/agents/56/7");
 
-  // No identity until one is actually minted.
-  assert.equal(publicErc8004({ manifest: { registration: { erc8004: {} } } }), null);
-  assert.equal(publicErc8004({}), null);
+    // No identity until one is actually minted.
+    assert.equal(publicErc8004({ manifest: { registration: { erc8004: {} } } }), null);
+    assert.equal(publicErc8004({}), null);
+  });
 });
 
 test("an Arc identity token id is never reused as a BSC feedback target", async () => {
