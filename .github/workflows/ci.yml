@@ -21,4 +21,4 @@ jobs:
       - run: npm test
       - run: npm run mcp:npm:pack
       - run: npm run mcp-package-smoke
-      - run: npm audit --audit-level=high
+      - run: npm run audit:dependencies

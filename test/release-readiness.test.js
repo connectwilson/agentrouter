@@ -24,10 +24,12 @@ test("readiness reports dependency failures separately from process liveness", a
 
 test("release CI runs tests, package smoke checks, and dependency audit", async () => {
   const workflow = await fs.readFile(".github/workflows/ci.yml", "utf8");
+  const manifest = JSON.parse(await fs.readFile("package.json", "utf8"));
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /npm test/);
   assert.match(workflow, /mcp:npm:pack/);
-  assert.match(workflow, /npm audit/);
+  assert.match(workflow, /npm run audit:dependencies/);
+  assert.equal(manifest.scripts["audit:dependencies"], "node scripts/dependency-audit.js");
   assert.match(workflow, /mcp-package-smoke/);
   assert.match(workflow, /git diff --check/);
 });

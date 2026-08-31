@@ -22,6 +22,7 @@
     "catalog:coverage": "node scripts/public-api-pipeline.js coverage",
     "monitor:binance:futures-delists": "node scripts/monitor-binance-futures-delists.js",
     "router:ask": "node bin/agent-router.js ask",
+    "audit:dependencies": "node scripts/dependency-audit.js",
     "audit:payments": "node scripts/payment-audit.js",
     "canary:settlement": "node scripts/live-settlement-canary.js",
     "mcpb:check": "node --check mcpb/agentrouter/server/index.js",
