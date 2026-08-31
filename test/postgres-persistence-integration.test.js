@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 
 import { Pool } from "pg";
+import { createConfigHash, createManifestHash, prepareProviderConfigForPersistence } from "../src/provider-config.js";
 
 import {
   claimPersistentAnchorJob,
@@ -33,6 +35,39 @@ test("real Postgres enforces persistence safety boundaries", {
   skip: testDatabaseUrl ? false : "TEST_DATABASE_URL is not configured"
 }, async () => {
   await runPostgresAssertions(testDatabaseUrl);
+});
+
+test("independent processes serialize first-run schema creation on real Postgres", {
+  skip: testDatabaseUrl ? false : "TEST_DATABASE_URL is not configured"
+}, async () => {
+  const schemaName = `adn_schema_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const pool = new Pool({ connectionString: testDatabaseUrl, ssl: false, allowExitOnIdle: true });
+  await pool.query(`create schema "${schemaName}"`);
+  try {
+    const persistenceUrl = new URL("../src/persistence.js", import.meta.url).href;
+    const childScript = `
+      import { Pool } from "pg";
+      import { ensurePersistenceSchema } from ${JSON.stringify(persistenceUrl)};
+      const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, ssl: false });
+      try { await ensurePersistenceSchema(pool); } finally { await pool.end(); }
+    `;
+    await Promise.all(Array.from({ length: 3 }, () => runNodeProcess(childScript, {
+      ...process.env,
+      TEST_DATABASE_URL: testDatabaseUrl,
+      PGOPTIONS: `-c search_path=${schemaName}`
+    })));
+
+    const created = await pool.query(
+      `select table_name from information_schema.tables
+       where table_schema = $1 and table_name in ('adn_provider_claims', 'adn_registered_services')
+       order by table_name`,
+      [schemaName]
+    );
+    assert.deepEqual(created.rows.map((row) => row.table_name), ["adn_provider_claims", "adn_registered_services"]);
+  } finally {
+    await pool.query(`drop schema if exists "${schemaName}" cascade`);
+    await pool.end();
+  }
 });
 
 async function runPostgresAssertions(databaseUrl) {
@@ -116,11 +151,10 @@ async function assertAtomicRegistrationClaims({ inspectionPool, cleanup, uniqueP
   assert.equal(rows.rows[0].owner_key, winner.owner_key);
 
   assert.ok(winner.claim_token, "the winning reservation must return an opaque finalization token");
-  const finalized = await finalizePersistentServiceRegistration({
-    serviceId: winner.service_id,
-    providerId: winner.provider_id,
-    ownerKey: winner.owner_key,
-    claimToken: winner.claim_token,
+  const preparedConfig = await prepareProviderConfigForPersistence({
+    provider_config_version: "adn_provider_config_v1",
+    version: "1.0.0",
+    source: { type: "static_json", data: { ok: true } },
     manifest: {
       service_id: winner.service_id,
       provider: { provider_id: winner.provider_id },
@@ -133,14 +167,23 @@ async function assertAtomicRegistrationClaims({ inspectionPool, cleanup, uniqueP
       }
     }
   });
+  const finalized = await finalizePersistentServiceRegistration({
+    serviceId: winner.service_id,
+    providerId: winner.provider_id,
+    ownerKey: winner.owner_key,
+    claimToken: winner.claim_token,
+    config: preparedConfig,
+    manifest: preparedConfig.manifest
+  });
   assert.equal(finalized.status, "published");
   assert.equal(finalized.claim_state, "active");
 
   const finalizedRows = await inspectionPool.query(
-    `select s.claim_state as service_state, p.claim_state as provider_state, r.manifest
+    `select s.claim_state as service_state, p.claim_state as provider_state, r.manifest, c.config
      from adn_service_claims s
      join adn_provider_claims p on p.provider_id = s.provider_id
      join adn_registered_services r on r.service_id = s.service_id
+     join adn_provider_configs c on c.service_id = s.service_id
      where s.service_id = $1`,
     [winner.service_id]
   );
@@ -148,6 +191,29 @@ async function assertAtomicRegistrationClaims({ inspectionPool, cleanup, uniqueP
   assert.equal(finalizedRows.rows[0].service_state, "active");
   assert.equal(finalizedRows.rows[0].provider_state, "active");
   assert.deepEqual(finalizedRows.rows[0].manifest.registration.owner, { user_key: winner.owner_key });
+  assert.deepEqual(finalizedRows.rows[0].config.manifest.registration.owner, { user_key: winner.owner_key });
+  assert.equal(finalizedRows.rows[0].manifest.integrity.manifest_hash, createManifestHash(finalizedRows.rows[0].manifest));
+  assert.equal(finalizedRows.rows[0].manifest.integrity.config_hash, createConfigHash(finalizedRows.rows[0].config));
+
+  const sameOwnerServiceId = `${uniquePrefix}_same_owner_pending`;
+  const sameOwnerProviderId = `${uniquePrefix}_same_owner_provider`;
+  const sameOwnerKey = `${uniquePrefix}:same-owner`;
+  cleanup.serviceIds.push(sameOwnerServiceId);
+  cleanup.providerIds.push(sameOwnerProviderId);
+  const sameOwnerRace = await Promise.all([
+    claimPersistentServiceRegistration({
+      serviceId: sameOwnerServiceId,
+      providerId: sameOwnerProviderId,
+      ownerKey: sameOwnerKey
+    }),
+    claimPersistentServiceRegistration({
+      serviceId: sameOwnerServiceId,
+      providerId: sameOwnerProviderId,
+      ownerKey: sameOwnerKey
+    })
+  ]);
+  assert.deepEqual(sameOwnerRace.map((claim) => claim.status).sort(), ["claimed", "pending"]);
+  assert.equal(sameOwnerRace.filter((claim) => claim.claim_token).length, 1, "a live pending token must have one publisher");
 
   const providerRows = await inspectionPool.query(
     "select provider_id, owner_key from adn_provider_claims where provider_id = any($1::text[])",
@@ -356,6 +422,7 @@ async function cleanupRows(pool, cleanup) {
     await pool.query("delete from adn_settlement_tx_claims where service_id = any($1::text[])", [cleanup.settlementServiceIds]);
   }
   if (cleanup.serviceIds.length) {
+    await pool.query("delete from adn_provider_configs where service_id = any($1::text[])", [cleanup.serviceIds]);
     await pool.query("delete from adn_registered_services where service_id = any($1::text[])", [cleanup.serviceIds]);
     await pool.query("delete from adn_service_claims where service_id = any($1::text[])", [cleanup.serviceIds]);
   }
@@ -367,4 +434,23 @@ async function cleanupRows(pool, cleanup) {
 function restoreEnvironment(name, value) {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
+}
+
+function runNodeProcess(script, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+      cwd: new URL("..", import.meta.url),
+      env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`schema child failed (${signal || code}): ${stderr || stdout}`));
+    });
+  });
 }

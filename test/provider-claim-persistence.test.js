@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "../src/server.js";
 import { baseFundFlowManifest } from "../src/fixtures.js";
 import { hydratePersistentServiceEvents } from "../src/registry.js";
+import { createConfigHash, createManifestHash, prepareProviderConfigForPersistence } from "../src/provider-config.js";
 import { createMemoryStore } from "../src/store.js";
 
 const ALICE = {
@@ -307,12 +308,24 @@ test("legacy services without claim events are backfilled into the authoritative
     health_checks: []
   });
   const claimed = [];
+  const finalized = [];
+  const rewrittenLocalConfigs = [];
+  const legacyConfig = {
+    provider_config_version: "adn_provider_config_v1",
+    version: "1.0.0",
+    source: { type: "static_json", data: { ok: true } },
+    manifest: structuredClone(manifest)
+  };
 
   const result = await hydratePersistentServiceEvents(store, {
     enabled: () => true,
+    listRegistrations: async () => [],
     listClaims: async () => [],
     listServiceClaims: async () => [],
     listEvents: async () => [],
+    readConfig: async () => structuredClone(legacyConfig),
+    prepareConfig: prepareProviderConfigForPersistence,
+    writePreparedConfig: async (config) => { rewrittenLocalConfigs.push(structuredClone(config)); },
     claimRegistration: async ({ serviceId, providerId, ownerKey }) => {
       claimed.push({ serviceId, providerId, ownerKey });
       return {
@@ -320,15 +333,376 @@ test("legacy services without claim events are backfilled into the authoritative
         service_id: serviceId,
         provider_id: providerId,
         owner_key: ownerKey,
+        claim_state: "pending",
+        claim_token: "legacy-registration-token",
+        lease_expires_at: new Date(Date.now() + 60_000).toISOString(),
+        claimed_at: new Date().toISOString()
+      };
+    },
+    finalizeRegistration: async (registration) => {
+      finalized.push(registration);
+      return {
+        status: "published",
+        service_id: registration.serviceId,
+        provider_id: registration.providerId,
+        owner_key: registration.ownerKey,
+        claim_state: "active",
         claimed_at: new Date().toISOString()
       };
     }
   });
 
   assert.deepEqual(claimed, [{ serviceId: "legacy_service", providerId: "legacy_vendor", ownerKey: ALICE_KEY }]);
+  assert.equal(finalized.length, 1);
+  assert.deepEqual(
+    {
+      serviceId: finalized[0].serviceId,
+      providerId: finalized[0].providerId,
+      ownerKey: finalized[0].ownerKey,
+      claimToken: finalized[0].claimToken
+    },
+    {
+      serviceId: "legacy_service",
+      providerId: "legacy_vendor",
+      ownerKey: ALICE_KEY,
+      claimToken: "legacy-registration-token"
+    }
+  );
+  assert.equal(finalized[0].manifest.registration.owner.user_key, ALICE_KEY);
+  assert.equal(finalized[0].manifest.registration.owner.email, undefined);
+  assert.equal(finalized[0].config.manifest.registration.owner.email, undefined);
+  assert.equal(finalized[0].config.manifest.integrity.manifest_hash, createManifestHash(finalized[0].config.manifest));
+  assert.equal(finalized[0].config.manifest.integrity.config_hash, createConfigHash(finalized[0].config));
+  assert.equal(rewrittenLocalConfigs.length, 1);
   assert.equal(store.providerClaims.get("legacy_vendor")?.owner_key, ALICE_KEY);
+  assert.equal(store.providerClaims.get("legacy_vendor")?.claim_state, "active");
+  assert.equal(store.serviceClaims.get("legacy_service")?.claim_state, "active");
   assert.equal(result.provider_claims, 1);
   assert.equal(JSON.stringify(claimed).includes(ALICE.email), false);
+  assert.equal(JSON.stringify(finalized).includes(ALICE.email), false);
+
+  const restarted = createMemoryStore();
+  let restartFinalizations = 0;
+  await hydratePersistentServiceEvents(restarted, {
+    enabled: () => true,
+    listRegistrations: async () => [structuredClone(finalized[0].manifest)],
+    listClaims: async () => [{
+      status: "owned",
+      provider_id: "legacy_vendor",
+      owner_key: ALICE_KEY,
+      claim_state: "active"
+    }],
+    listServiceClaims: async () => [{
+      status: "owned",
+      service_id: "legacy_service",
+      provider_id: "legacy_vendor",
+      owner_key: ALICE_KEY,
+      claim_state: "active"
+    }],
+    listEvents: async () => [],
+    claimRegistration: async () => ({
+      status: "owned",
+      service_id: "legacy_service",
+      provider_id: "legacy_vendor",
+      owner_key: ALICE_KEY,
+      claim_state: "active"
+    }),
+    finalizeRegistration: async () => { restartFinalizations += 1; }
+  });
+  assert.equal(restarted.services.has("legacy_service"), true);
+  assert.equal(restarted.serviceClaims.get("legacy_service")?.claim_state, "active");
+  assert.equal(restartFinalizations, 0, "an active durable registration must hydrate idempotently");
+});
+
+test("concurrent legacy backfills share one pending owner without stealing its token", async () => {
+  const serviceId = "concurrent_legacy_service";
+  const providerId = "concurrent_legacy_vendor";
+  const ownerKey = ALICE_KEY;
+  let claimState = null;
+  let tokenSequence = 0;
+  let finalizeCalls = 0;
+  let rewriteCalls = 0;
+  let releaseActivation;
+  const activated = new Promise((resolve) => { releaseActivation = resolve; });
+  const persistence = {
+    async claimRegistration() {
+      if (!claimState) {
+        const claimToken = `token-${++tokenSequence}`;
+        claimState = { claim_state: "pending", claim_token: claimToken };
+        return {
+          status: "claimed",
+          service_id: serviceId,
+          provider_id: providerId,
+          owner_key: ownerKey,
+          ...claimState
+        };
+      }
+      return {
+        status: claimState.claim_state === "active" ? "owned" : "pending",
+        service_id: serviceId,
+        provider_id: providerId,
+        owner_key: ownerKey,
+        claim_state: claimState.claim_state
+      };
+    },
+    async finalizeRegistration({ claimToken }) {
+      finalizeCalls += 1;
+      assert.equal(claimToken, "token-1");
+      await new Promise((resolve) => setImmediate(resolve));
+      claimState = { claim_state: "active" };
+      releaseActivation();
+      return {
+        status: "published",
+        service_id: serviceId,
+        provider_id: providerId,
+        owner_key: ownerKey,
+        claim_state: "active"
+      };
+    },
+    async waitForRegistration() {
+      await activated;
+      return {
+        status: "owned",
+        service_id: serviceId,
+        provider_id: providerId,
+        owner_key: ownerKey,
+        claim_state: "active"
+      };
+    }
+  };
+
+  function legacyStore() {
+    const store = createMemoryStore();
+    const legacyManifest = serviceManifest(serviceId, providerId);
+    legacyManifest.registration = { owner: { user_key: ownerKey } };
+    store.services.set(serviceId, {
+      manifest: legacyManifest,
+      feedback_events: [],
+      quality_events: [],
+      validation_runs: [],
+      health_checks: []
+    });
+    return store;
+  }
+  const options = {
+    enabled: () => true,
+    listRegistrations: async () => [],
+    listClaims: async () => [],
+    listServiceClaims: async () => [],
+    listEvents: async () => [],
+    readConfig: async () => null,
+    claimRegistration: persistence.claimRegistration,
+    finalizeRegistration: persistence.finalizeRegistration,
+    waitForRegistration: persistence.waitForRegistration,
+    rewriteRegistration: async ({ serviceId, providerId, ownerKey }) => {
+      rewriteCalls += 1;
+      return {
+        status: "owned",
+        service_id: serviceId,
+        provider_id: providerId,
+        owner_key: ownerKey,
+        claim_state: "active"
+      };
+    }
+  };
+
+  const stores = [legacyStore(), legacyStore()];
+  const results = await Promise.all(stores.map((store) => hydratePersistentServiceEvents(store, options)));
+
+  assert.equal(results.length, 2);
+  assert.equal(tokenSequence, 1);
+  assert.equal(finalizeCalls, 1);
+  assert.equal(rewriteCalls, 1);
+  assert.ok(stores.every((store) => store.serviceClaims.get(serviceId)?.claim_state === "active"));
+});
+
+test("a hash-valid local config is persisted when its legacy claim is first activated", async () => {
+  const store = createMemoryStore();
+  const manifest = serviceManifest("modern_local_service", "modern_local_vendor");
+  manifest.registration = { owner: { user_key: ALICE_KEY } };
+  const modernConfig = await prepareProviderConfigForPersistence({
+    provider_config_version: "adn_provider_config_v1",
+    version: "1.0.0",
+    source: { type: "static_json", data: { ok: true } },
+    manifest
+  });
+  store.services.set(manifest.service_id, {
+    manifest: structuredClone(modernConfig.manifest),
+    feedback_events: [],
+    quality_events: [],
+    validation_runs: [],
+    health_checks: []
+  });
+  const finalized = [];
+
+  await hydratePersistentServiceEvents(store, {
+    enabled: () => true,
+    listRegistrations: async () => [],
+    listClaims: async () => [],
+    listServiceClaims: async () => [],
+    listEvents: async () => [],
+    readConfig: async () => structuredClone(modernConfig),
+    writePreparedConfig: async () => {},
+    claimRegistration: async () => ({
+      status: "claimed",
+      service_id: manifest.service_id,
+      provider_id: manifest.provider.provider_id,
+      owner_key: ALICE_KEY,
+      claim_state: "pending",
+      claim_token: "modern-local-token"
+    }),
+    finalizeRegistration: async (registration) => {
+      finalized.push(structuredClone(registration));
+      return {
+        status: "published",
+        service_id: registration.serviceId,
+        provider_id: registration.providerId,
+        owner_key: registration.ownerKey,
+        claim_state: "active"
+      };
+    }
+  });
+
+  assert.equal(finalized.length, 1);
+  assert.ok(finalized[0].config, "first activation must durably copy the safe local provider config");
+  assert.deepEqual(finalized[0].config.manifest.registration.owner, { user_key: ALICE_KEY });
+  assert.equal(finalized[0].config.manifest.integrity.config_hash, createConfigHash(finalized[0].config));
+});
+
+test("an already-active legacy claim atomically rewrites PII-bearing config and manifest hashes", async () => {
+  const store = createMemoryStore();
+  const manifest = serviceManifest("active_legacy_service", "active_legacy_vendor");
+  manifest.registration = {
+    owner: {
+      user_key: ALICE_KEY,
+      email: ALICE.email,
+      name: ALICE.name,
+      handle: ALICE.handle
+    }
+  };
+  store.services.set(manifest.service_id, {
+    manifest,
+    feedback_events: [],
+    quality_events: [],
+    validation_runs: [],
+    health_checks: []
+  });
+  const legacyConfig = {
+    provider_config_version: "adn_provider_config_v1",
+    version: "1.0.0",
+    source: { type: "static_json", data: { ok: true } },
+    manifest: structuredClone(manifest)
+  };
+  const rewrites = [];
+  const localWrites = [];
+
+  await hydratePersistentServiceEvents(store, {
+    enabled: () => true,
+    listRegistrations: async () => [],
+    listClaims: async () => [],
+    listServiceClaims: async () => [],
+    listEvents: async () => [],
+    readConfig: async () => structuredClone(legacyConfig),
+    prepareConfig: prepareProviderConfigForPersistence,
+    writePreparedConfig: async (config) => { localWrites.push(structuredClone(config)); },
+    claimRegistration: async () => ({
+      status: "owned",
+      service_id: manifest.service_id,
+      provider_id: manifest.provider.provider_id,
+      owner_key: ALICE_KEY,
+      claim_state: "active"
+    }),
+    finalizeRegistration: async () => { throw new Error("active claims must not finalize again"); },
+    rewriteRegistration: async (registration) => {
+      rewrites.push(structuredClone(registration));
+      return {
+        status: "owned",
+        service_id: registration.serviceId,
+        provider_id: registration.providerId,
+        owner_key: registration.ownerKey,
+        claim_state: "active"
+      };
+    }
+  });
+
+  assert.equal(rewrites.length, 1);
+  assert.equal(localWrites.length, 1);
+  assert.deepEqual(rewrites[0].config.manifest.registration.owner, { user_key: ALICE_KEY });
+  assert.deepEqual(rewrites[0].manifest.registration.owner, { user_key: ALICE_KEY });
+  assert.equal(rewrites[0].manifest.integrity.manifest_hash, createManifestHash(rewrites[0].manifest));
+  assert.equal(rewrites[0].manifest.integrity.config_hash, createConfigHash(rewrites[0].config));
+  assert.deepEqual(store.services.get(manifest.service_id).manifest.registration.owner, { user_key: ALICE_KEY });
+  assert.deepEqual(store.providerClaims.get(manifest.provider.provider_id).owner, { user_key: ALICE_KEY });
+  assert.equal(JSON.stringify(rewrites).includes(ALICE.email), false);
+  assert.equal(JSON.stringify(localWrites).includes(ALICE.email), false);
+});
+
+test("an active manifest-only legacy claim rewrites durable PII and hashes when no local config exists", async () => {
+  const store = createMemoryStore();
+  const manifest = serviceManifest("active_manifest_only_service", "active_manifest_only_vendor");
+  manifest.registration = {
+    owner: {
+      user_key: ALICE_KEY,
+      email: ALICE.email,
+      name: ALICE.name,
+      handle: ALICE.handle
+    },
+    manifest_hash: "legacy-manifest-hash",
+    config_hash: "legacy-config-hash"
+  };
+  manifest.integrity = {
+    manifest_hash: "legacy-manifest-hash",
+    config_hash: "legacy-config-hash"
+  };
+  manifest.erc8257 = { metadata_hash: "legacy-manifest-hash" };
+  store.services.set(manifest.service_id, {
+    manifest,
+    feedback_events: [],
+    quality_events: [],
+    validation_runs: [],
+    health_checks: []
+  });
+  const rewrites = [];
+
+  await hydratePersistentServiceEvents(store, {
+    enabled: () => true,
+    listRegistrations: async () => [],
+    listClaims: async () => [],
+    listServiceClaims: async () => [],
+    listEvents: async () => [],
+    readConfig: async () => {
+      const error = new Error("missing local config");
+      error.code = "ENOENT";
+      throw error;
+    },
+    claimRegistration: async () => ({
+      status: "owned",
+      service_id: manifest.service_id,
+      provider_id: manifest.provider.provider_id,
+      owner_key: ALICE_KEY,
+      claim_state: "active"
+    }),
+    finalizeRegistration: async () => { throw new Error("active claims must not finalize again"); },
+    rewriteRegistration: async (registration) => {
+      rewrites.push(structuredClone(registration));
+      return {
+        status: "owned",
+        service_id: registration.serviceId,
+        provider_id: registration.providerId,
+        owner_key: registration.ownerKey,
+        claim_state: "active"
+      };
+    }
+  });
+
+  assert.equal(rewrites.length, 1);
+  assert.equal(rewrites[0].config, null);
+  assert.deepEqual(rewrites[0].manifest.registration.owner, { user_key: ALICE_KEY });
+  assert.equal(rewrites[0].manifest.integrity.manifest_hash, createManifestHash(rewrites[0].manifest));
+  assert.equal(rewrites[0].manifest.registration.manifest_hash, rewrites[0].manifest.integrity.manifest_hash);
+  assert.equal(rewrites[0].manifest.erc8257.metadata_hash, rewrites[0].manifest.integrity.manifest_hash);
+  assert.deepEqual(store.services.get(manifest.service_id).manifest.registration.owner, { user_key: ALICE_KEY });
+  assert.equal(JSON.stringify(rewrites).includes(ALICE.email), false);
 });
 
 test("hosted registration fails closed before service mutation when claim persistence is unavailable", async () => {

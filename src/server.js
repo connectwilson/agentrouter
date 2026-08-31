@@ -234,7 +234,7 @@ export function createServer({
         logRequestFailure(error, {
           requestId,
           method: req.method,
-          path: req.url
+          path: requestLogPath(req.url)
         });
       }
       sendJson(res, statusCode, {
@@ -257,14 +257,27 @@ function createRequestId() {
   return `req_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`;
 }
 
+function requestLogPath(rawUrl) {
+  try {
+    return new URL(String(rawUrl || "/"), "http://agentrouter.invalid").pathname;
+  } catch {
+    return "/invalid-request-path";
+  }
+}
+
 function logRequestFailure(error, { requestId, method, path } = {}) {
   console.error("[request-failed]", JSON.stringify({
     request_id: requestId,
     method: String(method || ""),
     path: String(path || ""),
-    code: error?.code || "INTERNAL_ERROR",
-    message: error?.message || "Unknown error"
+    code: safeDiagnosticToken(error?.code, "INTERNAL_ERROR"),
+    name: safeDiagnosticToken(error?.name, "Error")
   }));
+}
+
+function safeDiagnosticToken(value, fallback) {
+  const token = String(value || "").trim();
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(token) ? token : fallback;
 }
 
 async function routeRequest(req, res, store, baseUrl, {
@@ -1478,12 +1491,9 @@ async function routeRequest(req, res, store, baseUrl, {
       sendJson(res, 200, markExistingDrafts(result, store));
     } catch (error) {
       console.error("[studio/import/discover] failed", JSON.stringify({
-        api_url: body.api_url,
-        default_method: body.default_method || "",
-        has_secret: Boolean(body.secret_value),
-        auth_header: body.auth_header || "",
         statusCode: error.statusCode || 500,
-        message: error.message
+        code: safeDiagnosticToken(error?.code, "API_DISCOVERY_FAILED"),
+        name: safeDiagnosticToken(error?.name, "Error")
       }));
       throw error;
     }
@@ -5504,10 +5514,32 @@ function schedulePublicApiRefresh(server, automation) {
     if (!result.ok) console.warn("[public-api-pipeline] scheduled refresh deferred", JSON.stringify(result.error));
   };
   server.publicApiPipelineTimer = setInterval(() => {
-    void refresh();
+    const tracked = trackPublicApiRefresh(server, refresh());
+    void tracked.catch((error) => {
+      console.warn("[public-api-pipeline] scheduled refresh failed", JSON.stringify({
+        code: safeDiagnosticToken(error?.code, "PUBLIC_API_REFRESH_FAILED"),
+        name: safeDiagnosticToken(error?.name, "Error")
+      }));
+    });
   }, automation.refreshIntervalMs);
   server.publicApiPipelineTimer.unref?.();
-  server.once("close", () => clearInterval(server.publicApiPipelineTimer));
+  server.once("close", () => stopScheduledPublicApiRefresh(server));
+}
+
+function trackPublicApiRefresh(server, work) {
+  server.publicApiPipelineRefreshTasks ||= new Set();
+  let tracked;
+  tracked = Promise.resolve(work).finally(() => {
+    server.publicApiPipelineRefreshTasks.delete(tracked);
+  });
+  server.publicApiPipelineRefreshTasks.add(tracked);
+  return tracked;
+}
+
+function stopScheduledPublicApiRefresh(server) {
+  if (!server.publicApiPipelineTimer) return;
+  clearInterval(server.publicApiPipelineTimer);
+  server.publicApiPipelineTimer = null;
 }
 
 function publicApiPipelineProgress(store) {
@@ -5534,10 +5566,26 @@ async function closeHttpServer(server) {
   });
 }
 
+export async function waitForTrackedPublicApiWork(server) {
+  const awaited = new Set();
+  while (true) {
+    const pending = [...(server.publicApiPipelineRefreshTasks || [])];
+    const bootstrapCompletion = server.bootstrapCompletion;
+    if (bootstrapCompletion && typeof bootstrapCompletion.then === "function") pending.push(bootstrapCompletion);
+    const jobCompletion = server.store?.publicApiPipelineJobCompletion;
+    if (jobCompletion && typeof jobCompletion.then === "function") pending.push(jobCompletion);
+    const unseen = pending.filter((work) => work && typeof work.then === "function" && !awaited.has(work));
+    if (!unseen.length) return;
+    for (const work of unseen) awaited.add(work);
+    await Promise.allSettled(unseen);
+  }
+}
+
 export function installGracefulShutdown(server, {
   timeoutMs = 10_000,
   closePersistencePool = closePersistence,
-  signals = ["SIGTERM", "SIGINT"]
+  signals = ["SIGTERM", "SIGINT"],
+  exitProcess = process.exit
 } = {}) {
   let closing = null;
   const shutdown = async (signal) => {
@@ -5545,16 +5593,22 @@ export function installGracefulShutdown(server, {
     closing = (async () => {
       const timeout = setTimeout(() => {
         console.error(`[shutdown] ${signal} timed out after ${timeoutMs}ms`);
-        process.exit(1);
+        exitProcess(1);
       }, timeoutMs);
       timeout.unref?.();
       try {
+        stopScheduledPublicApiRefresh(server);
         await closeHttpServer(server);
+        await waitForTrackedPublicApiWork(server);
         await closePersistencePool();
-        process.exit(0);
+        exitProcess(0);
       } catch (error) {
-        console.error(`[shutdown] ${signal} failed: ${error.message}`);
-        process.exit(1);
+        console.error("[shutdown] failed", JSON.stringify({
+          signal,
+          code: safeDiagnosticToken(error?.code, "SHUTDOWN_FAILED"),
+          name: safeDiagnosticToken(error?.name, "Error")
+        }));
+        exitProcess(1);
       } finally {
         clearTimeout(timeout);
       }
@@ -5574,31 +5628,36 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const host = process.env.HOST || "0.0.0.0";
   const server = createServer();
   installGracefulShutdown(server);
-  server.listen(port, host, async () => {
-    const baseUrl = `http://127.0.0.1:${port}`;
-    // Refuse to serve an on-chain backend whose RPC is a different chain than
-    // configured, or whose token scale disagrees with the contract. Either one
-    // moves the wrong amount of money, and both are silent at runtime.
-    try {
-      const settlement = await assertSettlementChainReady({ backend: currentPaymentBackend() });
-      if (!settlement.skipped) {
-        console.log(`Settlement: ${settlement.chain} (chain ${settlement.chain_id}), ${settlement.asset} with ${settlement.decimals} decimals`);
-      }
-      const evidenceAnchor = await assertEvidenceAnchorReady();
-      if (!evidenceAnchor.skipped) {
-        console.log(`Evidence anchor: ${evidenceAnchor.contract_address} on ${evidenceAnchor.chain}`);
-      }
-    } catch (error) {
-      console.error(`On-chain preflight failed: ${error.message}`);
-      process.exit(1);
-    }
-    try {
-      await bootstrapServer(server, baseUrl);
-      console.log(`Agent Native Data Network MVP running at ${baseUrl} on ${host}`);
-    } catch (error) {
-      // Keep liveness available for diagnostics while readiness remains 503,
-      // so the platform never sends traffic to a partially hydrated process.
-      console.error(`Server bootstrap failed: ${error.message}`);
-    }
+  server.bootstrapCompletion = new Promise((resolveBootstrap) => {
+    server.listen(port, host, () => {
+      void (async () => {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        // Refuse to serve an on-chain backend whose RPC is a different chain than
+        // configured, or whose token scale disagrees with the contract. Either one
+        // moves the wrong amount of money, and both are silent at runtime.
+        try {
+          const settlement = await assertSettlementChainReady({ backend: currentPaymentBackend() });
+          if (!settlement.skipped) {
+            console.log(`Settlement: ${settlement.chain} (chain ${settlement.chain_id}), ${settlement.asset} with ${settlement.decimals} decimals`);
+          }
+          const evidenceAnchor = await assertEvidenceAnchorReady();
+          if (!evidenceAnchor.skipped) {
+            console.log(`Evidence anchor: ${evidenceAnchor.contract_address} on ${evidenceAnchor.chain}`);
+          }
+        } catch (error) {
+          console.error(`On-chain preflight failed: ${error.message}`);
+          process.exit(1);
+          return;
+        }
+        try {
+          await bootstrapServer(server, baseUrl);
+          console.log(`Agent Native Data Network MVP running at ${baseUrl} on ${host}`);
+        } catch (error) {
+          // Keep liveness available for diagnostics while readiness remains 503,
+          // so the platform never sends traffic to a partially hydrated process.
+          console.error(`Server bootstrap failed: ${error.message}`);
+        }
+      })().finally(resolveBootstrap);
+    });
   });
 }

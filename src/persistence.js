@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 
 let poolPromise = null;
 let schemaReady = false;
+let schemaPromise = null;
+const PERSISTENCE_SCHEMA_LOCK_ID = 674312916;
 
 export function persistenceEnabled() {
   return Boolean(process.env.DATABASE_URL);
@@ -630,21 +632,10 @@ export async function claimPersistentServiceRegistration({
          from adn_service_claims where service_id = $1 for update`,
         [normalizedServiceId]
       )).rows[0];
-      const sameRegistration = existing
-        && String(existing.provider_id) === normalizedProviderId
-        && String(existing.owner_key) === normalizedOwnerKey;
-      if (sameRegistration && existing.claim_state === "pending") {
-        serviceRow = (await client.query(
-          `update adn_service_claims
-           set claim_token_hash = $2,
-               lease_expires_at = now() + ($3::text || ' milliseconds')::interval
-           where service_id = $1 and claim_state = 'pending'
-           returning service_id, provider_id, owner_key, claim_state, lease_expires_at, claimed_at`,
-          [normalizedServiceId, claimTokenHash, String(normalizedLeaseMs)]
-        )).rows[0];
-      } else {
-        serviceRow = existing;
-      }
+      // A live same-owner reservation already has an in-flight publisher. Do
+      // not rotate its token: that would make the first publisher's finalize
+      // fail and can strand one instance in failed bootstrap readiness.
+      serviceRow = existing;
     }
     if (!serviceRow) {
       const error = new Error("The durable service registration claim could not be confirmed.");
@@ -668,7 +659,9 @@ export async function claimPersistentServiceRegistration({
       serviceRow.claim_state === "active" ? "owned" : insertedService.rows[0] ? "claimed" : "pending",
       Boolean(insertedProvider.rows[0])
     );
-    return serviceRow.claim_state === "pending" ? { ...normalized, claim_token: claimToken } : normalized;
+    return serviceRow.claim_state === "pending" && insertedService.rows[0]
+      ? { ...normalized, claim_token: claimToken }
+      : normalized;
   } catch (error) {
     await client.query("rollback").catch(() => {});
     throw error;
@@ -720,26 +713,7 @@ export async function finalizePersistentServiceRegistration({
        where provider_id = $1 and owner_key = $2`,
       [normalizedProviderId, normalizedOwnerKey]
     );
-    if (config) {
-      const safeConfig = minimalPersistentRegistrationDocument(config);
-      await client.query(
-        `insert into adn_provider_configs (service_id, config, updated_at)
-         values ($1, $2::jsonb, now())
-         on conflict (service_id)
-         do update set config = excluded.config, updated_at = now()`,
-        [normalizedServiceId, JSON.stringify(safeConfig)]
-      );
-    }
-    if (manifest) {
-      const safeManifest = minimalPersistentRegistrationDocument(manifest);
-      await client.query(
-        `insert into adn_registered_services (service_id, manifest, updated_at)
-         values ($1, $2::jsonb, now())
-         on conflict (service_id)
-         do update set manifest = excluded.manifest, updated_at = now()`,
-        [normalizedServiceId, JSON.stringify(safeManifest)]
-      );
-    }
+    await persistRegistrationDocuments(client, normalizedServiceId, { config, manifest });
     await client.query("commit");
     return normalizePersistentServiceClaim(serviceRow, "published", false);
   } catch (error) {
@@ -747,6 +721,108 @@ export async function finalizePersistentServiceRegistration({
     throw error;
   } finally {
     client.release();
+  }
+}
+
+export async function readPersistentServiceRegistrationClaim({ serviceId } = {}) {
+  if (!persistenceEnabled()) return null;
+  const normalizedServiceId = String(serviceId || "").trim();
+  if (!normalizedServiceId) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select service_id, provider_id, owner_key, claim_state, lease_expires_at, claimed_at
+     from adn_service_claims where service_id = $1`,
+    [normalizedServiceId]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return normalizePersistentServiceClaim(row, row.claim_state === "active" ? "owned" : "pending", false);
+}
+
+export async function waitForPersistentServiceRegistrationActivation({
+  serviceId,
+  timeoutMs = 5_000,
+  pollMs = 50
+} = {}) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  const normalizedPollMs = Math.max(10, Math.min(500, Number(pollMs) || 50));
+  let claim = null;
+  do {
+    claim = await readPersistentServiceRegistrationClaim({ serviceId });
+    if (claim?.claim_state === "active") return claim;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, normalizedPollMs));
+  } while (true);
+  return claim;
+}
+
+export async function rewritePersistentServiceRegistration({
+  serviceId,
+  providerId,
+  ownerKey,
+  config = null,
+  manifest = null
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const normalizedServiceId = String(serviceId || "").trim();
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedOwnerKey = String(ownerKey || "").trim();
+  if (!normalizedServiceId || !normalizedProviderId || !normalizedOwnerKey) {
+    const error = new Error("An active service registration is required before rewriting durable documents.");
+    error.statusCode = 422;
+    error.code = "INVALID_SERVICE_REGISTRATION_REWRITE";
+    throw error;
+  }
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const locked = await client.query(
+      `select service_id, provider_id, owner_key, claim_state, claimed_at
+       from adn_service_claims
+       where service_id = $1 and provider_id = $2 and owner_key = $3 and claim_state = 'active'
+       for update`,
+      [normalizedServiceId, normalizedProviderId, normalizedOwnerKey]
+    );
+    if (!locked.rows[0]) {
+      const error = new Error("The active durable service registration could not be confirmed for rewrite.");
+      error.statusCode = 409;
+      error.code = "REGISTRATION_NOT_ACTIVE";
+      throw error;
+    }
+    await persistRegistrationDocuments(client, normalizedServiceId, { config, manifest });
+    await client.query("commit");
+    return normalizePersistentServiceClaim(locked.rows[0], "owned", false);
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function persistRegistrationDocuments(client, serviceId, { config, manifest } = {}) {
+  if (config) {
+    const safeConfig = minimalPersistentRegistrationDocument(config);
+    await client.query(
+      `insert into adn_provider_configs (service_id, config, updated_at)
+       values ($1, $2::jsonb, now())
+       on conflict (service_id)
+       do update set config = excluded.config, updated_at = now()`,
+      [serviceId, JSON.stringify(safeConfig)]
+    );
+  }
+  if (manifest) {
+    const safeManifest = minimalPersistentRegistrationDocument(manifest);
+    await client.query(
+      `insert into adn_registered_services (service_id, manifest, updated_at)
+       values ($1, $2::jsonb, now())
+       on conflict (service_id)
+       do update set manifest = excluded.manifest, updated_at = now()`,
+      [serviceId, JSON.stringify(safeManifest)]
+    );
   }
 }
 
@@ -1402,9 +1478,12 @@ async function getPool() {
 // graceful shutdown or isolated integration-test teardown). Resetting both
 // handles lets a later process lifecycle establish a fresh schema/pool.
 export async function closePersistence() {
+  const pendingSchema = schemaPromise;
+  if (pendingSchema) await pendingSchema.catch(() => {});
   const pendingPool = poolPromise;
   poolPromise = null;
   schemaReady = false;
+  schemaPromise = null;
   if (!pendingPool) return false;
   const pool = await pendingPool;
   await pool.end();
@@ -1495,8 +1574,49 @@ function normalizeDeviceAuthorizationRow(row) {
 }
 
 async function ensureSchema(pool) {
-  if (schemaReady) return;
-  await pool.query(`
+  return ensurePersistenceSchema(pool);
+}
+
+export async function ensurePersistenceSchema(pool, {
+  migrate = runPersistenceSchemaMigration
+} = {}) {
+  if (schemaReady) return true;
+  if (!schemaPromise) {
+    let pending;
+    pending = Promise.resolve()
+      .then(() => migrate(pool))
+      .then(() => {
+        schemaReady = true;
+        return true;
+      })
+      .catch((error) => {
+        if (schemaPromise === pending) schemaPromise = null;
+        throw error;
+      });
+    schemaPromise = pending;
+  }
+  return schemaPromise;
+}
+
+export async function runPersistenceSchemaMigration(pool, {
+  applySchema = applyPersistenceSchema
+} = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock($1::bigint)", [PERSISTENCE_SCHEMA_LOCK_ID]);
+    await applySchema(client);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function applyPersistenceSchema(client) {
+  await client.query(`
     create table if not exists adn_provider_configs (
       service_id text primary key,
       config jsonb not null,
@@ -1701,5 +1821,4 @@ async function ensureSchema(pool) {
     create index if not exists adn_credit_ledger_account_idx on adn_credit_ledger(account_id, created_at desc);
     create index if not exists adn_credit_api_keys_hash_idx on adn_credit_api_keys(key_hash);
   `);
-  schemaReady = true;
 }

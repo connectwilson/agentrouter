@@ -114,9 +114,15 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     dockerCommand: node scripts/monitor-binance-futures-delists.js --interval 30000
+    disk:
+      name: binance-monitor-state
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: STATE_FILE
+        value: /var/data/binance-futures-delists-state.json
       - key: BARK_URL
         sync: false
       - key: BARK_GROUP

@@ -137,6 +137,13 @@ test("all Render web runtimes expose the same hosted auth and routing env surfac
   }
 });
 
+test("Render monitor worker persists state on an attached disk", async () => {
+  const renderYaml = await fs.readFile("render.yaml", "utf8");
+  const workerBlock = renderYaml.split(/\n\s*- type:\s*worker\s*\n/)[1] || "";
+  assert.match(workerBlock, /disk:\s*\n\s+name:\s*binance-monitor-state\s*\n\s+mountPath:\s*\/var\/data\s*\n\s+sizeGB:\s*1/);
+  assert.match(workerBlock, /key:\s*STATE_FILE\s*\n\s+value:\s*\/var\/data\/binance-futures-delists-state\.json/);
+});
+
 test("entrypoint installs graceful shutdown for http server and persistence pool", async () => {
   const serverSource = await fs.readFile("src/server.js", "utf8");
   assert.match(serverSource, /installGracefulShutdown\(server\)/);
@@ -145,6 +152,9 @@ test("entrypoint installs graceful shutdown for http server and persistence pool
 });
 
 test("unexpected request failures return a request id header for diagnosis", async () => {
+  const originalConsoleError = console.error;
+  const errorLogs = [];
+  console.error = (...args) => errorLogs.push(args.join(" "));
   const app = createServer({
     store: createMemoryStore(),
     readinessProbe: async () => {
@@ -153,10 +163,13 @@ test("unexpected request failures return a request id header for diagnosis", asy
   });
   await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
   try {
-    const response = await fetch(`http://127.0.0.1:${app.address().port}/agent-router/ready`);
+    const response = await fetch(`http://127.0.0.1:${app.address().port}/agent-router/ready?legacy_secret=must-not-be-logged`);
     assert.equal(response.status, 500);
     assert.match(String(response.headers.get("x-request-id") || ""), /^req_/);
+    assert.match(errorLogs.join("\n"), /"path":"\/agent-router\/ready"/);
+    assert.doesNotMatch(errorLogs.join("\n"), /must-not-be-logged/);
   } finally {
     await new Promise((resolve) => app.close(resolve));
+    console.error = originalConsoleError;
   }
 });

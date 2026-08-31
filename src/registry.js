@@ -17,10 +17,20 @@ import {
   listPersistentServiceEvents,
   persistenceEnabled,
   persistentRegistryRequired,
+  rewritePersistentServiceRegistration,
   releasePersistentServiceRegistration,
+  waitForPersistentServiceRegistrationActivation,
   writePersistentServiceEvent
 } from "./persistence.js";
-import { finalizeManifest, readProviderConfig, writeProviderConfig } from "./provider-config.js";
+import {
+  createConfigHash,
+  createManifestHash,
+  finalizeManifest,
+  prepareProviderConfigForPersistence,
+  readProviderConfig,
+  writePreparedProviderConfigFile,
+  writeProviderConfig
+} from "./provider-config.js";
 import { assertArcUsdcBalance, sendArcUsdcTransfer, isEvmAddress } from "./arc-payment.js";
 import { assertPolicyAllows, readWallet, recordPayment } from "./wallet.js";
 import { registerErc8004AgentIdentity } from "./erc8004.js";
@@ -1765,7 +1775,13 @@ export async function hydratePersistentServiceEvents(store, {
   listServiceClaims = listPersistentServiceRegistrationClaims,
   listEvents = listPersistentServiceEvents,
   claim = claimPersistentProviderId,
-  claimRegistration = claimPersistentServiceRegistration
+  claimRegistration = claimPersistentServiceRegistration,
+  finalizeRegistration = finalizePersistentServiceRegistration,
+  waitForRegistration = waitForPersistentServiceRegistrationActivation,
+  rewriteRegistration = rewritePersistentServiceRegistration,
+  readConfig = readProviderConfig,
+  prepareConfig = prepareProviderConfigForPersistence,
+  writePreparedConfig = writePreparedProviderConfigFile
 } = {}) {
   const durableRegistrations = await listRegistrations();
   for (const manifest of durableRegistrations) {
@@ -1800,9 +1816,70 @@ export async function hydratePersistentServiceEvents(store, {
       const providerId = String(record.manifest?.provider?.provider_id || "").trim();
       const ownerKey = String(record.manifest?.registration?.owner?.user_key || "").trim();
       if (!serviceId || !providerId || !ownerKey) continue;
-      const durable = await claimRegistration({ serviceId, providerId, ownerKey });
+      const documents = await prepareLegacyRegistrationDocuments(record, serviceId, {
+        readConfig,
+        prepareConfig
+      });
+      let durable = await claimRegistration({ serviceId, providerId, ownerKey });
       if (!durable || durable.status === "provider_conflict") throw providerAlreadyClaimedError(providerId);
       if (durable.status === "service_conflict") throw serviceAlreadyRegisteredError(serviceId);
+      if (durable.claim_state === "pending") {
+        if (durable.claim_token) {
+          if (typeof finalizeRegistration !== "function") throw providerClaimPersistenceUnavailable();
+          try {
+            durable = await finalizeRegistration({
+              serviceId,
+              providerId,
+              ownerKey,
+              claimToken: durable.claim_token,
+              config: documents.config,
+              manifest: documents.manifest
+            });
+            documents.persisted = true;
+          } catch (error) {
+            if (error?.code !== "REGISTRATION_LEASE_LOST") {
+              throw providerClaimPersistenceUnavailable(error);
+            }
+            durable = await waitForCanonicalRegistration(waitForRegistration, {
+              serviceId,
+              providerId,
+              ownerKey
+            });
+          }
+        } else {
+          durable = await waitForCanonicalRegistration(waitForRegistration, {
+            serviceId,
+            providerId,
+            ownerKey
+          });
+        }
+      }
+      if (documents.rewrite_required && !documents.persisted) {
+        if (typeof rewriteRegistration !== "function") throw providerClaimPersistenceUnavailable();
+        try {
+          durable = await rewriteRegistration({
+            serviceId,
+            providerId,
+            ownerKey,
+            config: documents.config,
+            manifest: documents.manifest
+          });
+          documents.persisted = true;
+        } catch (error) {
+          throw providerClaimPersistenceUnavailable(error);
+        }
+      }
+      if (!durable || String(durable.claim_state || "active") !== "active") {
+        throw providerClaimPersistenceUnavailable();
+      }
+      if (documents.config && documents.persisted) {
+        await writePreparedConfig(documents.config);
+      }
+      record.manifest = documents.manifest;
+      const localProviderClaim = store.providerClaims?.get(providerId);
+      if (localProviderClaim?.owner_key === ownerKey) {
+        localProviderClaim.owner = { user_key: ownerKey };
+      }
       materializeServiceRegistrationClaim(store, durable);
       providersWithServices.add(providerId);
     }
@@ -1823,6 +1900,85 @@ export async function hydratePersistentServiceEvents(store, {
     provider_claims: store.providerClaims?.size || 0,
     service_claims: store.serviceClaims?.size || 0
   };
+}
+
+async function prepareLegacyRegistrationDocuments(record, serviceId, {
+  readConfig,
+  prepareConfig
+} = {}) {
+  let config = null;
+  try {
+    config = typeof readConfig === "function" ? await readConfig(serviceId) : null;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (config && providerConfigRequiresMigration(config)) {
+    const prepared = await prepareConfig(structuredClone(config));
+    return {
+      config: prepared,
+      manifest: prepared.manifest,
+      rewrite_required: true,
+      persisted: false
+    };
+  }
+  const safeConfig = config ? minimalRegistrationPersistenceDocument(config) : null;
+  const sourceManifest = safeConfig?.manifest || record.manifest;
+  const manifest = minimalRegistrationPersistenceDocument(sourceManifest);
+  finalizeManifest(manifest, safeConfig);
+  return {
+    config: safeConfig,
+    manifest,
+    rewrite_required: manifestRequiresMigration(sourceManifest, manifest),
+    persisted: false
+  };
+}
+
+function manifestRequiresMigration(sourceManifest, preparedManifest) {
+  const owner = sourceManifest?.registration?.owner || null;
+  const ownerKeys = owner && typeof owner === "object" ? Object.keys(owner) : [];
+  if (ownerKeys.some((key) => key !== "user_key")) return true;
+  const manifestHash = createManifestHash(preparedManifest);
+  const configHash = preparedManifest?.integrity?.config_hash;
+  return sourceManifest?.integrity?.manifest_hash !== manifestHash
+    || sourceManifest?.integrity?.config_hash !== configHash
+    || sourceManifest?.registration?.manifest_hash !== manifestHash
+    || sourceManifest?.registration?.config_hash !== configHash
+    || sourceManifest?.erc8257?.metadata_hash !== manifestHash;
+}
+
+function providerConfigRequiresMigration(config) {
+  const manifest = config?.manifest || {};
+  const owner = manifest.registration?.owner || null;
+  const ownerKeys = owner && typeof owner === "object" ? Object.keys(owner) : [];
+  if (ownerKeys.some((key) => key !== "user_key")) return true;
+  if (config?.source?.auth?.secret_value) return true;
+  const manifestHash = createManifestHash(manifest);
+  const configHash = createConfigHash(config);
+  return manifest.integrity?.manifest_hash !== manifestHash
+    || manifest.integrity?.config_hash !== configHash
+    || manifest.registration?.manifest_hash !== manifestHash
+    || manifest.registration?.config_hash !== configHash
+    || manifest.erc8257?.metadata_hash !== manifestHash;
+}
+
+async function waitForCanonicalRegistration(waitForRegistration, expected) {
+  if (typeof waitForRegistration !== "function") throw providerClaimPersistenceUnavailable();
+  let canonical;
+  try {
+    canonical = await waitForRegistration(expected);
+  } catch (error) {
+    throw providerClaimPersistenceUnavailable(error);
+  }
+  if (
+    !canonical
+    || canonical.claim_state !== "active"
+    || String(canonical.service_id || "") !== expected.serviceId
+    || String(canonical.provider_id || "") !== expected.providerId
+    || String(canonical.owner_key || "") !== expected.ownerKey
+  ) {
+    throw providerClaimPersistenceUnavailable();
+  }
+  return canonical;
 }
 
 /**

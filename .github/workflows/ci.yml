@@ -22,6 +22,10 @@ jobs:
       - run: npm run mcp:npm:pack
       - run: npm run mcp-package-smoke
       - run: npm run audit:dependencies
+      - name: Verify production container runtime permissions
+        run: |
+          docker build --tag agentrouter-ci .
+          docker run --rm --entrypoint sh agentrouter-ci -c 'test "$(id -u)" -ne 0 && test -w /app/providers && touch /app/providers/.write-smoke'
 
   postgres-persistence:
     runs-on: ubuntu-latest
