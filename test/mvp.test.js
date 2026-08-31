@@ -1725,8 +1725,12 @@ test("AgentRouter capability packs expose live availability and filter the servi
     assert.equal(packResponse.headers.get("cache-control"), "no-store");
     const packPayload = await packResponse.json();
     assert.equal(packPayload.capability_pack_list_version, "agent_router_capability_packs_v1");
-    assert.equal(packPayload.total, 5);
+    assert.equal(packPayload.total, 9);
     assert.ok(packPayload.packs.find((pack) => pack.id === "onchain").service_count >= 1);
+    assert.deepEqual(
+      packPayload.packs.filter((pack) => pack.group === "smart_money_jobs").map((pack) => pack.id),
+      ["rebalancing", "grid-trading", "yield-optimization", "health-factor-monitoring"]
+    );
 
     const catalog = await fetch(`${baseUrl}/capabilities`).then((response) => response.json());
     assert.ok(catalog.capability_packs.some((pack) => pack.contract === "onchain.analyze_activity"));

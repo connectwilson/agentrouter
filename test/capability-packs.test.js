@@ -24,12 +24,71 @@ function record({ serviceId, capabilities, price = "0.01", verified = true }) {
 test("capability packs expose stable agent-facing contracts instead of provider taxonomy", () => {
   const packs = listCapabilityPacks([]);
 
-  assert.deepEqual(packs.map((pack) => pack.id), ["research", "social", "markets", "onchain", "operations"]);
+  assert.deepEqual(packs.map((pack) => pack.id), [
+    "rebalancing",
+    "grid-trading",
+    "yield-optimization",
+    "health-factor-monitoring",
+    "research",
+    "social",
+    "markets",
+    "onchain",
+    "operations"
+  ]);
   for (const pack of packs) {
     assert.match(pack.contract, /^[a-z]+\.[a-z_]+$/);
     assert.ok(pack.sample_task.length > 10);
     assert.ok(pack.description.length > 20);
     assert.deepEqual(pack.input_schema.required, ["task"]);
+  }
+});
+
+test("smart-money job packs expose distinct discovery queries and do not collapse into generic market data", () => {
+  const packs = listCapabilityPacks([]);
+  const jobs = packs.filter((pack) => pack.group === "smart_money_jobs");
+
+  assert.deepEqual(jobs.map((pack) => pack.id), [
+    "rebalancing",
+    "grid-trading",
+    "yield-optimization",
+    "health-factor-monitoring"
+  ]);
+  assert.equal(new Set(jobs.map((pack) => pack.discovery_query)).size, 4);
+  assert.ok(jobs.every((pack) => pack.discovery_query.includes("BNB Chain")));
+
+  const rebalancer = record({ serviceId: "lp_manager", capabilities: ["lp_range_rebalancing"] });
+  const grid = record({ serviceId: "grid_bot", capabilities: ["grid_trading"] });
+  const yieldAgent = record({ serviceId: "yield_router", capabilities: ["yield_optimization"] });
+  const health = record({ serviceId: "venus_guard", capabilities: ["health_factor_monitoring"] });
+  const genericMarket = record({ serviceId: "quotes", capabilities: ["market_data"] });
+
+  assert.equal(serviceMatchesCapabilityPack(rebalancer.manifest, "rebalancing"), true);
+  assert.equal(serviceMatchesCapabilityPack(grid.manifest, "grid-trading"), true);
+  assert.equal(serviceMatchesCapabilityPack(yieldAgent.manifest, "yield-optimization"), true);
+  assert.equal(serviceMatchesCapabilityPack(health.manifest, "health-factor-monitoring"), true);
+  assert.equal(serviceMatchesCapabilityPack(genericMarket.manifest, "grid-trading"), false);
+  assert.equal(serviceMatchesCapabilityPack(genericMarket.manifest, "yield-optimization"), false);
+});
+
+test("smart-money job contracts resolve only to the matching executable capability", () => {
+  const records = [
+    record({ serviceId: "lp_manager", capabilities: ["lp_range_rebalancing"] }),
+    record({ serviceId: "grid_bot", capabilities: ["grid_trading"] }),
+    record({ serviceId: "yield_router", capabilities: ["yield_optimization"] }),
+    record({ serviceId: "venus_guard", capabilities: ["health_factor_monitoring"] })
+  ];
+
+  const calls = [
+    ["defi.rebalance_liquidity", "lp_range_rebalancing"],
+    ["trading.manage_grid", "grid_trading"],
+    ["defi.optimize_yield", "yield_optimization"],
+    ["lending.protect_health_factor", "health_factor_monitoring"]
+  ];
+
+  for (const [contract, expectedCapability] of calls) {
+    const result = resolveCapabilityPackCall(records, { contract, params: { task: `Run ${contract}` } });
+    assert.equal(result.ok, true);
+    assert.equal(result.resolved_capability, expectedCapability);
   }
 });
 
