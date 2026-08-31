@@ -1,17 +1,36 @@
 import dns from "node:dns/promises";
+import https from "node:https";
 import net from "node:net";
 
 const SCAN_API = "https://8004scan.io/api/v1/public";
 const CACHE_TTL_MS = 60_000;
+const AGENT_CACHE_LIMIT = 500;
+const MAX_METADATA_BYTES = 1024 * 1024;
+const MAX_METADATA_REDIRECTS = 3;
 const PROTOCOLS = ["mcp", "a2a", "http", "x402"];
 
-export function createErc8004Discovery({ fetchImpl = fetch, endpointProbe = null, now = () => Date.now(), minRequestIntervalMs = 6100 } = {}) {
+export function createErc8004Discovery({
+  fetchImpl = fetch,
+  endpointProbe = null,
+  now = () => Date.now(),
+  minRequestIntervalMs = 6100,
+  cacheTtlMs = CACHE_TTL_MS,
+  agentCacheLimit = AGENT_CACHE_LIMIT
+} = {}) {
   const cache = new Map();
   const agentCache = new Map();
+  const safeCacheTtlMs = Math.max(1, Number(cacheTtlMs) || CACHE_TTL_MS);
+  const safeAgentCacheLimit = Math.max(1, Number(agentCacheLimit) || AGENT_CACHE_LIMIT);
+  const rememberAgent = (agent) => {
+    const key = `${agent.chain_id}:${agent.agent_id}`;
+    agentCache.delete(key);
+    agentCache.set(key, { at: now(), value: agent });
+    while (agentCache.size > safeAgentCacheLimit) agentCache.delete(agentCache.keys().next().value);
+  };
   let lastRemoteAt = 0;
   const cached = async (key, load) => {
     const hit = cache.get(key);
-    if (hit && now() - hit.at < CACHE_TTL_MS) return hit.value;
+    if (hit && now() - hit.at < safeCacheTtlMs) return hit.value;
     const pending = Promise.resolve().then(load);
     cache.set(key, { at: now(), value: pending });
     try {
@@ -42,18 +61,25 @@ export function createErc8004Discovery({ fetchImpl = fetch, endpointProbe = null
         : `/agents?chainId=${chainId}&limit=${safeLimit}`;
       return cached(`search:${path}`, async () => {
         const payload = await remote(path);
-        const agents = agentRows(payload).map(normalizeErc8004Agent).filter((agent) => agent.agent_id);
-        for (const agent of agents) agentCache.set(`${agent.chain_id}:${agent.agent_id}`, agent);
+        const agents = agentRows(payload)
+          .map(normalizeErc8004Agent)
+          .filter((agent) => agent.agent_id && Number(agent.chain_id) === Number(chainId));
+        for (const agent of agents) rememberAgent(agent);
         return agents;
       });
     },
     async get({ chainId = 56, agentId }) {
       if (!/^\d+$/.test(String(agentId || ""))) throw requestError("ERC8004_AGENT_ID_INVALID", "agent_id must be a numeric token id.");
       const indexed = agentCache.get(`${Number(chainId)}:${agentId}`);
-      if (indexed) return indexed;
-      return cached(`agent:${chainId}:${agentId}`, async () => normalizeErc8004Agent(
-        await remote(`/agents/${Number(chainId)}/${encodeURIComponent(agentId)}`)
-      ));
+      if (indexed && now() - indexed.at < safeCacheTtlMs) return indexed.value;
+      if (indexed) agentCache.delete(`${Number(chainId)}:${agentId}`);
+      return cached(`agent:${chainId}:${agentId}`, async () => {
+        const agent = normalizeErc8004Agent(await remote(`/agents/${Number(chainId)}/${encodeURIComponent(agentId)}`));
+        if (Number(agent.chain_id) !== Number(chainId)) throw requestError("ERC8004_INDEX_CHAIN_MISMATCH", "8004scan returned an agent from a different chain.");
+        if (String(agent.agent_id) !== String(agentId)) throw requestError("ERC8004_INDEX_ID_MISMATCH", "8004scan returned a different agent token id.");
+        rememberAgent(agent);
+        return agent;
+      });
     },
     async verify(agent) {
       return verifyErc8004Agent(agent, { fetchImpl, endpointProbe });
@@ -152,60 +178,186 @@ async function fetchScanJson(fetchImpl, path) {
     throw requestError("ERC8004_SCAN_UNAVAILABLE", `8004scan could not be reached: ${String(error?.message || "network error")}.`, 502);
   }
   if (!response?.ok) throw requestError("ERC8004_SCAN_UNAVAILABLE", `8004scan returned HTTP ${response?.status || "unknown"}.`, 502);
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    throw requestError("ERC8004_SCAN_INVALID_RESPONSE", "8004scan returned malformed JSON.", 502);
+  }
 }
 
 async function fetchPublicJson(value, fetchImpl) {
-  await assertPublicHttpsUrl(value);
-  let response;
-  try {
-    response = await retryOnce(() => fetchImpl(value, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5000) }));
-  } catch (error) {
-    throw requestError("ERC8004_METADATA_UNAVAILABLE", `Agent metadata could not be reached: ${String(error?.message || "network error")}.`, 422);
+  let target = String(value || "");
+  for (let redirects = 0; redirects <= MAX_METADATA_REDIRECTS; redirects += 1) {
+    let response;
+    try {
+      response = await retryOnce(() => requestPublicEndpoint(target, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(5000)
+      }, fetchImpl, { collectBody: true }));
+    } catch (error) {
+      if (String(error?.code || "").startsWith("ERC8004_ENDPOINT_")) throw error;
+      throw requestError("ERC8004_METADATA_UNAVAILABLE", `Agent metadata could not be reached: ${String(error?.message || "network error")}.`, 422);
+    }
+    if (isRedirectStatus(response?.status)) {
+      const location = responseHeader(response, "location");
+      if (!location) throw requestError("ERC8004_METADATA_UNAVAILABLE", "Agent metadata returned a redirect without a location.", 422);
+      target = new URL(location, target).toString();
+      continue;
+    }
+    if (!response?.ok) throw requestError("ERC8004_METADATA_UNAVAILABLE", `Agent metadata returned HTTP ${response?.status || "unknown"}.`, 422);
+    try {
+      return await response.json();
+    } catch {
+      throw requestError("ERC8004_METADATA_INVALID_RESPONSE", "Agent metadata returned malformed JSON.", 422);
+    }
   }
-  if (!response?.ok) throw requestError("ERC8004_METADATA_UNAVAILABLE", `Agent metadata returned HTTP ${response?.status || "unknown"}.`, 422);
-  return response.json();
+  throw requestError("ERC8004_METADATA_REDIRECT_LIMIT", "Agent metadata exceeded the safe redirect limit.", 422);
 }
 
 async function retryOnce(run) {
   try {
     return await run();
-  } catch {
+  } catch (error) {
+    if (String(error?.code || "").startsWith("ERC8004_")) throw error;
     await new Promise((resolve) => setTimeout(resolve, 150));
     return run();
   }
 }
 
 async function probePublicEndpoint(endpoint, { protocol }, fetchImpl) {
-  await assertPublicHttpsUrl(endpoint);
-  const response = await fetchImpl(endpoint, {
-    method: protocol === "http" ? "HEAD" : "GET",
+  const request = (method) => requestPublicEndpoint(endpoint, {
+    method,
     headers: { accept: protocol === "mcp" ? "text/event-stream, application/json" : "application/json" },
-    redirect: "manual",
     signal: AbortSignal.timeout(5000)
-  });
-  return { ok: Boolean(response) && Number(response.status) < 500, status: response?.status ?? null };
+  }, fetchImpl);
+  let response = await request(protocol === "http" ? "HEAD" : "GET");
+  if (protocol === "http" && Number(response?.status) === 405) response = await request("GET");
+  const status = Number(response?.status);
+  const successful = status >= 200 && status < 300;
+  const contentType = responseHeader(response, "content-type").toLowerCase();
+  const protocolShapeValid = protocol === "mcp"
+    ? /(?:text\/event-stream|application\/(?:json|[^;]+\+json))/.test(contentType)
+    : protocol === "a2a"
+      ? /application\/(?:json|[^;]+\+json)/.test(contentType)
+      : true;
+  return {
+    ok: protocol === "http" ? (successful || status === 402) : (successful && protocolShapeValid),
+    status: response?.status ?? null
+  };
 }
 
-async function assertPublicHttpsUrl(value) {
+async function resolvePublicHttpsUrl(value) {
   let url;
   try { url = new URL(String(value || "")); } catch { throw requestError("ERC8004_ENDPOINT_INVALID", "Advertised endpoint is not a valid URL.", 422); }
   if (url.protocol !== "https:") throw requestError("ERC8004_ENDPOINT_INVALID", "Advertised endpoints must use HTTPS.", 422);
   if (url.username || url.password) throw requestError("ERC8004_ENDPOINT_INVALID", "Advertised endpoints cannot contain credentials.", 422);
-  const addresses = net.isIP(url.hostname)
-    ? [{ address: url.hostname }]
-    : await dns.lookup(url.hostname, { all: true }).catch(() => []);
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const addresses = net.isIP(hostname)
+    ? [{ address: hostname }]
+    : await dns.lookup(hostname, { all: true }).catch(() => []);
   if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) {
     throw requestError("ERC8004_ENDPOINT_NOT_PUBLIC", "Advertised endpoint must resolve to a public address.", 422);
   }
-  return url;
+  return { url, addresses };
+}
+
+async function requestPublicEndpoint(value, init, fetchImpl, { collectBody = false } = {}) {
+  const resolved = await resolvePublicHttpsUrl(value);
+  if (fetchImpl !== globalThis.fetch) {
+    return fetchImpl(resolved.url.toString(), { ...init, redirect: "manual" });
+  }
+  return pinnedHttpsRequest(resolved, init, { collectBody });
+}
+
+export function pinnedHttpsRequest({ url, addresses }, init = {}, { collectBody = false, requestImpl = https.request } = {}) {
+  return new Promise((resolve, reject) => {
+    const selected = addresses[0]?.address;
+    const family = net.isIP(selected);
+    const request = requestImpl(url, {
+      method: init.method || "GET",
+      headers: init.headers,
+      signal: init.signal,
+      lookup: (_hostname, options, callback) => {
+        if (options?.all) callback(null, [{ address: selected, family }]);
+        else callback(null, selected, family);
+      }
+    }, (response) => {
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        if (!collectBody) return;
+        size += chunk.length;
+        if (size > MAX_METADATA_BYTES) {
+          request.destroy(requestError("ERC8004_METADATA_TOO_LARGE", "Agent metadata exceeds the maximum allowed size.", 422));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.once("error", reject);
+      response.once("end", () => {
+        const body = collectBody ? Buffer.concat(chunks).toString("utf8") : "";
+        resolve({
+          ok: Number(response.statusCode) >= 200 && Number(response.statusCode) < 300,
+          status: response.statusCode,
+          headers: { get: (name) => String(response.headers[String(name).toLowerCase()] || "") },
+          json: async () => JSON.parse(body)
+        });
+      });
+      if (!collectBody) response.resume();
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+function responseHeader(response, name) {
+  if (typeof response?.headers?.get === "function") return String(response.headers.get(name) || "");
+  return String(response?.headers?.[String(name).toLowerCase()] || "");
+}
+
+function isRedirectStatus(status) {
+  return [301, 302, 303, 307, 308].includes(Number(status));
 }
 
 function isPrivateAddress(address) {
-  if (address === "::1" || address === "0.0.0.0" || address.startsWith("fe80:") || address.startsWith("fc") || address.startsWith("fd")) return true;
-  if (!net.isIPv4(address)) return false;
-  const [a, b] = address.split(".").map(Number);
-  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  const normalized = String(address || "").toLowerCase().split("%")[0];
+  if (net.isIPv4(normalized)) return isNonPublicIpv4(normalized);
+  if (!net.isIPv6(normalized)) return true;
+  if (normalized === "::" || normalized === "::1") return true;
+  const first = Number.parseInt(normalized.split(":", 1)[0] || "0", 16);
+  if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00) return true;
+  if (normalized.startsWith("2001:db8:")) return true;
+  const mapped = ipv4FromMappedIpv6(normalized);
+  return mapped ? isNonPublicIpv4(mapped) : false;
+}
+
+function isNonPublicIpv4(address) {
+  const [a, b, c] = address.split(".").map(Number);
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 0 && c === 0)
+    || (a === 192 && b === 0 && c === 2)
+    || (a === 192 && b === 168)
+    || (a === 198 && (b === 18 || b === 19))
+    || (a === 198 && b === 51 && c === 100)
+    || (a === 203 && b === 0 && c === 113)
+    || a >= 224;
+}
+
+function ipv4FromMappedIpv6(address) {
+  if (!address.startsWith("::ffff:")) return null;
+  const suffix = address.slice("::ffff:".length);
+  if (net.isIPv4(suffix)) return suffix;
+  const words = suffix.split(":");
+  if (words.length !== 2 || words.some((word) => !/^[0-9a-f]{1,4}$/.test(word))) return null;
+  const high = Number.parseInt(words[0], 16);
+  const low = Number.parseInt(words[1], 16);
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
 }
 
 function agentRows(payload) {

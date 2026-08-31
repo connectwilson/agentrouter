@@ -69,7 +69,7 @@ test("import verifies advertised protocols before an external agent becomes call
         x402: { status: "declared", endpoint: "https://agents.example/query" }
       },
       preferred_adapter: "mcp",
-      verified_at: "2026-08-31T00:00:00.000Z"
+      verified_at: new Date().toISOString()
     })
   };
   const server = createServer({ store, erc8004Discovery: discovery });

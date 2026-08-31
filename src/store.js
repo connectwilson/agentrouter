@@ -681,7 +681,9 @@ export function publicErc8004(record) {
   const agentId = registration?.agent_id || record?.manifest?.provider?.erc8004_agent_id || null;
   if (!agentId) return null;
   const chain = registration?.network || settlementChain().network;
-  if (chain !== settlementChain().network) return null;
+  const activeChain = settlementChain();
+  if (chain !== activeChain.network) return null;
+  if (registration?.chain_id != null && Number(registration.chain_id) !== activeChain.id) return null;
   return {
     agent_id: String(agentId),
     chain,
@@ -704,6 +706,14 @@ export function publicErc8004Status(record) {
   if (registeredChain !== activeChain) {
     return {
       state: "legacy_other_chain",
+      active_chain: activeChain,
+      registered_chain: registeredChain,
+      agent_id: String(agentId)
+    };
+  }
+  if (registration?.chain_id != null && Number(registration.chain_id) !== settlementChain().id) {
+    return {
+      state: "chain_mismatch",
       active_chain: activeChain,
       registered_chain: registeredChain,
       agent_id: String(agentId)

@@ -289,7 +289,7 @@ async function routeRequest(req, res, store, baseUrl, {
       agents: agents.map((agent) => {
         const normalized = normalizeErc8004Agent(agent);
         const existing = imported.get(`56:${normalized.agent_id}`);
-        return existing || { ...normalized, callable: false, verification_state: "registered_unverified" };
+        return existing ? publicImportedErc8004Agent(existing) : { ...normalized, callable: false, verification_state: "registered_unverified" };
       })
     }, { "cache-control": "public, max-age=30, stale-while-revalidate=60" });
     return;
@@ -313,7 +313,13 @@ async function routeRequest(req, res, store, baseUrl, {
       return;
     }
     const indexed = normalizeErc8004Agent(await erc8004Discovery.get({ chainId, agentId: body.agent_id }));
-    const verification = await erc8004Discovery.verify(indexed);
+    if (Number(indexed.chain_id) !== chainId) {
+      throw requestError("ERC8004_INDEX_CHAIN_MISMATCH", "8004scan returned an agent from a different chain.", 422);
+    }
+    if (String(indexed.agent_id) !== String(body.agent_id || "")) {
+      throw requestError("ERC8004_INDEX_ID_MISMATCH", "8004scan returned a different agent token id.", 422);
+    }
+    const verification = normalizeImportedErc8004Verification(await erc8004Discovery.verify(indexed));
     const imported = {
       ...indexed,
       ...verification,
@@ -339,7 +345,9 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req);
     const key = `${Number(body.chain_id || 56)}:${String(body.agent_id || "")}`;
     const agent = store.erc8004Imports?.get(key) || null;
-    if (!agent?.callable || agent.verification_state !== "verified_callable" || !agent.preferred_adapter) {
+    const protocol = agent?.preferred_adapter;
+    const protocolEntry = protocol ? agent?.protocols?.[protocol] : null;
+    if (!agent?.callable || agent.verification_state !== "verified_callable" || !protocol || protocolEntry?.status !== "verified" || !protocolEntry?.endpoint) {
       sendJson(res, 409, {
         error: {
           code: "ERC8004_AGENT_NOT_CALLABLE",
@@ -349,16 +357,30 @@ async function routeRequest(req, res, store, baseUrl, {
       });
       return;
     }
-    const protocol = agent.preferred_adapter;
+    if (!erc8004VerificationFresh(agent)) {
+      sendJson(res, 409, {
+        error: {
+          code: "ERC8004_VERIFICATION_EXPIRED",
+          message: "This Agent's endpoint verification has expired. Re-import it before hiring."
+        },
+        action: {
+          type: "reverify_erc8004_agent",
+          endpoint: "/agent-router/erc8004/import",
+          chain_id: agent.chain_id,
+          agent_id: agent.agent_id
+        }
+      });
+      return;
+    }
     sendJson(res, 200, {
       ok: true,
       status: "ready_to_call",
       agent: { chain_id: agent.chain_id, agent_id: agent.agent_id, name: agent.name },
       dispatch: {
         adapter: protocol,
-        endpoint: agent.protocols?.[protocol]?.endpoint || null,
-        input: body.input && typeof body.input === "object" ? body.input : {},
-        payment: agent.protocols?.x402?.status !== "not_declared" ? "x402" : "provider_declared",
+        endpoint: protocolEntry.endpoint,
+        input: isPlainRecord(body.input) ? body.input : {},
+        payment: agent.protocols?.x402?.status && agent.protocols.x402.status !== "not_declared" ? "x402" : "provider_declared",
         execution: "handoff_required"
       }
     });
@@ -1690,6 +1712,52 @@ async function routeRequest(req, res, store, baseUrl, {
 function publicImportedErc8004Agent(agent = {}) {
   const { imported_by: _importedBy, ...publicAgent } = agent;
   return publicAgent;
+}
+
+function normalizeImportedErc8004Verification(verification = {}) {
+  const adapter = verification.preferred_adapter;
+  const endpoint = adapter && verification.protocols?.[adapter]?.endpoint;
+  const verified = verification.callable === true
+    && verification.verification_state === "verified_callable"
+    && ["mcp", "a2a", "http"].includes(adapter)
+    && verification.protocols?.[adapter]?.status === "verified"
+    && typeof endpoint === "string"
+    && endpoint.startsWith("https://");
+  if (verified) {
+    return {
+      ...verification,
+      verified_at: Number.isFinite(Date.parse(String(verification.verified_at || "")))
+        ? verification.verified_at
+        : new Date().toISOString()
+    };
+  }
+  return {
+    ...verification,
+    callable: false,
+    verification_state: "registered_unverified",
+    preferred_adapter: null,
+    verification_error: verification.verification_error || "No advertised endpoint passed validation."
+  };
+}
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function erc8004VerificationFresh(agent, now = Date.now()) {
+  const verifiedAt = Date.parse(String(agent?.verified_at || ""));
+  const configuredTtl = Number(process.env.ADN_ERC8004_VERIFICATION_TTL_MS);
+  const ttlMs = Number.isFinite(configuredTtl) && configuredTtl > 0
+    ? Math.min(configuredTtl, 24 * 60 * 60 * 1000)
+    : 15 * 60 * 1000;
+  return Number.isFinite(verifiedAt) && now - verifiedAt >= 0 && now - verifiedAt <= ttlMs;
+}
+
+function requestError(code, message, statusCode = 422) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
 }
 
 export async function agentRouterReadiness({

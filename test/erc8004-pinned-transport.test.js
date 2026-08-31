@@ -68,3 +68,25 @@ test("pinned HTTPS transport supports all-address lookup mode without re-resolvi
   });
   assert.deepEqual(pinned, [{ address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 }]);
 });
+
+test("pinned HTTPS transport rejects oversized Agent metadata", async () => {
+  const requestImpl = (_url, _options, onResponse) => {
+    const request = new EventEmitter();
+    request.end = () => {
+      const response = new PassThrough();
+      response.statusCode = 200;
+      response.headers = { "content-type": "application/json" };
+      onResponse(response);
+      response.end(Buffer.alloc(1024 * 1024 + 1));
+    };
+    request.destroy = (error) => request.emit("error", error);
+    return request;
+  };
+
+  await assert.rejects(pinnedHttpsRequest({
+    url: new URL("https://vendor.example/too-large.json"),
+    addresses: [{ address: "93.184.216.34", family: 4 }]
+  }, { method: "GET" }, { collectBody: true, requestImpl }), (error) => {
+    return error.code === "ERC8004_METADATA_TOO_LARGE" && error.statusCode === 422;
+  });
+});

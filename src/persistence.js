@@ -119,7 +119,7 @@ export async function writePersistentServiceEvent({ eventType, serviceId, reques
   return true;
 }
 
-function serviceEventIdempotencyKey({ eventType, serviceId, requestId, event }) {
+export function serviceEventIdempotencyKey({ eventType, serviceId, requestId, event }) {
   const idempotentTypes = new Set([
     "consumer_feedback",
     "consumer_feedback_anchor",
@@ -136,7 +136,9 @@ function serviceEventIdempotencyKey({ eventType, serviceId, requestId, event }) 
     eventType,
     serviceId || "",
     requestId,
-    event?.consumer_id || event?.actor_key || ""
+    event?.consumer_id
+      || event?.actor_key
+      || (eventType === "erc8004_agent_import" ? event?.verified_at || event?.imported_at : "")
   ])).digest("hex");
 }
 

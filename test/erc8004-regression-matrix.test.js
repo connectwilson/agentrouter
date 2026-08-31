@@ -43,6 +43,7 @@ function verifiedImport(overrides = {}) {
     callable: true,
     verification_state: "verified_callable",
     preferred_adapter: "http",
+    verified_at: new Date().toISOString(),
     protocols: {
       mcp: { status: "not_declared", endpoint: null },
       a2a: { status: "not_declared", endpoint: null },
@@ -355,6 +356,18 @@ test("an HTML page at a declared MCP endpoint is reachable but not protocol-veri
   assert.equal(result.protocols.mcp.status, "unreachable");
 });
 
+test("default A2A verification requires a JSON response", async () => {
+  const metadata = { services: [{ name: "A2A", endpoint: "https://1.1.1.1/a2a" }] };
+  const valid = await verifyErc8004Agent(scanAgent({ metadata }), {
+    fetchImpl: async () => ({ status: 200, headers: new Headers({ "content-type": "application/agent-card+json" }) })
+  });
+  const invalid = await verifyErc8004Agent(scanAgent({ metadata }), {
+    fetchImpl: async () => ({ status: 200, headers: new Headers({ "content-type": "text/plain" }) })
+  });
+  assert.equal(valid.preferred_adapter, "a2a");
+  assert.equal(invalid.callable, false);
+});
+
 test("private transport endpoints are marked unreachable rather than promoted", async () => {
   const result = await verifyErc8004Agent(scanAgent({ metadata: { services: [{ name: "HTTP", endpoint: "https://127.0.0.1/private" }] } }), {
     fetchImpl: async () => { throw new Error("must not fetch"); }
@@ -411,6 +424,40 @@ test("metadata redirects are handled manually and cannot cross into a private ne
   }), (error) => ["ERC8004_ENDPOINT_INVALID", "ERC8004_ENDPOINT_NOT_PUBLIC"].includes(error.code));
   assert.equal(followedAutomatically, false);
   assert.equal(privateFetch, false);
+});
+
+test("metadata follows a bounded relative redirect when every hop remains public HTTPS", async () => {
+  const calls = [];
+  const result = await verifyErc8004Agent(scanAgent({ metadata: null, metadata_uri: "https://1.1.1.1/start" }), {
+    endpointProbe: async () => ({ ok: true }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, redirect: options.redirect });
+      if (url.endsWith("/start")) {
+        return { status: 302, headers: new Headers({ location: "/metadata.json" }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ services: [{ name: "HTTP", endpoint: "https://1.1.1.1/query" }] })
+      };
+    }
+  });
+  assert.equal(result.preferred_adapter, "http");
+  assert.deepEqual(calls, [
+    { url: "https://1.1.1.1/start", redirect: "manual" },
+    { url: "https://1.1.1.1/metadata.json", redirect: "manual" }
+  ]);
+});
+
+test("metadata rejects a redirect loop after the bounded hop limit", async () => {
+  let calls = 0;
+  await assert.rejects(verifyErc8004Agent(scanAgent({ metadata: null, metadata_uri: "https://1.1.1.1/loop" }), {
+    fetchImpl: async () => {
+      calls += 1;
+      return { status: 302, headers: new Headers({ location: "/loop" }) };
+    }
+  }), (error) => error.code === "ERC8004_METADATA_REDIRECT_LIMIT");
+  assert.equal(calls, 4);
 });
 
 for (const blocked of [
