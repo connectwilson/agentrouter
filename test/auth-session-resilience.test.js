@@ -7,6 +7,7 @@ import {
   createAuthSession,
   currentUser
 } from "../src/auth.js";
+import { createServer } from "../src/server.js";
 import { createMemoryStore } from "../src/store.js";
 
 const SESSION_SECRET = "shared-auth-session-secret-at-least-32-characters";
@@ -38,6 +39,32 @@ test("a browser login remains valid after process restart on another instance", 
     now: 2_000
   }), USER);
   assert.equal(restartedStore.authSessions.size, 0);
+});
+
+test("a restarted HTTP instance accepts the sealed login without hydrating session state", async () => {
+  const issued = createAuthSession({
+    store: createMemoryStore(),
+    baseUrl: "https://agentrouter.network",
+    user: USER,
+    sessionSecret: SESSION_SECRET,
+    now: Date.now()
+  });
+  const previousSecret = process.env.ADN_BROWSER_HANDOFF_SECRET;
+  process.env.ADN_BROWSER_HANDOFF_SECRET = SESSION_SECRET;
+  const restarted = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => restarted.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${restarted.address().port}/account`, {
+      headers: { cookie: issued.cookie.split(";")[0] },
+      redirect: "manual"
+    });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Wilson|connectwilson/);
+  } finally {
+    await new Promise((resolve) => restarted.close(resolve));
+    if (previousSecret == null) delete process.env.ADN_BROWSER_HANDOFF_SECRET;
+    else process.env.ADN_BROWSER_HANDOFF_SECRET = previousSecret;
+  }
 });
 
 test("signed browser sessions fail closed after tampering or secret rotation", () => {
@@ -73,6 +100,23 @@ test("signed browser sessions expire at the existing fourteen-day boundary", () 
     sessionSecret: SESSION_SECRET,
     now: issuedAt + 14 * 24 * 60 * 60 * 1000 + 1
   }), null);
+});
+
+test("signed browser sessions bound identity claims below browser cookie limits", () => {
+  const issued = createAuthSession({
+    store: createMemoryStore(),
+    baseUrl: "https://agentrouter.network",
+    user: { ...USER, name: "n".repeat(10_000), avatar_url: `https://example.com/${"a".repeat(10_000)}` },
+    sessionSecret: SESSION_SECRET,
+    now: 1_000
+  });
+  assert.ok(issued.cookie.length < 3800);
+  const recovered = currentUser(requestFor(issued.cookie), createMemoryStore(), {
+    sessionSecret: SESSION_SECRET,
+    now: 2_000
+  });
+  assert.equal(recovered.name.length, 160);
+  assert.equal(recovered.avatar_url.length, 512);
 });
 
 test("legacy in-memory sessions remain compatible in local development", () => {
