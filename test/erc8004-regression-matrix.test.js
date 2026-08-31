@@ -702,3 +702,83 @@ test("hire API accepts only object-shaped input", async () => {
     assert.deepEqual(payload.dispatch.input, {});
   });
 });
+
+test("hire API directly executes an explicitly requested verified free HTTP agent", async () => {
+  const { store, headers } = signedInStore();
+  store.erc8004Imports.set("56:42", verifiedImport());
+  const calls = [];
+  const executor = async (request) => {
+    calls.push(request);
+    return { answer: "Position health is safe", health_factor: 1.82 };
+  };
+  await withServer({ store, erc8004Executor: executor }, async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/erc8004/hire`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ agent_id: "42", execute: true, input: { account: "0xabc" } })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "completed");
+    assert.equal(payload.dispatch.execution, "direct_http");
+    assert.deepEqual(payload.result, { answer: "Position health is safe", health_factor: 1.82 });
+    assert.match(payload.request_id, /^erc8004_/);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].endpoint, "https://1.1.1.1/query");
+    assert.deepEqual(calls[0].input, { account: "0xabc" });
+  });
+});
+
+test("hire API never executes unless the caller opts in", async () => {
+  const { store, headers } = signedInStore();
+  store.erc8004Imports.set("56:42", verifiedImport());
+  let called = false;
+  await withServer({ store, erc8004Executor: async () => { called = true; } }, async ({ baseUrl }) => {
+    const payload = await fetch(`${baseUrl}/agent-router/erc8004/hire`, {
+      method: "POST", headers, body: JSON.stringify({ agent_id: "42", input: { task: "preview" } })
+    }).then((response) => response.json());
+
+    assert.equal(payload.status, "ready_to_call");
+    assert.equal(payload.dispatch.execution, "handoff_required");
+    assert.equal(called, false);
+  });
+});
+
+test("hire API keeps MCP and A2A execution as a client handoff", async () => {
+  for (const adapter of ["mcp", "a2a"]) {
+    const { store, headers } = signedInStore();
+    store.erc8004Imports.set("56:42", verifiedImport({
+      preferred_adapter: adapter,
+      protocols: { [adapter]: { status: "verified", endpoint: `https://1.1.1.1/${adapter}` } }
+    }));
+    let called = false;
+    await withServer({ store, erc8004Executor: async () => { called = true; } }, async ({ baseUrl }) => {
+      const payload = await fetch(`${baseUrl}/agent-router/erc8004/hire`, {
+        method: "POST", headers, body: JSON.stringify({ agent_id: "42", execute: true, input: {} })
+      }).then((response) => response.json());
+      assert.equal(payload.status, "ready_to_call");
+      assert.equal(payload.dispatch.execution, "handoff_required");
+      assert.equal(called, false);
+    });
+  }
+});
+
+test("hire API refuses automatic execution when the agent declares x402 payment", async () => {
+  const { store, headers } = signedInStore();
+  store.erc8004Imports.set("56:42", verifiedImport({ protocols: {
+    http: { status: "verified", endpoint: "https://1.1.1.1/query" },
+    x402: { status: "declared", endpoint: "https://1.1.1.1/query" }
+  } }));
+  let called = false;
+  await withServer({ store, erc8004Executor: async () => { called = true; } }, async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/agent-router/erc8004/hire`, {
+      method: "POST", headers, body: JSON.stringify({ agent_id: "42", execute: true, input: {} })
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 402);
+    assert.equal(payload.error.code, "ERC8004_PAYMENT_REQUIRED");
+    assert.equal(payload.action.type, "connect_payment_adapter");
+    assert.equal(called, false);
+  });
+});

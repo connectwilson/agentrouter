@@ -82,6 +82,8 @@ test("agent hub leads with productized capability packs that filter the live ser
   assert.match(hub, /Canonical contract/);
   assert.match(hub, /selectedPack\?\.discovery_query/);
   assert.match(hub, /erc8004\/discover\?q=/);
+  assert.match(hub, /data-execution-result/);
+  assert.match(hub, /hired\.status === "completed"/);
 });
 
 test("agent hub exposes callable AI Search API sources as one category", () => {
