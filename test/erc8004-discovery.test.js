@@ -176,19 +176,54 @@ test("8004scan composite identity uses token_id for explorer routing", () => {
   assert.equal(agent.image, "https://api.8004scan.io/agent.png");
 });
 
-test("8004scan adapter fails fast on uncached query bursts instead of exhausting the upstream quota", async () => {
+test("8004scan adapter queues uncached query bursts instead of returning a synthetic 429", async () => {
   let time = 10_000;
+  const waits = [];
+  const urls = [];
   const discovery = createErc8004Discovery({
     now: () => time,
     minRequestIntervalMs: 6100,
-    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ agents: [indexedAgent()] }) })
+    sleep: async (milliseconds) => {
+      waits.push(milliseconds);
+      time += milliseconds;
+    },
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return { ok: true, status: 200, json: async () => ({ agents: [indexedAgent()] }) };
+    }
   });
-  await discovery.search({ query: "research", chainId: 56 });
-  time += 100;
+  const [first, second] = await Promise.all([
+    discovery.search({ query: "research", chainId: 56 }),
+    discovery.search({ query: "different", chainId: 56 })
+  ]);
+  assert.equal(first[0].agent_id, "4242");
+  assert.equal(second[0].agent_id, "4242");
+  assert.deepEqual(waits, [6100]);
+  assert.equal(urls.length, 2);
+  assert.deepEqual(discovery.stats(), {
+    cache_hits: 0,
+    cache_misses: 2,
+    upstream_requests: 2,
+    queued_waits: 1,
+    upstream_failures: 0
+  });
+});
+
+test("8004scan upstream 429 preserves retry timing for HTTP clients", async () => {
+  const discovery = createErc8004Discovery({
+    minRequestIntervalMs: 0,
+    fetchImpl: async () => new Response(JSON.stringify({ error: "quota" }), {
+      status: 429,
+      headers: { "content-type": "application/json", "retry-after": "7" }
+    })
+  });
   await assert.rejects(
-    discovery.search({ query: "different", chainId: 56 }),
-    (error) => error.code === "ERC8004_SCAN_RATE_LIMITED" && error.statusCode === 429
+    discovery.search({ query: "research", chainId: 56 }),
+    (error) => error.code === "ERC8004_SCAN_RATE_LIMITED"
+      && error.statusCode === 429
+      && error.retryAfterMs === 7000
   );
+  assert.equal(discovery.stats().upstream_failures, 1);
 });
 
 test("8004scan network failures retry once and become a stable gateway error", async () => {
