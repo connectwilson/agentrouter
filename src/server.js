@@ -90,7 +90,8 @@ export function createServer({
   browserHandoffClaim = claimPersistentBrowserHandoff,
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
   registrationPaymasterRelay = relaySponsoredErc8004Registration,
-  erc8004Discovery = createErc8004Discovery()
+  erc8004Discovery = createErc8004Discovery(),
+  erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
@@ -110,7 +111,8 @@ export function createServer({
         browserHandoffClaim,
         erc8004RegistrationVerifier,
         registrationPaymasterRelay,
-        erc8004Discovery
+        erc8004Discovery,
+        erc8004DiscoveryEnabled
       });
     } catch (error) {
       const statusCode = error.statusCode || 500;
@@ -120,7 +122,7 @@ export function createServer({
           message: statusCode >= 500 ? "The server could not complete this request." : error.message
         },
         ...(error.validation ? { validation: error.validation } : {})
-      });
+      }, error.retryAfterMs ? { "retry-after": String(Math.max(1, Math.ceil(error.retryAfterMs / 1000))) } : {});
     }
   });
 
@@ -139,7 +141,8 @@ async function routeRequest(req, res, store, baseUrl, {
   browserHandoffClaim = claimPersistentBrowserHandoff,
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
   registrationPaymasterRelay = relaySponsoredErc8004Registration,
-  erc8004Discovery = createErc8004Discovery()
+  erc8004Discovery = createErc8004Discovery(),
+  erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
@@ -152,6 +155,21 @@ async function routeRequest(req, res, store, baseUrl, {
     loginReturnTo
   };
   const paymentContext = await paidInvocationContext(req, baseUrl, store);
+
+  if (!erc8004DiscoveryEnabled && [
+    "/agent-router/erc8004/discover",
+    "/agent-router/erc8004/import",
+    "/agent-router/erc8004/imports",
+    "/agent-router/erc8004/hire"
+  ].includes(url.pathname)) {
+    sendJson(res, 503, {
+      error: {
+        code: "ERC8004_DISCOVERY_DISABLED",
+        message: "External ERC-8004 discovery is temporarily unavailable."
+      }
+    }, { "retry-after": "60" });
+    return;
+  }
 
   if (req.method === "OPTIONS" && url.pathname.startsWith("/agent-router/")) {
     res.writeHead(204, apiCorsHeaders());
@@ -489,6 +507,10 @@ async function routeRequest(req, res, store, baseUrl, {
       origin: baseUrl,
       runtime_modes: ["http", "remote_mcp"],
       features: {
+        erc8004_discovery: {
+          enabled: erc8004DiscoveryEnabled,
+          ...(erc8004Discovery.stats?.() || {})
+        },
         vendor_registration_paymaster: {
           configured: Boolean(String(process.env.ADN_BSC_PAYMASTER_URL || "").trim()),
           standard: "BEP-414"

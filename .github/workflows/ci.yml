@@ -10,11 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: git diff --check "${{ github.event.pull_request.base.sha || github.event.before }}" HEAD
       - run: npm test
       - run: npm run mcp:npm:pack
       - run: npm run mcp-package-smoke

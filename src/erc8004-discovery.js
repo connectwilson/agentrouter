@@ -13,12 +13,20 @@ export function createErc8004Discovery({
   fetchImpl = fetch,
   endpointProbe = null,
   now = () => Date.now(),
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   minRequestIntervalMs = 6100,
   cacheTtlMs = CACHE_TTL_MS,
   agentCacheLimit = AGENT_CACHE_LIMIT
 } = {}) {
   const cache = new Map();
   const agentCache = new Map();
+  const metrics = {
+    cache_hits: 0,
+    cache_misses: 0,
+    upstream_requests: 0,
+    queued_waits: 0,
+    upstream_failures: 0
+  };
   const safeCacheTtlMs = Math.max(1, Number(cacheTtlMs) || CACHE_TTL_MS);
   const safeAgentCacheLimit = Math.max(1, Number(agentCacheLimit) || AGENT_CACHE_LIMIT);
   const rememberAgent = (agent) => {
@@ -28,9 +36,14 @@ export function createErc8004Discovery({
     while (agentCache.size > safeAgentCacheLimit) agentCache.delete(agentCache.keys().next().value);
   };
   let lastRemoteAt = 0;
+  let remoteQueue = Promise.resolve();
   const cached = async (key, load) => {
     const hit = cache.get(key);
-    if (hit && now() - hit.at < safeCacheTtlMs) return hit.value;
+    if (hit && now() - hit.at < safeCacheTtlMs) {
+      metrics.cache_hits += 1;
+      return hit.value;
+    }
+    metrics.cache_misses += 1;
     const pending = Promise.resolve().then(load);
     cache.set(key, { at: now(), value: pending });
     try {
@@ -43,17 +56,30 @@ export function createErc8004Discovery({
       throw error;
     }
   };
-  const remote = async (path) => {
-    const elapsed = now() - lastRemoteAt;
-    if (lastRemoteAt && elapsed < minRequestIntervalMs) {
-      const error = requestError("ERC8004_SCAN_RATE_LIMITED", "8004scan discovery is rate limited; retry shortly.", 429);
-      error.retryAfterMs = minRequestIntervalMs - elapsed;
-      throw error;
-    }
-    lastRemoteAt = now();
-    return fetchScanJson(fetchImpl, path);
+  const remote = (path) => {
+    const scheduled = remoteQueue.catch(() => {}).then(async () => {
+      const elapsed = now() - lastRemoteAt;
+      const waitMs = lastRemoteAt ? Math.max(0, minRequestIntervalMs - elapsed) : 0;
+      if (waitMs > 0) {
+        metrics.queued_waits += 1;
+        await sleep(waitMs);
+      }
+      lastRemoteAt = now();
+      metrics.upstream_requests += 1;
+      try {
+        return await fetchScanJson(fetchImpl, path);
+      } catch (error) {
+        metrics.upstream_failures += 1;
+        throw error;
+      }
+    });
+    remoteQueue = scheduled;
+    return scheduled;
   };
   return {
+    stats() {
+      return { ...metrics };
+    },
     async search({ query = "", limit = 10, chainId = 56 } = {}) {
       const safeLimit = Math.max(1, Math.min(25, Number(limit) || 10));
       const path = query
@@ -177,12 +203,24 @@ async function fetchScanJson(fetchImpl, path) {
   } catch (error) {
     throw requestError("ERC8004_SCAN_UNAVAILABLE", `8004scan could not be reached: ${String(error?.message || "network error")}.`, 502);
   }
+  if (response?.status === 429) {
+    const error = requestError("ERC8004_SCAN_RATE_LIMITED", "8004scan discovery quota is temporarily exhausted.", 429);
+    error.retryAfterMs = retryAfterMilliseconds(responseHeader(response, "retry-after"));
+    throw error;
+  }
   if (!response?.ok) throw requestError("ERC8004_SCAN_UNAVAILABLE", `8004scan returned HTTP ${response?.status || "unknown"}.`, 502);
   try {
     return await response.json();
   } catch {
     throw requestError("ERC8004_SCAN_INVALID_RESPONSE", "8004scan returned malformed JSON.", 502);
   }
+}
+
+function retryAfterMilliseconds(value) {
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+  const date = Date.parse(String(value || ""));
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 1000;
 }
 
 async function fetchPublicJson(value, fetchImpl) {

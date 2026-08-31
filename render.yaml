@@ -31,6 +31,10 @@ services:
         value: USDC
       - key: ADN_BSC_PAYMASTER_URL
         value: https://bsc-megafuel.nodereal.io/
+      - key: ADN_ERC8004_DISCOVERY_ENABLED
+        value: "1"
+      - key: ADN_ERC8004_VERIFICATION_TTL_MS
+        value: "900000"
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY
@@ -80,6 +84,10 @@ services:
         value: USDC
       - key: ADN_BSC_PAYMASTER_URL
         value: https://bsc-megafuel.nodereal.io/
+      - key: ADN_ERC8004_DISCOVERY_ENABLED
+        value: "1"
+      - key: ADN_ERC8004_VERIFICATION_TTL_MS
+        value: "900000"
       - key: ADN_EVIDENCE_ANCHOR_CONTRACT
         sync: false
       - key: ADN_EVIDENCE_ANCHOR_PRIVATE_KEY

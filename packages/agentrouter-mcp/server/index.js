@@ -328,7 +328,7 @@ function handleLocalControlPlane(message) {
     return {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "AgentRouter", version: "0.13.1" }
+      serverInfo: { name: "AgentRouter", version: "0.13.2" }
     };
   }
   if (message?.method === "ping") return {};
