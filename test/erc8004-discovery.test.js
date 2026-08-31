@@ -160,6 +160,22 @@ test("8004scan adapter normalizes API records and caches identical searches", as
   assert.match(urls[0], /agents\/search\?q=research&chainId=56&limit=3$/);
 });
 
+test("8004scan composite identity uses token_id for explorer routing", () => {
+  const agent = normalizeErc8004Agent({
+    agent_id: "56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:320096",
+    token_id: "320096",
+    chain_id: 56,
+    contract_address: "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
+    name: "A2A Agent",
+    image_url: "https://api.8004scan.io/agent.png",
+    supported_protocols: ["A2A"]
+  });
+  assert.equal(agent.agent_id, "320096");
+  assert.equal(agent.explorer_url, "https://8004scan.io/agents/56/320096");
+  assert.deepEqual(agent.protocols, ["a2a"]);
+  assert.equal(agent.image, "https://api.8004scan.io/agent.png");
+});
+
 test("8004scan adapter fails fast on uncached query bursts instead of exhausting the upstream quota", async () => {
   let time = 10_000;
   const discovery = createErc8004Discovery({
@@ -173,6 +189,19 @@ test("8004scan adapter fails fast on uncached query bursts instead of exhausting
     discovery.search({ query: "different", chainId: 56 }),
     (error) => error.code === "ERC8004_SCAN_RATE_LIMITED" && error.statusCode === 429
   );
+});
+
+test("8004scan network failures retry once and become a stable gateway error", async () => {
+  let attempts = 0;
+  const discovery = createErc8004Discovery({
+    minRequestIntervalMs: 0,
+    fetchImpl: async () => { attempts += 1; throw new TypeError("fetch failed"); }
+  });
+  await assert.rejects(
+    discovery.search({ query: "research", chainId: 56 }),
+    (error) => error.code === "ERC8004_SCAN_UNAVAILABLE" && error.statusCode === 502
+  );
+  assert.equal(attempts, 2);
 });
 
 test("protocol verification keeps x402 as payment metadata and chooses a reachable transport", async () => {

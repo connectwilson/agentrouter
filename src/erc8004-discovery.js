@@ -64,11 +64,17 @@ export function createErc8004Discovery({ fetchImpl = fetch, endpointProbe = null
 export function normalizeErc8004Agent(raw = {}) {
   const source = raw.agent || raw.data || raw;
   const chainId = Number(source.chain_id ?? source.chainId ?? 56);
-  const agentId = source.agent_id ?? source.token_id ?? source.tokenId ?? source.id?.split(":").at(-1) ?? null;
+  const compositeAgentId = source.agent_id ?? source.id ?? null;
+  const agentId = source.token_id ?? source.tokenId ?? (String(compositeAgentId || "").includes(":")
+    ? String(compositeAgentId).split(":").at(-1)
+    : compositeAgentId) ?? null;
   const metadata = objectValue(source.metadata) || objectValue(source.agent_metadata) || null;
   const inlineServices = serviceRows(metadata || source);
   const declared = new Set(inlineServices.map(protocolForService).filter(Boolean));
-  for (const protocol of Array.isArray(source.protocols) ? source.protocols : []) {
+  for (const protocol of [
+    ...(Array.isArray(source.protocols) ? source.protocols : []),
+    ...(Array.isArray(source.supported_protocols) ? source.supported_protocols : [])
+  ]) {
     if (PROTOCOLS.includes(String(protocol).toLowerCase())) declared.add(String(protocol).toLowerCase());
   }
   if (source.x402_supported ?? source.x402Supported) declared.add("x402");
@@ -78,7 +84,7 @@ export function normalizeErc8004Agent(raw = {}) {
     registry: source.registry || source.contract_address || source.contractAddress || null,
     name: source.name || metadata?.name || `ERC-8004 Agent #${agentId}`,
     description: source.description || metadata?.description || "",
-    image: source.image || metadata?.image || null,
+    image: source.image || source.image_url || metadata?.image || null,
     metadata_uri: source.metadata_uri || source.metadataUri || source.agent_uri || source.agentURI || null,
     metadata,
     services: inlineServices,
@@ -139,16 +145,35 @@ export async function verifyErc8004Agent(raw, { fetchImpl = fetch, endpointProbe
 }
 
 async function fetchScanJson(fetchImpl, path) {
-  const response = await fetchImpl(`${SCAN_API}${path}`, { headers: { accept: "application/json" } });
+  let response;
+  try {
+    response = await retryOnce(() => fetchImpl(`${SCAN_API}${path}`, { headers: { accept: "application/json" } }));
+  } catch (error) {
+    throw requestError("ERC8004_SCAN_UNAVAILABLE", `8004scan could not be reached: ${String(error?.message || "network error")}.`, 502);
+  }
   if (!response?.ok) throw requestError("ERC8004_SCAN_UNAVAILABLE", `8004scan returned HTTP ${response?.status || "unknown"}.`, 502);
   return response.json();
 }
 
 async function fetchPublicJson(value, fetchImpl) {
   await assertPublicHttpsUrl(value);
-  const response = await fetchImpl(value, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5000) });
+  let response;
+  try {
+    response = await retryOnce(() => fetchImpl(value, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5000) }));
+  } catch (error) {
+    throw requestError("ERC8004_METADATA_UNAVAILABLE", `Agent metadata could not be reached: ${String(error?.message || "network error")}.`, 422);
+  }
   if (!response?.ok) throw requestError("ERC8004_METADATA_UNAVAILABLE", `Agent metadata returned HTTP ${response?.status || "unknown"}.`, 422);
   return response.json();
+}
+
+async function retryOnce(run) {
+  try {
+    return await run();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return run();
+  }
 }
 
 async function probePublicEndpoint(endpoint, { protocol }, fetchImpl) {
