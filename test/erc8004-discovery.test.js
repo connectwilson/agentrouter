@@ -5,6 +5,8 @@ import { createServer } from "../src/server.js";
 import { createDevSession } from "../src/auth.js";
 import { createMemoryStore } from "../src/store.js";
 import { agentHtml } from "../src/home.js";
+import { createErc8004Discovery, normalizeErc8004Agent, verifyErc8004Agent } from "../src/erc8004-discovery.js";
+import { hydrateServiceEventRows } from "../src/registry.js";
 
 async function listen(server) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -133,4 +135,74 @@ test("agent marketplace explains imported identity state and exposes ERC-8004 di
   assert.match(page, /agent-router\/erc8004\/discover/);
   assert.match(page, /Registered on-chain, not verified|registered_unverified/);
   assert.match(page, /Hire \/ call/);
+});
+
+test("8004scan adapter normalizes API records and caches identical searches", async () => {
+  const urls = [];
+  const discovery = createErc8004Discovery({
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return { ok: true, status: 200, json: async () => ({ agents: [indexedAgent()] }) };
+    }
+  });
+  const first = await discovery.search({ query: "research", limit: 3, chainId: 56 });
+  const second = await discovery.search({ query: "research", limit: 3, chainId: 56 });
+  assert.equal(first[0].agent_id, "4242");
+  assert.equal(first[0].explorer_url, "https://8004scan.io/agents/56/4242");
+  assert.equal(first[0].trust.average_score, 91);
+  assert.deepEqual(second, first);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /agents\/search\?q=research&chainId=56&limit=3$/);
+});
+
+test("protocol verification keeps x402 as payment metadata and chooses a reachable transport", async () => {
+  const agent = normalizeErc8004Agent(indexedAgent({
+    metadata: {
+      name: "Research Agent",
+      description: "Research",
+      services: [
+        { name: "MCP", endpoint: "https://agents.example/mcp" },
+        { name: "A2A", endpoint: "https://agents.example/a2a" },
+        { name: "x402", endpoint: "https://agents.example/pay" }
+      ]
+    }
+  }));
+  const result = await verifyErc8004Agent(agent, {
+    endpointProbe: async (_endpoint, { protocol }) => ({ ok: protocol === "a2a", status: protocol === "a2a" ? 200 : 503 })
+  });
+  assert.equal(result.verification_state, "verified_callable");
+  assert.equal(result.preferred_adapter, "a2a");
+  assert.equal(result.protocols.mcp.status, "unreachable");
+  assert.equal(result.protocols.a2a.status, "verified");
+  assert.equal(result.protocols.x402.status, "declared");
+});
+
+test("metadata verification rejects non-public endpoints before fetching", async () => {
+  let fetched = false;
+  await assert.rejects(
+    verifyErc8004Agent(indexedAgent({ metadata_uri: "http://127.0.0.1/private", metadata: null }), {
+      fetchImpl: async () => { fetched = true; throw new Error("must not fetch"); }
+    }),
+    (error) => error.code === "ERC8004_ENDPOINT_INVALID"
+  );
+  assert.equal(fetched, false);
+});
+
+test("verified imports survive persistence hydration", async () => {
+  const store = createMemoryStore();
+  await hydrateServiceEventRows(store, [{
+    event_type: "erc8004_agent_import",
+    service_id: "erc8004:56:4242",
+    request_id: "56:4242",
+    event: {
+      event_version: "agent_router_erc8004_agent_import_v1",
+      chain_id: 56,
+      agent_id: "4242",
+      name: "Research Agent",
+      verification_state: "verified_callable",
+      callable: true,
+      preferred_adapter: "mcp"
+    }
+  }]);
+  assert.equal(store.erc8004Imports.get("56:4242").preferred_adapter, "mcp");
 });

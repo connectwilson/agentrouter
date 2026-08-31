@@ -1221,6 +1221,13 @@ export async function hydrateServiceEventRows(store, events = []) {
       }
       continue;
     }
+    if (row.event_type === "erc8004_agent_import") {
+      if (event?.chain_id && event?.agent_id) {
+        store.erc8004Imports ||= new Map();
+        store.erc8004Imports.set(`${event.chain_id}:${event.agent_id}`, event);
+      }
+      continue;
+    }
     if (row.event_type === "quality_event") {
       const record = store.services.get(row.service_id);
       if (record) {

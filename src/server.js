@@ -56,6 +56,7 @@ import { agentRouterConnectTool, remoteMcpTools } from "../packages/agentrouter-
 import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
 import { compactAgentFacingResult } from "./compact-result.js";
 import { relaySponsoredErc8004Registration } from "./bsc-registration-paymaster.js";
+import { createErc8004Discovery, normalizeErc8004Agent } from "./erc8004-discovery.js";
 
 const mcpPackageMetadata = JSON.parse(await fs.readFile(new URL("../packages/agentrouter-mcp/package.json", import.meta.url), "utf8"));
 
@@ -88,7 +89,8 @@ export function createServer({
   readinessProbe = agentRouterReadiness,
   browserHandoffClaim = claimPersistentBrowserHandoff,
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
-  registrationPaymasterRelay = relaySponsoredErc8004Registration
+  registrationPaymasterRelay = relaySponsoredErc8004Registration,
+  erc8004Discovery = createErc8004Discovery()
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
@@ -107,7 +109,8 @@ export function createServer({
         readinessProbe,
         browserHandoffClaim,
         erc8004RegistrationVerifier,
-        registrationPaymasterRelay
+        registrationPaymasterRelay,
+        erc8004Discovery
       });
     } catch (error) {
       const statusCode = error.statusCode || 500;
@@ -135,7 +138,8 @@ async function routeRequest(req, res, store, baseUrl, {
   readinessProbe = agentRouterReadiness,
   browserHandoffClaim = claimPersistentBrowserHandoff,
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
-  registrationPaymasterRelay = relaySponsoredErc8004Registration
+  registrationPaymasterRelay = relaySponsoredErc8004Registration,
+  erc8004Discovery = createErc8004Discovery()
 } = {}) {
   const url = new URL(req.url, baseUrl);
   const loginReturnTo = safeReturnTo(url.searchParams.get("return_to") || url.pathname);
@@ -269,6 +273,95 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!requireAuth(req, res, auth, url)) return;
     const vendors = listRegisterableVendors(store, auth);
     sendJson(res, 200, { vendors });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/erc8004/discover") {
+    const query = String(url.searchParams.get("q") || "").trim();
+    const limit = Math.max(1, Math.min(25, Number(url.searchParams.get("limit")) || 10));
+    const agents = await erc8004Discovery.search({ query, limit, chainId: 56 });
+    const imported = store.erc8004Imports || new Map();
+    sendJson(res, 200, {
+      discovery_version: "agent_router_erc8004_discovery_v1",
+      discovery_mode: "on_demand",
+      chain_id: 56,
+      query,
+      agents: agents.map((agent) => {
+        const normalized = normalizeErc8004Agent(agent);
+        const existing = imported.get(`56:${normalized.agent_id}`);
+        return existing || { ...normalized, callable: false, verification_state: "registered_unverified" };
+      })
+    }, { "cache-control": "public, max-age=30, stale-while-revalidate=60" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/erc8004/imports") {
+    sendJson(res, 200, {
+      import_list_version: "agent_router_erc8004_import_list_v1",
+      agents: [...(store.erc8004Imports || new Map()).values()]
+    }, { "cache-control": "no-store" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/agent-router/erc8004/import") {
+    if (!requireAuth(req, res, auth, url)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
+    const body = await readJson(req);
+    const chainId = Number(body.chain_id || 56);
+    if (chainId !== 56) {
+      sendJson(res, 422, { error: { code: "ERC8004_CHAIN_UNSUPPORTED", message: "Phase two discovery currently accepts BNB Smart Chain agents only." } });
+      return;
+    }
+    const indexed = normalizeErc8004Agent(await erc8004Discovery.get({ chainId, agentId: body.agent_id }));
+    const verification = await erc8004Discovery.verify(indexed);
+    const imported = {
+      ...indexed,
+      ...verification,
+      import_source: "8004scan",
+      imported_by: authUserKey(auth.user),
+      imported_at: new Date().toISOString()
+    };
+    store.erc8004Imports ||= new Map();
+    store.erc8004Imports.set(`${chainId}:${indexed.agent_id}`, imported);
+    await writePersistentServiceEvent({
+      eventType: "erc8004_agent_import",
+      serviceId: `erc8004:${chainId}:${indexed.agent_id}`,
+      requestId: `${chainId}:${indexed.agent_id}`,
+      event: { event_version: "agent_router_erc8004_agent_import_v1", ...imported }
+    });
+    sendJson(res, 200, { ok: true, status: imported.verification_state, agent: imported });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/agent-router/erc8004/hire") {
+    if (!requireAuth(req, res, auth, url)) return;
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
+    const body = await readJson(req);
+    const key = `${Number(body.chain_id || 56)}:${String(body.agent_id || "")}`;
+    const agent = store.erc8004Imports?.get(key) || null;
+    if (!agent?.callable || agent.verification_state !== "verified_callable" || !agent.preferred_adapter) {
+      sendJson(res, 409, {
+        error: {
+          code: "ERC8004_AGENT_NOT_CALLABLE",
+          message: "This on-chain identity has not passed AgentRouter endpoint verification and cannot be hired yet."
+        },
+        agent
+      });
+      return;
+    }
+    const protocol = agent.preferred_adapter;
+    sendJson(res, 200, {
+      ok: true,
+      status: "ready_to_call",
+      agent: { chain_id: agent.chain_id, agent_id: agent.agent_id, name: agent.name },
+      dispatch: {
+        adapter: protocol,
+        endpoint: agent.protocols?.[protocol]?.endpoint || null,
+        input: body.input && typeof body.input === "object" ? body.input : {},
+        payment: agent.protocols?.x402?.status !== "not_declared" ? "x402" : "provider_declared",
+        execution: "handoff_required"
+      }
+    });
     return;
   }
 

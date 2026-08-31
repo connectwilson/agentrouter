@@ -24,7 +24,8 @@ export function createMemoryStore() {
     publicApiCatalog: new Map(),
     publicApiPipelineRuns: [],
     erc8004PlatformIdentities: new Map(),
-    erc8004VendorIdentities: new Map()
+    erc8004VendorIdentities: new Map(),
+    erc8004Imports: new Map()
   };
 }
 

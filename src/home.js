@@ -576,6 +576,7 @@ export function agentHtml({ auth = {} } = {}) {
         let capabilityPacks = [];
         let builtInCapabilities = [];
         let aiSearchSources = [];
+        let erc8004Agents = [];
         const builtInCategory = "Social research";
         const aiSearchCategory = "AI Search";
         const pageSize = 24;
@@ -738,10 +739,18 @@ export function agentHtml({ auth = {} } = {}) {
           document.getElementById("agent-result-count").textContent = "Loading services...";
           showSkeleton();
           try {
-            const response = await fetch("/agent-router/services?" + params.toString());
-            servicePage = await response.json();
+            const query = document.getElementById("service-search").value.trim();
+            const [serviceResponse, discoveryResponse] = await Promise.all([
+              fetch("/agent-router/services?" + params.toString()),
+              query.length >= 2
+                ? fetch("/agent-router/erc8004/discover?q=" + encodeURIComponent(query) + "&limit=6")
+                : Promise.resolve(null)
+            ]);
+            servicePage = await serviceResponse.json();
+            erc8004Agents = discoveryResponse?.ok ? (await discoveryResponse.json()).agents || [] : [];
           } catch {
             servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };
+            erc8004Agents = [];
           }
           renderAgentHub();
         }
@@ -773,6 +782,7 @@ export function agentHtml({ auth = {} } = {}) {
           const cards = [
             ...visibleBuiltIns.map(builtInCapabilityCard),
             ...visibleAiSearchSources.map(externalApiSourceCard),
+            ...erc8004Agents.map(erc8004AgentCard),
             ...services.map((service) => apiCard(service, { link: true }))
           ];
           document.getElementById("agent-api-cards").innerHTML = cards.join("") ||
@@ -781,7 +791,7 @@ export function agentHtml({ auth = {} } = {}) {
             ? visibleBuiltIns.length
             : activeCategory === aiSearchCategory
               ? visibleAiSearchSources.length
-              : Number(servicePage.total || 0) + visibleBuiltIns.length + visibleAiSearchSources.length;
+                  : Number(servicePage.total || 0) + visibleBuiltIns.length + visibleAiSearchSources.length + erc8004Agents.length;
           setText("agent-result-count", availableTotal ? availableTotal + " available services" : "No services match this view");
           document.getElementById("service-prev").disabled = currentPage <= 0;
           document.getElementById("service-next").disabled = !servicePage.has_more;
@@ -808,6 +818,51 @@ export function agentHtml({ auth = {} } = {}) {
         }
         function externalApiSourceCard(source) {
           return apiCard(source, { link: true });
+        }
+        function erc8004AgentCard(agent) {
+          const verified = agent.verification_state === "verified_callable";
+          const state = verified ? "Verified callable" : "Registered on-chain, not verified";
+          const protocols = Array.isArray(agent.protocols)
+            ? agent.protocols
+            : Object.entries(agent.protocols || {}).filter(([, value]) => value.status !== "not_declared").map(([key]) => key);
+          const score = agent.trust?.average_score == null ? "No score" : Math.round(Number(agent.trust.average_score)) + "/100";
+          return '<article class="api-card erc8004-agent-card" data-agent-id="' + escapeAttr(agent.agent_id) + '">' +
+            '<div class="api-top"><span class="type-badge">ERC-8004 Agent</span><a class="chain-badge" target="_blank" rel="noopener noreferrer" href="' + escapeAttr(agent.explorer_url || "#") + '">#' + escapeHtml(agent.agent_id) + ' ↗</a></div>' +
+            '<div class="api-heading"><div class="logo">8K</div><div><h3>' + escapeHtml(agent.name) + '</h3><div class="byline"><span>BNB Chain</span><span>' + escapeHtml(state) + '</span></div></div></div>' +
+            '<p class="api-description">' + escapeHtml(truncate(agent.description || "On-chain agent discovered through 8004scan.", 132)) + '</p>' +
+            '<div class="api-core-metrics"><div class="api-price"><span>Payment</span><strong>' + (agent.x402_supported ? "x402" : "Declared by agent") + '</strong><small>Verify before call</small></div>' +
+            '<div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>' + escapeHtml(score) + '</strong><small>8004scan score</small></div></div></div>' +
+            '<div class="api-card-footer"><div class="pill-row">' + renderPills(protocols) + '</div>' +
+            '<button type="button" class="button ' + (verified ? "primary" : "ghost") + '" onclick="hireErc8004Agent(this,\'' + escapeAttr(agent.agent_id) + '\')">Hire / call</button></div>' +
+          '</article>';
+        }
+        async function hireErc8004Agent(button, agentId) {
+          const original = button.textContent;
+          button.disabled = true;
+          button.textContent = "Verifying…";
+          try {
+            const importedResponse = await fetch("/agent-router/erc8004/import", {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ chain_id: 56, agent_id: agentId })
+            });
+            const imported = await importedResponse.json();
+            if (!importedResponse.ok) throw new Error(imported.error?.message || "Sign in to verify and hire this agent.");
+            if (!imported.agent?.callable) throw new Error(imported.agent?.verification_error || "Registered on-chain, not verified callable.");
+            const hireResponse = await fetch("/agent-router/erc8004/hire", {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ chain_id: 56, agent_id: agentId, input: { task: document.getElementById("service-search").value.trim() } })
+            });
+            const hired = await hireResponse.json();
+            if (!hireResponse.ok) throw new Error(hired.error?.message || "Agent is not ready to call.");
+            button.textContent = "Ready via " + hired.dispatch.adapter.toUpperCase();
+            button.title = "Verified endpoint: " + hired.dispatch.endpoint;
+          } catch (error) {
+            button.textContent = "Unavailable";
+            button.title = error.message;
+          } finally {
+            button.disabled = false;
+            if (button.textContent === "Verifying…") button.textContent = original;
+          }
         }
         function renderPager() {
           const total = Number(servicePage.total || 0);
