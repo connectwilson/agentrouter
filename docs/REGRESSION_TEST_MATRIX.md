@@ -13,8 +13,8 @@ privacy, and recovery cases where those dimensions apply.
 | Vendor identity lifecycle | `erc8004-marketplace-phase1`, `vendor-identity-registration`, `platform-identity-registration` | BSC identity, stale Arc identity, submitted/registered/not-registered state, provider isolation, late service inheritance, network isolation, summary/detail parity, registration idempotency |
 | 8004scan discovery | `erc8004-discovery`, `erc8004-regression-matrix` | Search/list/detail shapes, camel/snake/wrapped payloads, token ID normalization, query encoding, limit bounds, missing IDs, wrong chain, bounded cache capacity, concurrent deduplication, TTL refresh, retry and recovery |
 | Import and verification | `erc8004-regression-matrix`, `erc8004-import-persistence` | Authentication, BSC-only policy, identity/chain match, metadata fetch, malformed JSON, HTTP failures, protocol response shape, endpoint preference, partial probe failure, forged verification downgrade, repeat verification persistence |
-| Endpoint security | `erc8004-regression-matrix`, `erc8004-pinned-transport`, `security-write-boundaries` | HTTPS-only, credentials rejected, loopback/private/link-local/reserved IPv4 and IPv6, bounded redirect policy, DNS-pinned connection, DNS failure, SSRF fail-closed behavior |
-| Hire and dispatch | `erc8004-regression-matrix` | Authentication, missing import, verified adapter and endpoint required, verification expiry, deterministic adapter selection, x402 classification, omitted/null/object/array input |
+| Endpoint security | `erc8004-regression-matrix`, `erc8004-pinned-transport`, `erc8004-http-execution`, `security-write-boundaries` | HTTPS-only, credentials rejected, loopback/private/link-local/reserved IPv4 and IPv6, redirects rejected, DNS-pinned connection, DNS failure, request/response size limits, timeout, JSON-only response, SSRF fail-closed behavior |
+| Hire and dispatch | `erc8004-regression-matrix`, `erc8004-http-execution` | Authentication, missing import, verified adapter and endpoint required, verification expiry, explicit execution opt-in, deterministic adapter selection, free HTTP completion, x402 payment block, MCP/A2A handoff, omitted/null/object/array input |
 | BSC sponsorship | `bsc-registration-paymaster`, `bsc-paymaster`, `npm-mcp-bsc-feedback` | Vendor registration sponsorship, sender/contract/method boundaries, quota exhaustion, missing configuration, receipt validation, fallback behavior |
 | Feedback and reputation | `bsc-feedback-hardening`, `feedback-resilience`, `agentrouter-feedback-corpus` | Correct Vendor Agent ID, deduplication, replay protection, failed receipt, deferred retry, gas sponsorship, public status, trust feedback persistence |
 
@@ -65,5 +65,7 @@ Measure the discovery module independently:
 ```bash
 node --test --experimental-test-coverage \
   --test-coverage-include=src/erc8004-discovery.js \
-  test/erc8004-regression-matrix.test.js
+  test/erc8004-http-execution.test.js \
+  test/erc8004-regression-matrix.test.js \
+  test/erc8004-pinned-transport.test.js
 ```
