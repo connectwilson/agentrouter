@@ -9,6 +9,7 @@ privacy, and recovery cases where those dimensions apply.
 
 | Capability | Primary suites | Required cases |
 | --- | --- | --- |
+| Smart-money job taxonomy | `capability-packs`, `mvp`, `app-shell` | Rebalancing, grid trading, yield optimisation, and health-factor monitoring remain distinct; provider-neutral contracts; narrow capability matching; no generic market-data false positives; zero-local-match BSC discovery; UI/API parity |
 | Vendor identity lifecycle | `erc8004-marketplace-phase1`, `vendor-identity-registration`, `platform-identity-registration` | BSC identity, stale Arc identity, submitted/registered/not-registered state, provider isolation, late service inheritance, network isolation, summary/detail parity, registration idempotency |
 | 8004scan discovery | `erc8004-discovery`, `erc8004-regression-matrix` | Search/list/detail shapes, camel/snake/wrapped payloads, token ID normalization, query encoding, limit bounds, missing IDs, wrong chain, bounded cache capacity, concurrent deduplication, TTL refresh, retry and recovery |
 | Import and verification | `erc8004-regression-matrix`, `erc8004-import-persistence` | Authentication, BSC-only policy, identity/chain match, metadata fetch, malformed JSON, HTTP failures, protocol response shape, endpoint preference, partial probe failure, forged verification downgrade, repeat verification persistence |
