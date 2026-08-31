@@ -35,7 +35,7 @@ privacy, and recovery cases where those dimensions apply.
 | Service registry and public API | `mvp`, `public-api-catalog`, `public-api-pipeline` | Create/import/validate/list/detail, invalid manifest, duplicate service, provider ownership, public redaction, call counters and ratings |
 | Pricing and credits | `credits`, `credits-http`, `credit-payments`, `credit-crypto` | Free/paid calls, budget ceiling, insufficient balance, exact debit, replay/idempotency, refund/failure path, crypto settlement metadata |
 | Device and MCP setup | `device-auth`, `mcp-device-connect`, `agentrouter-installer-connect`, `agentrouter-connect-install-boundary` | New install, already installed, login handoff, token expiry, reconnect without reinstall, client reload boundary, stable tool availability |
-| Plugin and packaging | `agent-plugin`, `release-readiness`, `dependency-security` | Schema validation, package contents, entry points, dependency audit, build/version contract, secret and local-file exclusion |
+| Plugin and packaging | `agent-plugin`, `release-readiness`, `dependency-security`, `dependency-audit-runner` | Schema validation, package contents, entry points, dependency audit, transient registry retry, vulnerability fail-closed behavior, bounded outage failure, build/version contract, secret and local-file exclusion |
 | One Dollar Audit | `one-dollar-audit` | Availability, supported contract workflow, request validation, provider failure, evidence/result envelope |
 | App UI shell | `app-shell`, `new-user-experience` | Core page rendering, navigation, first-run guidance, authorization copy, public/private state visibility |
 
