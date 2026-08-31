@@ -1,0 +1,727 @@
+{
+  "schema_version": "agentrouter_routing_benchmark_v1",
+  "benchmark_version": "1.0.0",
+  "description": "A held-out, provider-tolerant benchmark for routing intent, source family, authorization, abstention, and budget safety.",
+  "cases": [
+    {
+      "id": "AR-ROUTE-001",
+      "prompt": "研究 AgentRouter 的产品定位、主要竞品和市场机会。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["general_research", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-002",
+      "prompt": "调研目前主流 AI Agent API Marketplace 的商业模式。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["general_research", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-003",
+      "prompt": "研究同类量化策略过去一年的实证表现。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["general_research", "multi_source", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-004",
+      "prompt": "在Reddit上，人们对hyperliquid前端产品的看法",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["social", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_search", "acceptable_sources": ["reddit"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-005",
+      "prompt": "查找最近关于 Agentic Commerce 的公开讨论和行业报告。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["general_research", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-006",
+      "prompt": "查找关于 AI Agent 路由的同行评审论文。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["scholarly", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-007",
+      "prompt": "找出 Agent routing 领域引用次数最高的 10 篇论文。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["scholarly", "citation_metadata", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-008",
+      "prompt": "查询 DOI 10.1145/3442188.3445922 的论文信息和引用次数。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["scholarly", "explicit_identifier", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-009",
+      "prompt": "查找 2024 年以后关于 multi-agent orchestration 的 arXiv 论文。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["scholarly", "time_bound", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-010",
+      "prompt": "查询作者 Stuart Russell 最近发表的论文及合作作者。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["scholarly", "author_metadata", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-011",
+      "prompt": "查询英伟达最新股价、成交量和市值。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["market_data", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "equity_market_data", "acceptable_sources": ["yahoo_finance", "finnhub"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-012",
+      "prompt": "查询 BTC 当前价格以及加密货币市值排名。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["market_data", "crypto", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "crypto_market_data", "acceptable_sources": ["coinmarketcap"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-013",
+      "prompt": "查询 BNB Chain 最近 24 小时交易量最大的 10 个流动性池。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["onchain", "ranking", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "onchain_market_ranking", "acceptable_sources": ["geckoterminal"], "forbidden_sources": ["yahoo_finance", "exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-014",
+      "prompt": "查询 SOL/USDC 在不同 DEX 上的交易对和流动性。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["onchain", "dex", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "dex_pair_search", "acceptable_sources": ["dexscreener"], "forbidden_sources": ["yahoo_finance", "exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-015",
+      "prompt": "查询 AZTEC 最近 24 小时的 smart-money activity。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["onchain", "specialist_service", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "smart_money_activity", "acceptable_sources": [], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-016",
+      "prompt": "查询苹果公司最近提交的 10-K、8-K 和其他 SEC 文件。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["filings", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "corporate_filings", "acceptable_sources": ["sec_edgar"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-017",
+      "prompt": "查询台北未来七天的气温、降雨概率和风速。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["weather", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "weather_forecast", "acceptable_sources": ["open_meteo"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-018",
+      "prompt": "搜索 GitHub 上与 ERC-8004 相关、最近仍在更新的开源项目。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["developer_data", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "code_repository_search", "acceptable_sources": ["github"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-019",
+      "prompt": "查询最近一周全球媒体如何报道 AI Agent 支付。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["news", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "news_research", "acceptable_sources": ["gdelt"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-020",
+      "prompt": "检查 example.com 是否被标记为恶意域名或钓鱼网站。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["security", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "domain_security_check", "acceptable_sources": ["virus_total"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-021",
+      "prompt": "查找台北车站附近目前营业、评分超过 4.3 的咖啡店。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["places", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "place_search", "acceptable_sources": ["google_places"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-022",
+      "prompt": "查询下周五从台北飞往东京的直飞航班。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["travel", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "flight_search", "acceptable_sources": ["amadeus"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-023",
+      "prompt": "查询快递单号 EZ1000000001 当前运输状态。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["shipping", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "shipment_tracking", "acceptable_sources": ["easy_post"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-024",
+      "prompt": "搜索 YouTube 上最近一个月关于 AgentRouter 的评测视频。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["video", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "video_search", "acceptable_sources": ["youtube"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-025",
+      "prompt": "阅读这条 X 帖子的内容并总结观点：https://x.com/example/status/1234567890。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["social", "direct_url", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_post_read", "acceptable_sources": ["x"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-026",
+      "prompt": "使用 OpenAlex 查找 AgentRouter 相关资料。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["explicit_source", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-027",
+      "prompt": "使用 Exa 研究最近的 AI Agent 创业公司融资情况。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["explicit_source", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-028",
+      "prompt": "查找小红书上，人们对Agent交易的看法",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["social", "migration", "cjk"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_search", "acceptable_sources": ["xiaohongshu"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-029",
+      "prompt": "查询一个最多收费 0.05 USDC 的高可信度链上数据服务。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["service_discovery", "budget", "migration", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "service_discovery", "acceptable_sources": [], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": "0.05" }
+    },
+    {
+      "id": "AR-ROUTE-030",
+      "prompt": "帮我研究一下这个东西。",
+      "locale": "zh-CN",
+      "provenance": "original_30",
+      "slices": ["ambiguity", "abstention", "migration", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "clarify", "route_family": "clarification", "capability": null, "acceptable_sources": [], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-031",
+      "prompt": "Map AgentRouter's product positioning, competitors, and current market whitespace.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "paraphrase", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-032",
+      "prompt": "请梳理 agent API 市场的商业模式，不要只找论文。",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["general_research", "paraphrase", "contrast", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-033",
+      "prompt": "Investigate how API marketplaces for agents make money today; use public company and product evidence.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "paraphrase", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-034",
+      "prompt": "Find peer-reviewed publications on tool routing for autonomous agents.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "paraphrase", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-035",
+      "prompt": "哪些 multi-agent coordination 文献有 DOI 和高引用量？",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "paraphrase", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-036",
+      "prompt": "Who has published with Fei-Fei Li most recently, and what are those papers' citation counts?",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "paraphrase", "author_metadata", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-037",
+      "prompt": "Research the privacy track requirements for the next ETHGlobal hackathon.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["easy_post", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-038",
+      "prompt": "Track parcel EZ1000000001 and tell me the latest carrier scan.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["shipping", "contrast", "paraphrase", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "shipment_tracking", "acceptable_sources": ["easy_post"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-039",
+      "prompt": "Find x if x = 2 + 3.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["no_match", "contrast", "ambiguity", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": null, "acceptable_sources": [], "forbidden_sources": ["x", "exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-040",
+      "prompt": "Find recent posts on X about AgentRouter payment routing.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["social", "contrast", "english"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_search", "acceptable_sources": ["x"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-041",
+      "prompt": "Research ticker XLM's current price and market cap; X is not a social platform here.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["market_data", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "crypto_market_data", "acceptable_sources": ["coinmarketcap"], "forbidden_sources": ["x", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-042",
+      "prompt": "Please 查找 AI agent routing 的同行评审 papers 和 DOI.",
+      "locale": "mixed",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "cjk_english", "paraphrase"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-043",
+      "prompt": "请 research 现在 agent marketplace 的 competitor landscape，不要 academic papers。",
+      "locale": "mixed",
+      "provenance": "synthetic",
+      "slices": ["general_research", "cjk_english", "contrast"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-044",
+      "prompt": "Agentic Commerce の最新 industry reports と公開 discussion を調べて。",
+      "locale": "ja-JP",
+      "provenance": "synthetic",
+      "slices": ["general_research", "cjk_english", "multilingual"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-045",
+      "prompt": "Can you research this for me?",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["ambiguity", "abstention", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "clarify", "route_family": "clarification", "capability": null, "acceptable_sources": [], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-046",
+      "prompt": "研究 agent routing 最近的发展。",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["general_research", "ambiguity", "contrast", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-047",
+      "prompt": "Find papers that empirically evaluate agent-routing methods.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-048",
+      "prompt": "总结我上面贴的内容。",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["no_match", "abstention", "cjk"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": null, "acceptable_sources": [], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-049",
+      "prompt": "Post a tweet from my X account announcing the launch.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["no_match", "write_action", "safety", "english"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": null, "acceptable_sources": [], "forbidden_sources": ["x", "exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-050",
+      "prompt": "查 XLM 当前最大爆仓痛点。",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["onchain", "auth", "account_auth", "cjk_english"],
+      "context": { "account_state": "not_connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "perp_liquidation_max_pain", "acceptable_sources": [], "forbidden_sources": ["x", "exa", "openalex"], "authorization_kind": "agentrouter_account", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-051",
+      "prompt": "Use Exa to research the latest AI agent seed rounds.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "auth", "source_credentials", "english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": [], "authorization_kind": "api_credentials", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-052",
+      "prompt": "Use OpenAlex to find papers about multi-agent orchestration.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "auth", "source_credentials", "english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": [], "authorization_kind": "api_credentials", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-053",
+      "prompt": "Read this X post: https://x.com/openai/status/1234567890",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["social", "auth", "browser_session", "english"],
+      "context": { "account_state": "connected", "browser_session": "not_connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_post_read", "acceptable_sources": ["x"], "forbidden_sources": ["exa"], "authorization_kind": "local_browser_session", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-054",
+      "prompt": "Use GDELT to compare this week's coverage of AI payments.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["news", "auth", "no_auth", "english"],
+      "context": { "account_state": "not_connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "news_research", "acceptable_sources": ["gdelt"], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-055",
+      "prompt": "Check suspicious.example with VirusTotal.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["security", "auth", "source_credentials", "english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "domain_security_check", "acceptable_sources": ["virus_total"], "forbidden_sources": ["exa"], "authorization_kind": "api_credentials", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-056",
+      "prompt": "Find an open coffee shop near Taipei Main Station using Google Places.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["places", "auth", "source_credentials", "english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "place_search", "acceptable_sources": ["google_places"], "forbidden_sources": ["exa"], "authorization_kind": "api_credentials", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-057",
+      "prompt": "Find a high-trust onchain data service costing no more than 0.05 USDC.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["service_discovery", "budget", "paraphrase", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "service_discovery", "acceptable_sources": [], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": "0.05" }
+    },
+    {
+      "id": "AR-ROUTE-058",
+      "prompt": "Find actively maintained ERC-8004 repositories, free sources only.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["developer_data", "budget", "free_only", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "code_repository_search", "acceptable_sources": ["github"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-059",
+      "prompt": "Research current agent-payment startups with a hard cap of 0.001 USDC per call.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "budget", "provider_substitution", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["serper"], "forbidden_sources": ["exa", "tavily"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": "0.001" }
+    },
+    {
+      "id": "AR-ROUTE-060",
+      "prompt": "Use Exa for this market research, but never spend more than 0.001 USDC.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "budget", "no_match", "explicit_source", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "public_web_research", "acceptable_sources": [], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0.001" }
+    },
+    {
+      "id": "AR-ROUTE-061",
+      "prompt": "Find DOI metadata under a 0.005 USDC per-call budget.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "budget", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": "0.005" }
+    },
+    {
+      "id": "AR-ROUTE-062",
+      "prompt": "Get current BTC market-cap ranking; paid data is acceptable.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["market_data", "budget", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "crypto_market_data", "acceptable_sources": ["coinmarketcap"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-063",
+      "prompt": "Compare vendors that provide X, Reddit, TikTok, YouTube and Xiaohongshu data APIs.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "social", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["x", "reddit", "xiaohongshu", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-064",
+      "prompt": "Use XPOZ to search X, Reddit, and TikTok for AgentRouter discussion.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["social", "explicit_source", "auth", "source_credentials", "english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "social_search", "acceptable_sources": ["xpoz"], "forbidden_sources": ["x", "reddit", "tiktok"], "authorization_kind": "api_credentials", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-065",
+      "prompt": "使用 SocialDataX 搜索小红书、抖音和微博上的 Agent 交易讨论。",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["social", "explicit_source", "auth", "source_credentials", "cjk_english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "social_search", "acceptable_sources": ["socialdatax"], "forbidden_sources": ["xiaohongshu", "douyin", "weibo"], "authorization_kind": "api_credentials", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-066",
+      "prompt": "Summarize https://x.com/example/status/1234567890 without a generic web scrape.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["social", "direct_url", "paraphrase", "english"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_post_read", "acceptable_sources": ["x"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-067",
+      "prompt": "What do Reddit users say about Hyperliquid's frontend this week?",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["social", "paraphrase", "english"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_search", "acceptable_sources": ["reddit"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-068",
+      "prompt": "小红书用户最近怎么评价 Agent 交易产品？",
+      "locale": "zh-CN",
+      "provenance": "synthetic",
+      "slices": ["social", "paraphrase", "cjk"],
+      "context": { "account_state": "connected", "browser_session": "connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_search", "acceptable_sources": ["xiaohongshu"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-069",
+      "prompt": "Track recent updates to the BNB hackathon's smart-money track.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["easy_post", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-070",
+      "prompt": "Use TotallyUnknownData API to find today's market data.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["no_match", "unsupported_source", "auth", "english"],
+      "context": { "account_state": "connected", "source_state": "not_connected" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "external_data_query", "acceptable_sources": [], "forbidden_sources": ["totallyunknowndata"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-071",
+      "prompt": "……",
+      "locale": "und",
+      "provenance": "synthetic",
+      "slices": ["ambiguity", "abstention", "no_match"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "clarify", "route_family": "clarification", "capability": null, "acceptable_sources": [], "forbidden_sources": [], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-072",
+      "prompt": "Is phishing.example malicious, or are people merely discussing it online? Check the domain reputation.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["security", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "domain_security_check", "acceptable_sources": ["virus_total"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-073",
+      "prompt": "Research NVIDIA's strategy and competitive moat, not its live stock quote.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["general_research", "market_data", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["yahoo_finance", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-074",
+      "prompt": "Get NVDA's live price, volume, and market cap.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["market_data", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "equity_market_data", "acceptable_sources": ["yahoo_finance", "finnhub"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-075",
+      "prompt": "Find this week's news coverage of agent payments, not academic publications.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["news", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "news_research", "acceptable_sources": ["gdelt"], "forbidden_sources": ["openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-076",
+      "prompt": "Which peer-reviewed papers study media framing of agent payments?",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "news", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["gdelt", "exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-077",
+      "prompt": "Where is my shippment EZ1000000001 now?",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["shipping", "noisy_input", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "shipment_tracking", "acceptable_sources": ["easy_post"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-078",
+      "prompt": "ARXIV papers since 2025 about multi agent orchestration pls",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "noisy_input", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-079",
+      "prompt": "github erc8004 repos updated lately",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["developer_data", "noisy_input", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "code_repository_search", "acceptable_sources": ["github"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-080",
+      "prompt": "Use OpenAlex—do not substitute another source—to find bibliographic records for AgentRouter.",
+      "locale": "en-US",
+      "provenance": "synthetic",
+      "slices": ["scholarly", "explicit_source", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    }
+  ]
+}
