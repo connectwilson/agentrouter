@@ -1,6 +1,6 @@
-// Shared visual primitives and progressive client-side navigation for first-party pages.
-// The server remains the source of truth for every route; this only avoids a document reload
-// when moving between already-supported AgentRouter HTML pages.
+// Shared visual primitives and a small compatibility hook for first-party navigation.
+// Pages use native document navigation so the browser can apply CSP and initialize every
+// server-rendered script normally.
 
 export function naiveDesignSystemStyles() {
   return `
@@ -31,64 +31,10 @@ export function clientRouterScript() {
     (() => {
       if (window.__agentRouterSpa) return;
       const router = window.__agentRouterSpa = {};
-      const sameOrigin = (url) => url.origin === window.location.origin;
-      const routable = (anchor, event) => {
-        if (!anchor || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
-        if (anchor.target === "_blank" || anchor.hasAttribute("download") || anchor.dataset.spa === "false" || anchor.dataset.authModalTrigger !== undefined) return false;
-        const href = anchor.getAttribute("href");
-        if (!href || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) return false;
-        const target = new URL(anchor.href, window.location.href);
-        // Same-origin application pages are swapped in place; third-party links keep normal browser navigation.
-        if (!sameOrigin(target) || target.pathname.startsWith("/auth/")) return false;
-        return true;
-      };
-      const executePageScripts = (documentNode) => {
-        const scripts = [...documentNode.body.querySelectorAll("script")];
-        scripts.forEach((script) => script.remove());
-        for (const script of scripts) {
-          if (script.dataset.agentrouterSpa !== undefined || script.src) continue;
-          try { new Function(script.textContent).call(window); } catch (error) { console.error("AgentRouter page script failed", error); }
-        }
-      };
-      const replacePage = (markup, responseUrl, mode) => {
-        const next = new DOMParser().parseFromString(markup, "text/html");
-        if (!next.body?.hasAttribute("data-agentrouter-app")) { window.location.assign(responseUrl); return; }
-        document.title = next.title || document.title;
-        document.head.querySelectorAll("style[data-agentrouter-page-style]").forEach((style) => style.remove());
-        next.head.querySelectorAll("style[data-agentrouter-page-style]").forEach((style) => {
-          const copy = document.createElement("style");
-          copy.dataset.agentrouterPageStyle = "";
-          copy.textContent = style.textContent;
-          document.head.append(copy);
-        });
-        const nextBody = document.importNode(next.body, true);
-        document.body.replaceWith(nextBody);
-        executePageScripts(document);
-        if (mode === "push") history.pushState({}, "", responseUrl);
-        window.scrollTo(0, 0);
-      };
-      router.navigate = async (href, mode = "push") => {
+      router.navigate = (href) => {
         const requested = new URL(href, window.location.href);
-        if (!sameOrigin(requested)) { window.location.assign(requested.href); return; }
-        document.documentElement.dataset.agentrouterNavigating = "";
-        try {
-          const response = await fetch(requested.href, { credentials:"same-origin", headers:{ accept:"text/html", "x-agentrouter-spa":"1" } });
-          const contentType = response.headers.get("content-type") || "";
-          if (!response.ok || !contentType.includes("text/html")) { window.location.assign(requested.href); return; }
-          replacePage(await response.text(), response.url, mode);
-        } catch {
-          window.location.assign(requested.href);
-        } finally {
-          delete document.documentElement.dataset.agentrouterNavigating;
-        }
+        window.location.assign(requested.href);
       };
-      document.addEventListener("click", (event) => {
-        const anchor = event.target.closest("a[href]");
-        if (!routable(anchor, event)) return;
-        event.preventDefault();
-        router.navigate(anchor.href);
-      });
-      window.addEventListener("popstate", () => router.navigate(window.location.href, "replace"));
     })();
   `;
 }

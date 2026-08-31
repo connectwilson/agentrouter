@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import { getArcUsdcBalance } from "../src/arc-payment.js";
 import { submitSponsoredErc8004Feedback } from "../src/bsc-paymaster.js";
+import { firstSpecifiedBudget } from "../src/budget-normalization.js";
 import { invokePaidServiceWithLocalWallet } from "../src/local-invoke.js";
 import { routeTaskWithLocalWallet } from "../src/local-route.js";
 import { createCompactResult } from "../src/compact-result.js";
@@ -35,7 +36,7 @@ const tools = [
         },
         constraints: { type: "object", description: "Global routing and payment constraints, for example max_price_usdc." },
         budget: { type: "object", description: "Optional global budget object." },
-        max_price: { type: "string", description: "Maximum USDC price per provider call unless overridden.", default: "0.05" },
+        max_price: { type: ["string", "number"], description: "Maximum USDC price per provider call unless overridden. Numeric 0 means free-only.", default: "0.05" },
         currency: { type: "string", description: "Payment currency.", default: "USDC" },
         consumer_context: { type: "object", description: "Optional caller context." }
       }
@@ -128,7 +129,7 @@ const tools = [
       required: ["task"],
       properties: {
         task: { type: "string", description: "The user's original data/API request. Use only when a structured capability request cannot be produced." },
-        max_price: { type: "string", description: "Maximum USDC price allowed for this call.", default: "0.05" },
+        max_price: { type: ["string", "number"], description: "Maximum USDC price allowed for this call. Numeric 0 means free-only.", default: "0.05" },
         currency: { type: "string", description: "Payment currency.", default: "USDC" }
       }
     }
@@ -275,7 +276,7 @@ async function callTool(name, args) {
     if (creditApiKey) {
       return post("/agent-router/ask", {
         task: args.task,
-        max_price: args.max_price || "0.05",
+        max_price: firstSpecifiedBudget(args.max_price, "0.05"),
         currency: args.currency || "USDC"
       });
     }
@@ -283,13 +284,13 @@ async function callTool(name, args) {
       return routeTaskWithLocalWallet({
         baseUrl,
         task: args.task,
-        constraints: { max_price_usdc: args.max_price || "0.05" },
-        budget: { max_amount: args.max_price || "0.05", currency: args.currency || "USDC" }
+        constraints: { max_price_usdc: firstSpecifiedBudget(args.max_price, "0.05") },
+        budget: { max_amount: firstSpecifiedBudget(args.max_price, "0.05"), currency: args.currency || "USDC" }
       });
     }
     return post("/agent-router/ask", {
       task: args.task,
-      max_price: args.max_price || "0.05",
+      max_price: firstSpecifiedBudget(args.max_price, "0.05"),
       currency: args.currency || "USDC"
     });
   }
@@ -409,7 +410,12 @@ async function callTool(name, args) {
 
 async function fetchWithLocalWallet(args = {}) {
   const requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
-  const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
+  const maxPrice = firstSpecifiedBudget(
+    args.max_price,
+    args.constraints?.max_price_usdc,
+    args.budget?.max_amount,
+    "0.05"
+  );
   const currency = args.currency || args.budget?.currency || "USDC";
 
   if (!requirements.length) {
@@ -477,12 +483,12 @@ function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice,
     constraints: {
       ...(args.constraints || {}),
       ...(constraints || {}),
-      max_price_usdc: constraints?.max_price_usdc || args.constraints?.max_price_usdc || maxPrice
+      max_price_usdc: firstSpecifiedBudget(constraints?.max_price_usdc, args.constraints?.max_price_usdc, maxPrice)
     },
     budget: {
       ...(args.budget || {}),
       ...(budget || {}),
-      max_amount: budget?.max_amount || args.budget?.max_amount || maxPrice,
+      max_amount: firstSpecifiedBudget(budget?.max_amount, args.budget?.max_amount, maxPrice),
       currency: budget?.currency || args.budget?.currency || currency
     },
     consumer_context: {
@@ -592,7 +598,7 @@ async function requestWithLocalWallet(args) {
       serviceId: quote.selected_service.service_id,
       input: quote.input,
       budget: {
-        max_amount: args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05",
+        max_amount: firstSpecifiedBudget(args.constraints?.max_price_usdc, args.budget?.max_amount, "0.05"),
         currency: args.budget?.currency || "USDC"
       },
       request: {
@@ -664,7 +670,7 @@ async function resolveTokenForLocalWalletRequest({ capability, params, constrain
     };
   }
 
-  const maxPrice = constraints.max_price_usdc || budget.max_amount || "0.05";
+  const maxPrice = firstSpecifiedBudget(constraints.max_price_usdc, budget.max_amount, "0.05");
   const verifiedServices = await post("/connector/search_services", {
     query: "token search",
     verified_only: true,

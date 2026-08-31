@@ -27,14 +27,24 @@ export function providerConfigPath(serviceId) {
 }
 
 export async function writeProviderConfig(config) {
-  await ensureProviderDir();
+  const sanitized = await prepareProviderConfigForPersistence(config);
+  Object.assign(config, sanitized);
+  await writePersistentProviderConfig(sanitized);
+  await writePreparedProviderConfigFile(sanitized);
+  return providerConfigPath(config.manifest.service_id);
+}
+
+export async function prepareProviderConfigForPersistence(config) {
   finalizeProviderConfig(config);
   assertPersistentProviderStorageReady({ requiresSecret: Boolean(config.source?.auth?.secret_value) });
   const sanitized = await sanitizeProviderConfig(config);
   finalizeProviderConfig(sanitized);
-  Object.assign(config, sanitized);
-  await writePersistentProviderConfig(sanitized);
-  await fs.writeFile(providerConfigPath(config.manifest.service_id), `${JSON.stringify(sanitized, null, 2)}\n`);
+  return sanitized;
+}
+
+export async function writePreparedProviderConfigFile(config) {
+  await ensureProviderDir();
+  await fs.writeFile(providerConfigPath(config.manifest.service_id), `${JSON.stringify(config, null, 2)}\n`);
   invalidateProviderConfigCache();
   return providerConfigPath(config.manifest.service_id);
 }
@@ -66,9 +76,9 @@ export async function deleteProviderConfig(serviceId) {
   return true;
 }
 
-export async function listProviderConfigs() {
+export async function listProviderConfigs({ force = false } = {}) {
   const now = Date.now();
-  if (configCache.configs && configCache.version === configVersion && now - configCache.at < CONFIG_CACHE_TTL_MS) {
+  if (!force && configCache.configs && configCache.version === configVersion && now - configCache.at < CONFIG_CACHE_TTL_MS) {
     return configCache.configs;
   }
   const configs = await readAllProviderConfigs();
@@ -784,6 +794,11 @@ async function sanitizeProviderConfig(config) {
     });
     auth.secret_ref = secretRef;
     delete auth.secret_value;
+  }
+  const ownerKey = String(next.manifest?.registration?.owner?.user_key || "").trim();
+  if (next.manifest?.registration?.owner) {
+    if (ownerKey) next.manifest.registration.owner = { user_key: ownerKey };
+    else delete next.manifest.registration.owner;
   }
   return next;
 }

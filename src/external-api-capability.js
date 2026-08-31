@@ -4,6 +4,7 @@ import { readProviderSecret } from "./provider-secrets.js";
 import { writePersistentServiceEvent } from "./persistence.js";
 import { publicReputation, summarizeTrust } from "./store.js";
 import { hashJson } from "./evidence.js";
+import { readBoundedSocialResponse, socialProviderTransportFailure } from "./social-transport.js";
 
 // Several hosted runtimes advertise unreachable IPv6 routes. Prefer IPv4
 // before falling back to IPv6 so public connectors do not fail at DNS handoff.
@@ -794,9 +795,10 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     secret,
     fetchImpl: options.fetchImpl || globalThis.fetch,
     fetchRetries: options.fetchRetries ?? (options.fetchImpl ? 0 : 1),
-    fetchTimeoutMs: options.fetchTimeoutMs
+    fetchTimeoutMs: options.fetchTimeoutMs,
+    fetchMaxResponseBytes: options.fetchMaxResponseBytes
   });
-  const invocation = recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, {
+  const invocation = await recordExternalApiInvocation(store, definition, response, Date.now() - startedAt, {
     ...options,
     ownerKey
   });
@@ -806,12 +808,15 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
       status: response.status,
       request_id: invocation.requestId,
       service_id: invocation.serviceId,
+      durability_status: invocation.durabilityStatus,
+      ...(invocation.durabilityErrors.length ? { durability_errors: invocation.durabilityErrors } : {}),
       source: publicSource(definition),
       error: {
         code: response.status.toUpperCase(),
         message: response.error,
         ...(response.diagnostics ? { diagnostics: response.diagnostics } : {})
       },
+      ...(response.coverage ? { coverage: response.coverage } : {}),
       consumer_feedback_request: consumerFeedbackRequest(invocation, { source: sourceId, operation, query })
     };
   }
@@ -824,6 +829,8 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
     // agent rate a result it was happy with, not only one that failed.
     request_id: invocation.requestId,
     service_id: invocation.serviceId,
+    durability_status: invocation.durabilityStatus,
+    ...(invocation.durabilityErrors.length ? { durability_errors: invocation.durabilityErrors } : {}),
     request: {
       capability: "external_api_query",
       params: {
@@ -952,12 +959,13 @@ function consumerFeedbackRequest(invocation, { source, operation, query }) {
   };
 }
 
-function recordExternalApiInvocation(store, definition, response, latencyMs, options) {
+async function recordExternalApiInvocation(store, definition, response, latencyMs, options) {
   const serviceId = `external_api_${definition.source}`;
   const requestId = `external_${definition.source}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const feedbackToken = crypto.randomBytes(32).toString("base64url");
   const feedbackActorKey = `feedback_grant:${hashJson(feedbackToken)}`;
-  const successful = response.ok === true;
+  const hasResults = Array.isArray(response.items) && response.items.length > 0;
+  const successful = response.ok === true && hasResults;
   const event = {
     event_version: "agent_external_api_feedback_v1",
     request_id: requestId,
@@ -966,29 +974,19 @@ function recordExternalApiInvocation(store, definition, response, latencyMs, opt
     consumer_id: options.ownerKey || "agentrouter_consumer",
     invocation_actor_key: options.ownerKey || undefined,
     source: definition.source,
-    status: successful ? "success" : "error",
+    status: successful ? "success" : response.ok === true ? "no_results" : "error",
     http_status: Number.isFinite(Number(response.http_status)) ? Number(response.http_status) : null,
     provider_status: response.status || null,
-    schema_valid: successful,
-    verification: successful ? {
-      coverage_valid: Array.isArray(response.items),
+    schema_valid: response.ok === true,
+    verification: response.ok === true ? {
+      coverage_valid: hasResults,
       freshness_valid: null,
       agent_friendly_score: 1
     } : null,
     latency_ms: latencyMs,
     created_at: new Date().toISOString()
   };
-  if (store?.feedbackEvents) store.feedbackEvents.push(event);
-  if (store?.invocationLogs) store.invocationLogs.push({
-    request_id: requestId,
-    service_id: serviceId,
-    provider_id: event.provider_id,
-    status: event.status,
-    latency_ms: latencyMs,
-    created_at: event.created_at
-  });
   const writer = options.writeServiceEvent || writePersistentServiceEvent;
-  Promise.resolve(writer({ eventType: "operational_feedback", serviceId, requestId, event })).catch(() => {});
   const grant = {
     event_version: "agent_invocation_feedback_grant_v1",
     request_id: requestId,
@@ -998,10 +996,50 @@ function recordExternalApiInvocation(store, definition, response, latencyMs, opt
     created_at: event.created_at,
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   };
+  const entries = [
+    { eventType: "operational_feedback", serviceId, requestId, event },
+    { eventType: "invocation_feedback_grant", serviceId, requestId, event: grant }
+  ];
+  const writes = await Promise.allSettled(entries.map(async (entry) => {
+    return writer(entry);
+  }));
+  const durabilityErrors = writes.flatMap((result, index) => {
+    if (result.status === "fulfilled") return [];
+    return [{
+      event_type: entries[index].eventType,
+      code: result.reason?.code || "PERSISTENCE_WRITE_FAILED",
+      message: "AgentRouter could not durably store this call artifact."
+    }];
+  });
+  if (durabilityErrors.length) {
+    console.error("[external-api-durability] degraded", JSON.stringify({
+      service_id: serviceId,
+      request_id: requestId,
+      errors: durabilityErrors.map(({ event_type, code }) => ({ event_type, code }))
+    }));
+  }
+  const memoryOnly = !durabilityErrors.length && writes.some((result) => result.status === "fulfilled" && result.value === false);
+  const durabilityStatus = durabilityErrors.length ? "degraded" : memoryOnly ? "memory_only" : "durable";
+
+  if (store?.feedbackEvents) store.feedbackEvents.push(event);
+  if (store?.invocationLogs) store.invocationLogs.push({
+    request_id: requestId,
+    service_id: serviceId,
+    provider_id: event.provider_id,
+    status: event.status,
+    latency_ms: latencyMs,
+    durability_status: durabilityStatus,
+    created_at: event.created_at
+  });
   store.feedbackGrants ||= new Map();
   store.feedbackGrants.set(requestId, grant);
-  Promise.resolve(writer({ eventType: "invocation_feedback_grant", serviceId, requestId, event: grant })).catch(() => {});
-  return { requestId, serviceId, feedbackToken };
+  return {
+    requestId,
+    serviceId,
+    feedbackToken,
+    durabilityStatus,
+    durabilityErrors
+  };
 }
 
 function validateSourceParams(sourceId, operation, params) {
@@ -1043,16 +1081,30 @@ async function invokeSocialVendorMcp(sourceId, context) {
     .filter((platform) => definitions[platform]);
   const selected = platforms.length ? platforms : [sourceId === "xpoz" ? "x" : "xiaohongshu"];
   const perPlatformLimit = Math.max(1, Math.ceil(context.limit / selected.length));
-  const calls = await Promise.all(selected.map(async (platform, index) => {
+  const settled = await Promise.allSettled(selected.map(async (platform, index) => {
     const definition = definitions[platform];
     const args = sourceId === "xpoz"
       ? { query: context.query, limit: perPlatformLimit, userPrompt: context.query, ...xpozDateRange(context.query) }
       : socialDataXSearchArgs(platform, context.query);
-    const response = await callMcpTool(context.fetchImpl, definition.url, context.secret, definition.tool, args, index + 1);
+    const response = await callMcpTool(context.fetchImpl, definition.url, context.secret, definition.tool, args, index + 1, {
+      stage: `${sourceId}_${platform}_mcp`,
+      timeoutMs: context.fetchTimeoutMs,
+      maxBytes: context.fetchMaxResponseBytes
+    });
     return { platform, response };
   }));
+  const calls = settled.map((entry, index) => {
+    if (entry.status === "fulfilled") return entry.value;
+    const platform = selected[index];
+    return {
+      platform,
+      response: socialProviderTransportFailure(entry.reason, {
+        stage: `${sourceId}_${platform}_mcp`,
+        rows: false
+      })
+    };
+  });
   const succeeded = calls.filter((call) => call.response.ok);
-  if (!succeeded.length) return calls[0]?.response || { ok: false, status: "provider_error", error: "No social platform call completed.", items: [] };
   const groupRecords = succeeded.map(({ platform, response }) => ({
     platform,
     items: normalizeSocialMcpItems(sourceId, platform, response.payload).slice(0, perPlatformLimit)
@@ -1072,20 +1124,37 @@ async function invokeSocialVendorMcp(sourceId, context) {
   }
   const evidencePlatforms = groupRecords.filter((group) => group.items.length > 0).map((group) => group.platform);
   const emptyPlatforms = groupRecords.filter((group) => group.items.length === 0).map((group) => group.platform);
-  const failedPlatforms = calls.filter((call) => !call.response.ok).map((call) => call.platform);
+  const failed = calls.filter((call) => !call.response.ok);
+  const failedPlatforms = failed.map((call) => call.platform);
+  const coverage = {
+    status: failedPlatforms.length || emptyPlatforms.length ? "insufficient" : "sufficient",
+    item_count: items.length,
+    requested_platforms: selected,
+    completed_platforms: succeeded.map((call) => call.platform),
+    evidence_platforms: evidencePlatforms,
+    empty_platforms: emptyPlatforms,
+    failed_platforms: failedPlatforms,
+    platform_errors: Object.fromEntries(failed.map(({ platform, response }) => [platform, {
+      code: response.error_code || "SOCIAL_PROVIDER_ERROR",
+      status: response.status || "provider_error",
+      message: response.error || "Social provider request failed.",
+      ...(response.diagnostics ? { diagnostics: response.diagnostics } : {})
+    }]))
+  };
+  if (!succeeded.length) {
+    const primary = calls[0]?.response || {
+      status: "provider_error",
+      error_code: "SOCIAL_PROVIDER_ERROR",
+      error: "No social platform call completed.",
+      items: []
+    };
+    return { ...primary, ok: false, items: [], coverage };
+  }
   return {
     ok: true,
-    status: "completed",
+    status: items.length ? "completed" : "no_results",
     items,
-    coverage: {
-      status: failedPlatforms.length || emptyPlatforms.length ? "insufficient" : "sufficient",
-      item_count: items.length,
-      requested_platforms: selected,
-      completed_platforms: succeeded.map((call) => call.platform),
-      evidence_platforms: evidencePlatforms,
-      empty_platforms: emptyPlatforms,
-      failed_platforms: failedPlatforms
-    }
+    coverage
   };
 }
 
@@ -1114,11 +1183,11 @@ function socialDataXSearchArgs(platform, query) {
   };
 }
 
-async function callMcpTool(fetchImpl, url, secret, toolName, args, id) {
+async function callMcpTool(fetchImpl, url, secret, toolName, args, id, transport = {}) {
   let response;
   let raw;
   try {
-    response = await fetchImpl(url, {
+    const fetched = await readBoundedSocialResponse(fetchImpl, url, {
       method: "POST",
       headers: {
         accept: "application/json, text/event-stream",
@@ -1126,27 +1195,76 @@ async function callMcpTool(fetchImpl, url, secret, toolName, args, id) {
         authorization: `Bearer ${secret}`
       },
       body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: toolName, arguments: args } })
+    }, {
+      mode: "text",
+      stage: transport.stage || "social_mcp_call",
+      timeoutMs: transport.timeoutMs,
+      maxBytes: transport.maxBytes
     });
-    raw = await response.text();
+    response = fetched.response;
+    raw = fetched.text;
   } catch (error) {
-    return { ok: false, status: "provider_error", error: clean(error.message, 300), items: [] };
+    return { ok: false, ...socialProviderTransportFailure(error, { stage: transport.stage || "social_mcp_call", rows: false }) };
   }
   const envelope = parseMcpEnvelope(raw);
   if (!response.ok || envelope?.error) {
     const status = response.status === 401 || response.status === 403 ? "auth_required"
       : response.status === 429 ? "rate_limited" : "provider_error";
+    const errorCode = response.status === 401 || response.status === 403 ? "SOCIAL_PROVIDER_AUTH_REQUIRED"
+      : response.status === 429 ? "SOCIAL_PROVIDER_RATE_LIMITED"
+        : envelope?.error ? "SOCIAL_PROVIDER_MCP_ERROR" : "SOCIAL_PROVIDER_HTTP_ERROR";
     return {
       ok: false,
       status,
+      error_code: errorCode,
       error: clean(envelope?.error?.message || `Provider returned HTTP ${response.status}`, 300),
+      diagnostics: {
+        code: errorCode,
+        category: response.status === 429 ? "rate_limit" : response.status >= 500 ? "upstream_server" : envelope?.error ? "upstream_protocol" : "upstream_client",
+        stage: transport.stage || "social_mcp_call",
+        retryable: response.status === 429 || response.status >= 500,
+        http_status: Number(response.status) || null
+      },
       items: []
     };
   }
+  if (!envelope || typeof envelope !== "object") {
+    return socialMcpFailure(
+      "SOCIAL_PROVIDER_INVALID_MCP_RESPONSE",
+      "Social provider returned an invalid MCP response.",
+      transport,
+      { category: "invalid_response", retryable: false, httpStatus: response.status }
+    );
+  }
   const result = envelope?.result || {};
   if (result.isError) {
-    return { ok: false, status: "provider_error", error: clean(mcpContentText(result.content) || "MCP tool call failed.", 300), items: [] };
+    return socialMcpFailure(
+      "SOCIAL_PROVIDER_MCP_TOOL_ERROR",
+      clean(mcpContentText(result.content) || "MCP tool call failed.", 300),
+      transport,
+      { category: "upstream_protocol", retryable: false, httpStatus: response.status }
+    );
   }
   return { ok: true, status: "completed", payload: parseMcpContent(result.content), items: [] };
+}
+
+function socialMcpFailure(errorCode, message, transport, { category, retryable, httpStatus }) {
+  return {
+    ok: false,
+    status: "provider_error",
+    error_code: errorCode,
+    error: message,
+    diagnostics: {
+      code: errorCode,
+      category,
+      stage: transport.stage || "social_mcp_call",
+      retryable,
+      http_status: Number(httpStatus) || null,
+      timeout_ms: Number(transport.timeoutMs) || null,
+      max_response_bytes: Number(transport.maxBytes) || null
+    },
+    items: []
+  };
 }
 
 function parseMcpEnvelope(raw) {
@@ -2018,6 +2136,7 @@ function source(id, category, title, implementationStatus, providerType, operati
 }
 
 function sourceMentioned(text, definition) {
+  if (definition.source === "x") return xSocialSourceMentioned(text);
   const aliases = [definition.source.replaceAll("_", " "), definition.title]
     .map((item) => item.toLowerCase());
   const normalized = text.toLowerCase();
@@ -2025,6 +2144,16 @@ function sourceMentioned(text, definition) {
     const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(normalized);
   });
+}
+
+function xSocialSourceMentioned(text) {
+  const value = String(text || "");
+  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(value)
+    || /\btwitter\b|推特/i.test(value)
+    || /(?:在|从)\s*[Xx]\s*(?:上|平台)/.test(value)
+    || /[Xx]\s*(?:帖子|推文|账号|帳號|用户|用戶|平台|讨论|討論)/.test(value)
+    || /\b(?:search|find|read|research)\s+(?:on\s+)?x\s+(?:for|posts?|tweets?|accounts?|discussion)\b/i.test(value)
+    || /\bon\s+x\b/i.test(value);
 }
 
 function extractSearchQuery(text) {

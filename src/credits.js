@@ -44,16 +44,15 @@ export async function ensureCreditAccount(store, user) {
   const ownerKey = authUserKey(user);
   if (!ownerKey) throw creditError("A signed-in user is required.", 401, "AUTHENTICATION_REQUIRED");
 
+  const persistence = creditStatePersistence(store);
   const cached = store.creditAccounts.get(ownerKey);
-  if (cached) return cached;
-
-  if (persistenceEnabled()) {
-    const persisted = await readPersistentCreditAccountByOwner(ownerKey);
+  if (persistence.enabled) {
+    const persisted = await persistence.readAccountByOwner(ownerKey);
     if (persisted) {
       store.creditAccounts.set(ownerKey, persisted);
       return persisted;
     }
-  }
+  } else if (cached) return cached;
 
   const account = {
     account_id: stableId("acct", ownerKey),
@@ -64,7 +63,7 @@ export async function ensureCreditAccount(store, user) {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
-  const saved = persistenceEnabled() ? await upsertPersistentCreditAccount(account) : account;
+  const saved = persistence.enabled ? await persistence.upsertAccount(account) : account;
   store.creditAccounts.set(ownerKey, saved);
   return saved;
 }
@@ -118,7 +117,8 @@ export async function setAccountSpendLimit(store, { account, maxPricePerCall }) 
     settings: { ...(account.settings || {}), max_price_per_call: limit },
     updated_at: new Date().toISOString()
   };
-  const saved = persistenceEnabled() ? await upsertPersistentCreditAccount(updated) : updated;
+  const persistence = creditStatePersistence(store);
+  const saved = persistence.enabled ? await persistence.upsertAccount(updated) : updated;
   const merged = { ...updated, ...(saved || {}) };
   store.creditAccounts.set(merged.owner_key, merged);
   return { account_id: merged.account_id, max_price_per_call: accountSpendLimit(merged) };
@@ -130,7 +130,8 @@ export async function bindDepositAddress(store, account, depositAddress) {
   const address = String(depositAddress || "").toLowerCase();
   if (!address || account.deposit_address === address) return account;
   const updated = { ...account, deposit_address: address, updated_at: new Date().toISOString() };
-  const saved = persistenceEnabled() ? await upsertPersistentCreditAccount(updated) : updated;
+  const persistence = creditStatePersistence(store);
+  const saved = persistence.enabled ? await persistence.upsertAccount(updated) : updated;
   const merged = { ...updated, ...(saved || {}) };
   store.creditAccounts.set(merged.owner_key, merged);
   return merged;
@@ -139,10 +140,15 @@ export async function bindDepositAddress(store, account, depositAddress) {
 export async function findAccountByDepositAddress(store, depositAddress) {
   const address = String(depositAddress || "").toLowerCase();
   if (!address) return null;
+  const persistence = creditStatePersistence(store);
+  if (persistence.enabled) {
+    const account = await persistence.readAccountByDepositAddress(address);
+    if (account?.owner_key) store.creditAccounts.set(account.owner_key, account);
+    return account;
+  }
   for (const account of store.creditAccounts.values()) {
     if (String(account.deposit_address || "").toLowerCase() === address) return account;
   }
-  if (persistenceEnabled()) return readPersistentCreditAccountByDepositAddress(address);
   return null;
 }
 
@@ -172,7 +178,8 @@ export async function createCreditApiKey(store, {
     created_at: new Date().toISOString(),
     revoked_at: null
   };
-  const persisted = persistenceEnabled() ? await writePersistentCreditApiKey(record) : null;
+  const persistence = creditStatePersistence(store);
+  const persisted = persistence.enabled ? await persistence.writeApiKey(record) : null;
   const saved = persisted ? { ...persisted, owner_key: record.owner_key, user_profile: record.user_profile } : record;
   store.creditApiKeys.set(record.key_hash, saved);
   return {
@@ -187,8 +194,9 @@ export async function createCreditApiKey(store, {
 }
 
 export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) {
-  const rows = persistenceEnabled()
-    ? await listPersistentCreditApiKeys(accountId, { limit })
+  const persistence = creditStatePersistence(store);
+  const rows = persistence.enabled
+    ? await persistence.listApiKeys(accountId, { limit })
     : [...store.creditApiKeys.values()]
       .filter((key) => key.account_id === accountId)
       .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
@@ -208,9 +216,10 @@ export async function listCreditApiKeys(store, accountId, { limit = 100 } = {}) 
 
 export async function revokeCreditApiKey(store, { accountId, keyId }) {
   if (!accountId || !keyId) throw creditError("API key not found.", 404, "API_KEY_NOT_FOUND");
+  const persistence = creditStatePersistence(store);
   let revoked;
-  if (persistenceEnabled()) {
-    revoked = await revokePersistentCreditApiKey(accountId, keyId);
+  if (persistence.enabled) {
+    revoked = await persistence.revokeApiKey(accountId, keyId);
   } else {
     revoked = [...store.creditApiKeys.values()].find((key) => key.account_id === accountId && key.key_id === keyId) || null;
     if (revoked) revoked.revoked_at ||= new Date().toISOString();
@@ -246,41 +255,51 @@ export function creditApiKeyFromRequest(req) {
 // everything a fresh one would.
 const LAST_USED_THROTTLE_MS = 5 * 60 * 1000;
 
-function markKeyUsed(store, key) {
+function markKeyUsed(store, key, persistence) {
   const now = Date.now();
   const previous = key.last_used_at ? new Date(key.last_used_at).getTime() : 0;
   if (now - previous < LAST_USED_THROTTLE_MS) return;
   key.last_used_at = new Date(now).toISOString();
   store.creditApiKeys.set(key.key_hash, key);
-  if (persistenceEnabled()) {
+  if (persistence.enabled) {
     // Fire and forget: a call must not fail because bookkeeping did.
-    touchPersistentCreditApiKey(key.key_id).catch(() => {});
+    persistence.touchApiKey(key.key_id).catch(() => {});
   }
 }
 
-async function accountSettingsForOwner(store, ownerKey) {
-  const cached = store.creditAccounts.get(ownerKey);
-  if (cached) return cached;
-  if (!persistenceEnabled()) return null;
-  const persisted = await readPersistentCreditAccountByOwner(ownerKey);
-  if (persisted) store.creditAccounts.set(ownerKey, persisted);
-  return persisted;
+async function accountSettingsForOwner(store, ownerKey, persistence) {
+  if (!persistence.enabled) return store.creditAccounts.get(ownerKey) || null;
+  const account = await persistence.readAccountByOwner(ownerKey);
+  if (account) store.creditAccounts.set(ownerKey, account);
+  else store.creditAccounts.delete(ownerKey);
+  return account;
 }
 
 export async function authenticateCreditRequest(store, req) {
   const rawKey = creditApiKeyFromRequest(req);
   if (!rawKey) return null;
   const keyHash = hashApiKey(rawKey);
-  let key = store.creditApiKeys.get(keyHash) || null;
-  if (!key && persistenceEnabled()) key = await readPersistentCreditApiKeyByHash(keyHash);
-  if (!key || key.revoked_at) return null;
+  const persistence = creditStatePersistence(store);
+  const cached = store.creditApiKeys.get(keyHash) || null;
+  let key = persistence.enabled
+    ? await persistence.readApiKeyByHash(keyHash)
+    : cached;
+  if (!key || key.revoked_at) {
+    store.creditApiKeys.delete(keyHash);
+    return null;
+  }
+  if (!key.last_used_at && cached?.last_used_at) key = { ...key, last_used_at: cached.last_used_at };
   store.creditApiKeys.set(keyHash, key);
   // Settings travel with the account, not the key. Returning an account without
   // them made every spend limit read as the default: the ceiling a user set in
   // the dashboard had no effect on the one path that matters, agent calls
   // authenticated by API key.
-  const owner = key.owner_key ? await accountSettingsForOwner(store, key.owner_key) : null;
-  markKeyUsed(store, key);
+  const owner = key.owner_key ? await accountSettingsForOwner(store, key.owner_key, persistence) : null;
+  if (persistence.enabled && (!key.owner_key || !owner)) {
+    store.creditApiKeys.delete(keyHash);
+    return null;
+  }
+  markKeyUsed(store, key, persistence);
   return {
     account: {
       account_id: key.account_id,
@@ -447,6 +466,33 @@ function hashApiKey(value) {
 function headerValue(headers, name) {
   if (typeof headers.get === "function") return headers.get(name);
   return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+}
+
+function creditStatePersistence(store) {
+  if (store?.creditPersistence) {
+    return {
+      enabled: store.creditPersistence.enabled !== false,
+      readAccountByOwner: store.creditPersistence.readAccountByOwner?.bind(store.creditPersistence),
+      readAccountByDepositAddress: store.creditPersistence.readAccountByDepositAddress?.bind(store.creditPersistence),
+      upsertAccount: store.creditPersistence.upsertAccount?.bind(store.creditPersistence),
+      writeApiKey: store.creditPersistence.writeApiKey?.bind(store.creditPersistence),
+      listApiKeys: store.creditPersistence.listApiKeys?.bind(store.creditPersistence),
+      readApiKeyByHash: store.creditPersistence.readApiKeyByHash?.bind(store.creditPersistence),
+      revokeApiKey: store.creditPersistence.revokeApiKey?.bind(store.creditPersistence),
+      touchApiKey: store.creditPersistence.touchApiKey?.bind(store.creditPersistence)
+    };
+  }
+  return {
+    enabled: persistenceEnabled(),
+    readAccountByOwner: readPersistentCreditAccountByOwner,
+    readAccountByDepositAddress: readPersistentCreditAccountByDepositAddress,
+    upsertAccount: upsertPersistentCreditAccount,
+    writeApiKey: writePersistentCreditApiKey,
+    listApiKeys: listPersistentCreditApiKeys,
+    readApiKeyByHash: readPersistentCreditApiKeyByHash,
+    revokeApiKey: revokePersistentCreditApiKey,
+    touchApiKey: touchPersistentCreditApiKey
+  };
 }
 
 function creditAmountError(message) {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { baseFundFlowManifest } from "../src/fixtures.js";
 import { invokePaidService, registerService } from "../src/registry.js";
-import { rankCandidates, routeCapabilityRequest } from "../src/router.js";
+import { quoteCapabilityRequest, rankCandidates, routeCapabilityRequest } from "../src/router.js";
 import { createMemoryStore } from "../src/store.js";
 
 const originalPaymentBackend = process.env.ADN_PAYMENT_BACKEND;
@@ -143,6 +143,97 @@ test("consumer platform API key is never forwarded to a provider-controlled orig
   }
 });
 
+test("a paid provider result with a failed status is returned as a quality failure, not a routed success", async () => {
+  const { store, serviceId } = registeredFundFlowService({
+    verificationStatus: "verified",
+    endpoint: "http://127.0.0.1/provider/quality-status"
+  });
+  const fetchSpy = installProviderFetchSpy(serviceId, (envelope) => {
+    envelope.status = "error";
+    envelope.error = { code: "UPSTREAM_FAILED" };
+  });
+  try {
+    const routed = await routeCapabilityRequest(store, capabilityRequest("0.05"), {
+      consumerApiKey: "ar_consumer_secret",
+      providerTransportOptions: fetchSpy.transportOptions
+    });
+    assert.equal(routed.ok, false);
+    assert.equal(routed.status, "data_quality_failed");
+    assert.ok(routed.verification.issues.some((issue) => issue.code === "STATUS_NOT_SUCCESS"));
+    assert.equal(routed.retry_plan.reason_code, "data_quality_failed");
+  } finally {
+    fetchSpy.restore();
+  }
+});
+
+test("a stale paid provider result is explicitly downgraded instead of silently routed", async () => {
+  const { store, serviceId } = registeredFundFlowService({
+    verificationStatus: "verified",
+    endpoint: "http://127.0.0.1/provider/quality-freshness"
+  });
+  const fetchSpy = installProviderFetchSpy(serviceId, (envelope) => {
+    envelope.metadata.generated_at = "2010-01-01T00:00:00Z";
+    envelope.metadata.freshness_seconds = 0;
+  });
+  try {
+    const routed = await routeCapabilityRequest(store, capabilityRequest("0.05"), {
+      consumerApiKey: "ar_consumer_secret",
+      providerTransportOptions: fetchSpy.transportOptions
+    });
+    assert.equal(routed.ok, true);
+    assert.equal(routed.status, "routed_with_quality_warning");
+    assert.equal(routed.verification.freshness_valid, false);
+    assert.equal(routed.retry_plan.reason_code, "data_quality_warning");
+  } finally {
+    fetchSpy.restore();
+  }
+});
+
+test("a delivered paid result reports degraded durability when evidence artifacts cannot persist", async () => {
+  const { store, serviceId } = registeredFundFlowService({
+    verificationStatus: "verified",
+    endpoint: "http://127.0.0.1/provider/durability-failure"
+  });
+  const fetchSpy = installProviderFetchSpy(serviceId);
+  try {
+    const routed = await routeCapabilityRequest(store, capabilityRequest("0.05"), {
+      consumerApiKey: "ar_consumer_secret",
+      providerTransportOptions: fetchSpy.transportOptions,
+      writeServiceEvent: async ({ eventType }) => {
+        if (["evidence", "route_observation"].includes(eventType)) {
+          const error = new Error("database unavailable");
+          error.code = "PERSISTENCE_WRITE_FAILED";
+          throw error;
+        }
+        return true;
+      }
+    });
+
+    assert.equal(routed.ok, true, "an already-delivered provider result must remain available");
+    assert.equal(routed.durability_status, "degraded");
+    assert.deepEqual(routed.durability_errors.map((item) => item.event_type).sort(), ["evidence", "route_observation"]);
+    assert.ok(routed.durability_errors.every((item) => item.code === "PERSISTENCE_WRITE_FAILED"));
+  } finally {
+    fetchSpy.restore();
+  }
+});
+
+test("quote persistence failure is observable instead of being swallowed", async () => {
+  const { store } = registeredFundFlowService({ verificationStatus: "verified" });
+  const quote = quoteCapabilityRequest(store, capabilityRequest("0.05"), {
+    writeServiceEvent: async () => {
+      const error = new Error("database unavailable");
+      error.code = "PERSISTENCE_WRITE_FAILED";
+      throw error;
+    }
+  });
+  assert.equal(quote.ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.routerDurabilityFailures.length, 1);
+  assert.equal(store.routerDurabilityFailures[0].event_type, "issued_quote");
+  assert.equal(store.routerDurabilityFailures[0].code, "PERSISTENCE_WRITE_FAILED");
+});
+
 function registeredFundFlowService({ verificationStatus, endpoint = "https://provider-controlled.example/fund-flow" }) {
   const store = createMemoryStore();
   const manifest = structuredClone(baseFundFlowManifest);
@@ -166,17 +257,25 @@ function capabilityRequest(maxPrice) {
   };
 }
 
-function installProviderFetchSpy(serviceId) {
-  const originalFetch = globalThis.fetch;
+function installProviderFetchSpy(serviceId, mutate = null) {
   const calls = [];
-  globalThis.fetch = async (url, init = {}) => {
-    calls.push({ url: String(url), init });
-    return new Response(JSON.stringify(liveFundFlowEnvelope(serviceId)), {
-      status: 200,
-      headers: { "content-type": "application/json" }
-    });
+  return {
+    calls,
+    transportOptions: {
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+      requestHop: async ({ url, method, headers, body }) => {
+        const init = { method, headers, body };
+        calls.push({ url: String(url), init });
+        const envelope = liveFundFlowEnvelope(serviceId);
+        mutate?.(envelope);
+        return new Response(JSON.stringify(envelope), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+    },
+    restore: () => {}
   };
-  return { calls, restore: () => { globalThis.fetch = originalFetch; } };
 }
 
 function liveFundFlowEnvelope(serviceId) {

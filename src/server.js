@@ -9,23 +9,23 @@ import { baseFundFlowManifest, btcLiquidationMaxPainManifest } from "./fixtures.
 import { handleBtcLiquidationProvider, handleCustomProvider, handleFundFlowProvider, handleMockUpstreamApplicationError, handleMockUpstreamHeaderKey, handleMockUpstreamSentiment,
   fetchApifyActorMetadata,
   handleMockUpstreamApify } from "./provider-runtime.js";
-import { applyErc8004VendorIdentity, feedbackGrantActorKey, hydratePersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, vendorIdentityStoreKey, withCurrentRuntimeEndpoint } from "./registry.js";
+import { abortServiceRegistration, applyErc8004VendorIdentity, feedbackGrantActorKey, finalizeServiceRegistration, hydratePersistentServiceEvents, refreshPersistentServiceEvents, invokePaidService, issueLocalFeedbackGrant, recordConsumerFeedback, registerServiceDurably, registerTrustedService, searchServices, validateService, loadProviderConfigs, runServiceHealthCheck, updateServicePayoutWallet, registerServiceErc8004Identity, vendorIdentityStoreKey, withCurrentRuntimeEndpoint } from "./registry.js";
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
 import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabilityRequest, routeTask } from "./router.js";
-import { claimPersistentBrowserHandoff, persistenceReadiness, writePersistentServiceEvent } from "./persistence.js";
+import { claimPersistentBrowserHandoff, claimPersistentErc8004Hire, claimPersistentServiceRegistration, closePersistence, completePersistentErc8004Hire, failPersistentErc8004Hire, finalizePersistentServiceRegistration, persistenceEnabled, persistenceReadiness, persistentRegistryRequired, releasePersistentServiceRegistration, writePersistentServiceEvent } from "./persistence.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
-import { isArcNetwork, verifyArcUsdcTransfer } from "./arc-payment.js";
+import { verifyArcUsdcTransfer } from "./arc-payment.js";
 import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
 import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, createErc8004RegistrationTransaction, ERC8004_REPUTATION_ABI, verifyErc8004FeedbackTransaction, verifyErc8004IdentityRegistrationTransaction } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
 import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
-import { authProviders, authUserKey, beginOAuth, clearSessionCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
+import { authProviders, authUserKey, beginOAuth, clearOAuthStateCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
 import { accountSpendLimit, authenticateCreditRequest, bindDepositAddress, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, findAccountByDepositAddress, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey, setAccountSpendLimit } from "./credits.js";
-import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, pollDeviceAuthorization } from "./device-auth.js";
-import { currentPaymentBackend } from "./payment-adapter.js";
+import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, hashDeviceCode, pollDeviceAuthorization } from "./device-auth.js";
+import { currentPaymentBackend, effectivePricing } from "./payment-adapter.js";
 import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agentrouter-connection.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { claimCryptoTopup, cryptoTopupInstructions, depositPaymentUri } from "./credit-crypto.js";
@@ -43,6 +43,8 @@ import { getExternalApiCatalog,
 import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import { listCapabilityPacks, serviceMatchesCapabilityPack } from "./capability-packs.js";
+import { publicEvidenceEvent, publicFeedbackEvent, publicManifestProjection, publicRouteObservation } from "./public-projections.js";
+import { issueCompletionGrant, verifyCompletionGrant } from "./completion-grant.js";
 import {
   bootstrapPublicApiPipeline,
   hydratePublicApiCoverage,
@@ -56,7 +58,10 @@ import { agentRouterConnectTool, remoteMcpTools } from "../packages/agentrouter-
 import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
 import { compactAgentFacingResult } from "./compact-result.js";
 import { relaySponsoredErc8004Registration } from "./bsc-registration-paymaster.js";
-import { createErc8004Discovery, executeErc8004HttpAgent, normalizeErc8004Agent } from "./erc8004-discovery.js";
+import { createErc8004Discovery, executeErc8004HttpAgent, normalizeErc8004Agent, normalizeErc8004DiscoveryRequest } from "./erc8004-discovery.js";
+import { createErc8004HireArtifacts, erc8004HireClaim, erc8004HireServiceId, executeErc8004HireOnce, requireReadOnlyErc8004ExecutionPolicy } from "./erc8004-hire.js";
+import { loadRemoteMcpSession, persistRemoteMcpSession } from "./remote-mcp-session.js";
+import { isInternalProviderValidationRequest } from "./provider-validation-auth.js";
 
 const mcpPackageMetadata = JSON.parse(await fs.readFile(new URL("../packages/agentrouter-mcp/package.json", import.meta.url), "utf8"));
 
@@ -78,6 +83,77 @@ const designFontPaths = {
 const agentRouterSkillPath = new URL("../claude-skills/agent-router/SKILL.md", import.meta.url);
 const hostedMcpTools = [...remoteMcpTools, agentRouterConnectTool];
 const REMOTE_MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function routeUsesLiveServiceState(pathname) {
+  if (["/agent-router/ready", "/agent-router/health"].includes(pathname)) return false;
+  if (pathname === "/" || pathname === "/human" || pathname === "/mcp") return true;
+  if (pathname.startsWith("/services")) return true;
+  if (pathname.startsWith("/connector/")) return true;
+  if (pathname.startsWith("/provider/")) return true;
+  if (pathname.startsWith("/.well-known/erc8004/")) return true;
+  return [
+    "/agent-router/service",
+    "/agent-router/evidence",
+    "/agent-router/observations",
+    "/agent-router/trust",
+    "/agent-router/quality",
+    "/agent-router/stats",
+    "/agent-router/home-stats",
+    "/agent-router/route",
+    "/agent-router/request",
+    "/agent-router/fetch",
+    "/agent-router/quote",
+    "/agent-router/ask",
+    "/agent-router/feedback",
+    "/agent-router/erc8004"
+  ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+async function refreshLiveServiceState(req, res, store, url, baseUrl, serviceEventPersistence) {
+  if (!routeUsesLiveServiceState(url.pathname)) return true;
+  let refresh;
+  try {
+    // Provider configs define which service records event reducers attach to.
+    // Refresh them first so another instance cannot permanently consume an
+    // event cursor while the corresponding service is still absent locally.
+    await serviceEventPersistence.refreshConfigs?.(store, baseUrl);
+    refresh = await serviceEventPersistence.refresh(store);
+  } catch (error) {
+    refresh = {
+      ok: false,
+      status: "degraded",
+      stale: true,
+      error: { code: error.code || "LIVE_STATE_REFRESH_FAILED", message: error.message }
+    };
+  }
+  if (refresh?.ok) {
+    if (refresh.status !== "disabled") res.setHeader("x-agentrouter-state-freshness", "fresh");
+    return true;
+  }
+
+  console.error("[live-state-refresh] degraded", JSON.stringify({
+    path: url.pathname,
+    method: req.method,
+    code: refresh?.error?.code || "LIVE_STATE_REFRESH_FAILED"
+  }));
+  res.setHeader("x-agentrouter-state-freshness", "stale");
+  res.setHeader("warning", '110 - "AgentRouter state is stale"');
+  if (["GET", "HEAD"].includes(req.method)) return true;
+  sendJson(res, 503, {
+    error: {
+      code: "LIVE_STATE_REFRESH_FAILED",
+      message: "AgentRouter could not confirm the latest durable service state. Retry this request before spending funds or changing trust state."
+    },
+    durability_status: "degraded",
+    state_freshness: "stale"
+  }, {
+    "cache-control": "no-store",
+    "retry-after": "3",
+    "x-agentrouter-state-freshness": "stale"
+  });
+  return false;
+}
+
 export function createServer({
   store = createMemoryStore(),
   baseUrl = "",
@@ -86,21 +162,54 @@ export function createServer({
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {},
   writeRateLimit = {},
-  readinessProbe = agentRouterReadiness,
+  readinessProbe,
   browserHandoffClaim = claimPersistentBrowserHandoff,
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
   registrationPaymasterRelay = relaySponsoredErc8004Registration,
   erc8004Discovery = createErc8004Discovery(),
   erc8004Executor = executeErc8004HttpAgent,
+  erc8004HirePersistence = {},
+  providerClaimPersistence = {},
+  serviceEventPersistence = {},
   erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
+  const bootstrapState = { ok: false, status: "running" };
+  const resolvedReadinessProbe = readinessProbe || (() => agentRouterReadiness({
+    bootstrapProbe: async () => ({ ...bootstrapState })
+  }));
+  const resolvedErc8004HirePersistence = {
+    claim: claimPersistentErc8004Hire,
+    complete: completePersistentErc8004Hire,
+    fail: failPersistentErc8004Hire,
+    writeEvent: writePersistentServiceEvent,
+    ...erc8004HirePersistence
+  };
+  const resolvedProviderClaimPersistence = {
+    enabled: persistenceEnabled,
+    required: persistentRegistryRequired,
+    claimRegistration: claimPersistentServiceRegistration,
+    finalizeRegistration: finalizePersistentServiceRegistration,
+    releaseRegistration: releasePersistentServiceRegistration,
+    ...providerClaimPersistence
+  };
+  const resolvedServiceEventPersistence = {
+    refreshConfigs: (targetStore, targetBaseUrl) => persistenceEnabled()
+      ? loadProviderConfigs(targetStore, targetBaseUrl, { validate: false, force: true })
+      : [],
+    refresh: refreshPersistentServiceEvents,
+    writeEvent: writePersistentServiceEvent,
+    ...serviceEventPersistence
+  };
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
+    registrationPersistence: resolvedProviderClaimPersistence,
     ...publicApiPipelineOptions
   };
   const writeRateLimiter = createWriteRateLimiter(writeRateLimit);
   const server = http.createServer(async (req, res) => {
     applySecurityHeaders(res);
+    const requestId = createRequestId();
+    res.setHeader("x-request-id", requestId);
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
         socialResearchRunner,
@@ -108,16 +217,26 @@ export function createServer({
         socialProviderFactory,
         publicApiPipelineOptions: resolvedPublicApiPipelineOptions,
         writeRateLimiter,
-        readinessProbe,
+        readinessProbe: resolvedReadinessProbe,
         browserHandoffClaim,
         erc8004RegistrationVerifier,
         registrationPaymasterRelay,
         erc8004Discovery,
         erc8004Executor,
+        erc8004HirePersistence: resolvedErc8004HirePersistence,
+        providerClaimPersistence: resolvedProviderClaimPersistence,
+        serviceEventPersistence: resolvedServiceEventPersistence,
         erc8004DiscoveryEnabled
       });
     } catch (error) {
       const statusCode = error.statusCode || 500;
+      if (statusCode >= 500) {
+        logRequestFailure(error, {
+          requestId,
+          method: req.method,
+          path: req.url
+        });
+      }
       sendJson(res, statusCode, {
         error: {
           code: error.code || (error.statusCode ? "REQUEST_ERROR" : "INTERNAL_ERROR"),
@@ -129,8 +248,23 @@ export function createServer({
   });
 
   server.store = store;
+  server.bootstrapState = bootstrapState;
   server.publicApiPipelineOptions = resolvedPublicApiPipelineOptions;
   return server;
+}
+
+function createRequestId() {
+  return `req_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`;
+}
+
+function logRequestFailure(error, { requestId, method, path } = {}) {
+  console.error("[request-failed]", JSON.stringify({
+    request_id: requestId,
+    method: String(method || ""),
+    path: String(path || ""),
+    code: error?.code || "INTERNAL_ERROR",
+    message: error?.message || "Unknown error"
+  }));
 }
 
 async function routeRequest(req, res, store, baseUrl, {
@@ -145,6 +279,26 @@ async function routeRequest(req, res, store, baseUrl, {
   registrationPaymasterRelay = relaySponsoredErc8004Registration,
   erc8004Discovery = createErc8004Discovery(),
   erc8004Executor = executeErc8004HttpAgent,
+  erc8004HirePersistence = {
+    claim: claimPersistentErc8004Hire,
+    complete: completePersistentErc8004Hire,
+    fail: failPersistentErc8004Hire,
+    writeEvent: writePersistentServiceEvent
+  },
+  providerClaimPersistence = {
+    enabled: persistenceEnabled,
+    required: persistentRegistryRequired,
+    claimRegistration: claimPersistentServiceRegistration,
+    finalizeRegistration: finalizePersistentServiceRegistration,
+    releaseRegistration: releasePersistentServiceRegistration
+  },
+  serviceEventPersistence = {
+    refreshConfigs: (targetStore, targetBaseUrl) => persistenceEnabled()
+      ? loadProviderConfigs(targetStore, targetBaseUrl, { validate: false, force: true })
+      : [],
+    refresh: refreshPersistentServiceEvents,
+    writeEvent: writePersistentServiceEvent
+  },
   erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
   const url = new URL(req.url, baseUrl);
@@ -158,6 +312,7 @@ async function routeRequest(req, res, store, baseUrl, {
     loginReturnTo
   };
   const paymentContext = await paidInvocationContext(req, baseUrl, store);
+  if (!await refreshLiveServiceState(req, res, store, url, baseUrl, serviceEventPersistence)) return;
 
   if (!erc8004DiscoveryEnabled && [
     "/agent-router/erc8004/discover",
@@ -278,14 +433,14 @@ async function routeRequest(req, res, store, baseUrl, {
       registered_by: authUserKey(auth.user),
       created_at: new Date().toISOString()
     };
-    store.erc8004PlatformIdentities ||= new Map();
-    store.erc8004PlatformIdentities.set(identity.network, event);
-    await writePersistentServiceEvent({
+    await serviceEventPersistence.writeEvent({
       eventType: "erc8004_platform_identity",
       serviceId: "agentrouter_external_api_platform",
       requestId: identity.tx_hash,
       event
     });
+    store.erc8004PlatformIdentities ||= new Map();
+    store.erc8004PlatformIdentities.set(identity.network, event);
     sendJson(res, 200, { ok: true, status: "registered", identity: event });
     return;
   }
@@ -298,8 +453,11 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   if (req.method === "GET" && url.pathname === "/agent-router/erc8004/discover") {
-    const query = String(url.searchParams.get("q") || "").trim();
-    const limit = Math.max(1, Math.min(25, Number(url.searchParams.get("limit")) || 10));
+    const { query, limit } = normalizeErc8004DiscoveryRequest({
+      query: url.searchParams.get("q"),
+      limit: url.searchParams.get("limit"),
+      chainId: 56
+    });
     const agents = await erc8004Discovery.search({ query, limit, chainId: 56 });
     const imported = store.erc8004Imports || new Map();
     sendJson(res, 200, {
@@ -348,14 +506,14 @@ async function routeRequest(req, res, store, baseUrl, {
       imported_by: authUserKey(auth.user),
       imported_at: new Date().toISOString()
     };
-    store.erc8004Imports ||= new Map();
-    store.erc8004Imports.set(`${chainId}:${indexed.agent_id}`, imported);
-    await writePersistentServiceEvent({
+    await serviceEventPersistence.writeEvent({
       eventType: "erc8004_agent_import",
       serviceId: `erc8004:${chainId}:${indexed.agent_id}`,
       requestId: `${chainId}:${indexed.agent_id}`,
       event: { event_version: "agent_router_erc8004_agent_import_v1", ...imported }
     });
+    store.erc8004Imports ||= new Map();
+    store.erc8004Imports.set(`${chainId}:${indexed.agent_id}`, imported);
     sendJson(res, 200, { ok: true, status: imported.verification_state, agent: imported });
     return;
   }
@@ -410,21 +568,142 @@ async function routeRequest(req, res, store, baseUrl, {
       return;
     }
     if (body.execute === true && protocol === "http") {
-      const result = await erc8004Executor({ endpoint: protocolEntry.endpoint, input, agent });
-      sendJson(res, 200, {
-        ok: true,
-        status: "completed",
-        request_id: `erc8004_${crypto.randomUUID()}`,
-        agent: { chain_id: agent.chain_id, agent_id: agent.agent_id, name: agent.name },
-        dispatch: {
-          adapter: protocol,
-          endpoint: protocolEntry.endpoint,
-          input,
-          payment: "none_declared",
-          execution: "direct_http"
-        },
-        result
+      const policy = requireReadOnlyErc8004ExecutionPolicy(agent, body.capability);
+      const idempotencyKey = String(req.headers["idempotency-key"] || "").trim();
+      if (!idempotencyKey) {
+        throw requestError(
+          "ERC8004_HIRE_IDEMPOTENCY_KEY_REQUIRED",
+          "Idempotency-Key is required before AgentRouter can directly execute an external ERC-8004 Agent.",
+          428
+        );
+      }
+      if (idempotencyKey.length > 200) {
+        throw requestError("ERC8004_HIRE_IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must be at most 200 characters.", 422);
+      }
+      const actorKey = authUserKey(auth.user);
+      const serviceId = erc8004HireServiceId(agent);
+      const { claimKey, requestHash } = erc8004HireClaim({
+        actorKey,
+        idempotencyKey,
+        agent,
+        endpoint: protocolEntry.endpoint,
+        capability: policy.capability,
+        input,
+        policy
       });
+      const outcome = await executeErc8004HireOnce({
+        store,
+        claimKey,
+        requestHash,
+        serviceId,
+        persistence: erc8004HirePersistence,
+        persistentResponse: persistentErc8004HireResponse,
+        execute: async ({ requestId }) => {
+          const startedAt = new Date().toISOString();
+          const result = await erc8004Executor({
+            endpoint: protocolEntry.endpoint,
+            input,
+            agent,
+            capability: policy.capability
+          });
+          const artifacts = createErc8004HireArtifacts({
+            requestId,
+            actorKey,
+            agent,
+            endpoint: protocolEntry.endpoint,
+            input,
+            result,
+            policy,
+            startedAt
+          });
+          await erc8004HirePersistence.writeEvent({
+            eventType: "erc8004_hire_invocation",
+            serviceId,
+            requestId,
+            event: artifacts.invocation
+          });
+          await erc8004HirePersistence.writeEvent({
+            eventType: "evidence",
+            serviceId,
+            requestId,
+            event: artifacts.evidence
+          });
+          const selectedService = erc8004HireSelectedService(agent, serviceId, policy);
+          const feedbackResult = erc8004HireFeedbackResult(result, requestId, serviceId);
+          const verification = erc8004HireVerification(agent, policy, artifacts.evidence);
+          const consumerFeedbackRequest = await createAuthorizedConsumerFeedbackRequest(store, {
+            actorKey,
+            request: { capability: policy.capability, params: input },
+            requestId,
+            selectedService,
+            result: feedbackResult,
+            serviceId,
+            verification,
+            writeEvent: erc8004HirePersistence.writeEvent
+          });
+          materializeErc8004HireArtifacts(store, artifacts);
+          const completedHire = {
+            response: {
+              ok: true,
+              status: "completed",
+              request_id: requestId,
+              agent: { chain_id: agent.chain_id, agent_id: agent.agent_id, name: agent.name },
+              dispatch: {
+                adapter: protocol,
+                endpoint: protocolEntry.endpoint,
+                input,
+                capability: policy.capability,
+                access: policy.access,
+                payment: "none_declared",
+                execution: "direct_http"
+              },
+              result,
+              evidence: artifacts.evidence,
+              consumer_feedback_request: consumerFeedbackRequest
+            },
+            invocation: artifacts.invocation
+          };
+          await erc8004HirePersistence.writeEvent({
+            eventType: "erc8004_hire_completion",
+            serviceId,
+            requestId,
+            event: {
+              event_version: "agent_router_erc8004_hire_completion_v1",
+              claim_key: claimKey,
+              request_hash: requestHash,
+              response_bundle: persistentErc8004HireResponse(completedHire),
+              created_at: new Date().toISOString()
+            }
+          });
+          return completedHire;
+        }
+      });
+      let response = outcome.value.response;
+      if (outcome.persistentReplay || outcome.localCompletedReplay) {
+        const persisted = outcome.value;
+        materializeErc8004HireArtifacts(store, {
+          invocation: persisted.invocation,
+          evidence: persisted.response?.evidence
+        });
+        const replayRequestId = persisted.response.request_id;
+        const replayFeedbackRequest = await createAuthorizedConsumerFeedbackRequest(store, {
+          actorKey,
+          request: { capability: policy.capability, params: input },
+          requestId: replayRequestId,
+          selectedService: erc8004HireSelectedService(agent, serviceId, policy),
+          result: erc8004HireFeedbackResult(persisted.response.result, replayRequestId, serviceId),
+          serviceId,
+          verification: erc8004HireVerification(agent, policy, persisted.response.evidence),
+          writeEvent: erc8004HirePersistence.writeEvent,
+          rotate: true
+        });
+        response = {
+          ...persisted.response,
+          dispatch: { ...(persisted.response.dispatch || {}), input },
+          consumer_feedback_request: replayFeedbackRequest
+        };
+      }
+      sendJson(res, 200, response);
       return;
     }
     sendJson(res, 200, {
@@ -499,13 +778,13 @@ async function routeRequest(req, res, store, baseUrl, {
       registered_by: authUserKey(auth.user),
       created_at: new Date().toISOString()
     };
-    applyErc8004VendorIdentity(store, providerId, event);
-    await writePersistentServiceEvent({
+    await serviceEventPersistence.writeEvent({
       eventType: "erc8004_vendor_identity",
       serviceId: `vendor:${providerId}`,
       requestId: identity.tx_hash,
       event
     });
+    applyErc8004VendorIdentity(store, providerId, event);
     sendJson(res, 200, { ok: true, status: "registered", identity: event });
     return;
   }
@@ -621,7 +900,7 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname === "/auth/device/start") {
     const body = await readJson(req);
-    sendJson(res, 201, beginDeviceAuthorization(store, {
+    sendJson(res, 201, await beginDeviceAuthorization(store, {
       baseUrl,
       clientName: body.client_name || body.clientName || "AI agent"
     }), { "cache-control": "no-store" });
@@ -647,7 +926,7 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "GET" && url.pathname === "/connect") {
     const userCode = String(url.searchParams.get("user_code") || "").trim();
-    const authorization = getDeviceAuthorizationByUserCode(store, userCode);
+    const authorization = await getDeviceAuthorizationByUserCode(store, userCode);
     if (!authorization) {
       sendHtml(res, 400, deviceConnectHtml({ authorization: null, error: "This connection code is invalid or expired." }));
       return;
@@ -665,7 +944,7 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!auth.user) return sendAuthRequired(res, "Sign in to connect this agent.");
     const body = await readJson(req);
     const account = await ensureCreditAccount(store, auth.user);
-    const approved = approveDeviceAuthorization(store, {
+    const approved = await approveDeviceAuthorization(store, {
       userCode: body.user_code,
       account
     });
@@ -763,13 +1042,27 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!auth.user) return sendAuthRequired(res, "Sign in to claim a deposit.");
     const body = await readJson(req);
     const account = await ensureCreditAccount(store, auth.user);
-    const claimed = await claimCryptoTopup(store, {
-      account,
-      txHash: body.tx_hash || body.txHash,
-      findAccountByDepositAddress: (address) => findAccountByDepositAddress(store, address),
-      bindDepositAddress: (acct, address) => bindDepositAddress(store, acct, address)
-    });
-    sendJson(res, 201, claimed);
+    try {
+      const claimed = await claimCryptoTopup(store, {
+        account,
+        txHash: body.tx_hash || body.txHash,
+        proofDomain: baseUrl,
+        ownershipProof: body.ownership_proof || body.ownershipProof || null,
+        claimOwnershipNonce: (nonce, expiresAt) => browserHandoffClaim(
+          `deposit:${crypto.createHash("sha256").update(nonce).digest("hex")}`,
+          expiresAt
+        ),
+        findAccountByDepositAddress: (address) => findAccountByDepositAddress(store, address),
+        bindDepositAddress: (acct, address) => bindDepositAddress(store, acct, address)
+      });
+      sendJson(res, 201, claimed);
+    } catch (error) {
+      if (error.code !== "DEPOSIT_OWNERSHIP_PROOF_REQUIRED") throw error;
+      sendJson(res, 428, {
+        error: { code: error.code, message: error.message },
+        ownership_challenge: error.challenge
+      });
+    }
     return;
   }
 
@@ -823,29 +1116,40 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "GET" && /^\/auth\/github\/start$/.test(url.pathname)) {
     const providerId = url.pathname.split("/")[2];
-    redirect(res, beginOAuth({
+    const oauth = beginOAuth({
       providerId,
       store,
       baseUrl,
       returnTo: safeReturnTo(url.searchParams.get("return_to") || "/")
-    }));
+    });
+    redirect(res, oauth.url, {
+      "set-cookie": oauth.cookie,
+      "cache-control": "no-store"
+    });
     return;
   }
 
   if (req.method === "GET" && /^\/auth\/github\/callback$/.test(url.pathname)) {
     const providerId = url.pathname.split("/")[2];
+    const oauthState = url.searchParams.get("state") || "";
     try {
       const result = await completeOAuth({
         providerId,
         code: url.searchParams.get("code") || "",
-        state: url.searchParams.get("state") || "",
+        state: oauthState,
         store,
-        baseUrl
+        baseUrl,
+        cookieHeader: req.headers.cookie || "",
+        stateClaim: browserHandoffClaim
       });
-      redirect(res, result.returnTo || "/", { "set-cookie": result.cookie });
+      redirect(res, result.returnTo || "/", {
+        "set-cookie": [result.cookie, result.oauthCookie],
+        "cache-control": "no-store"
+      });
     } catch (error) {
       redirect(res, `/auth/login?error=${encodeURIComponent(error.message)}`, {
-        "set-cookie": clearSessionCookie(baseUrl)
+        "set-cookie": clearOAuthStateCookie(baseUrl, providerId, oauthState),
+        "cache-control": "no-store"
       });
     }
     return;
@@ -1146,7 +1450,8 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req);
     const result = await createProviderFromStudio(body, store, baseUrl, {
       user: auth.user,
-      ownerKey: authUserKey(auth.user)
+      ownerKey: authUserKey(auth.user),
+      registrationPersistence: providerClaimPersistence
     });
     sendJson(res, result.ok ? 201 : 422, result);
     return;
@@ -1262,7 +1567,8 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req);
     const result = await publishApiDrafts(body, store, baseUrl, {
       user: auth.user,
-      ownerKey: authUserKey(auth.user)
+      ownerKey: authUserKey(auth.user),
+      registrationPersistence: providerClaimPersistence
     });
     sendJson(res, result.ok ? 201 : 422, result);
     return;
@@ -1273,7 +1579,17 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
     const manifest = await readJson(req);
     attachOwnerToManifest(manifest, auth.user);
-    const record = registerService(store, manifest, baseUrl);
+    const record = await registerServiceDurably(store, manifest, baseUrl, providerClaimPersistence);
+    record.manifest.registration = {
+      ...(record.manifest.registration || {}),
+      publish_state: "registered"
+    };
+    try {
+      await finalizeServiceRegistration(store, record, { manifest: record.manifest });
+    } catch (error) {
+      await abortServiceRegistration(store, record);
+      throw error;
+    }
     sendJson(res, 201, publicServiceRecord(record));
     return;
   }
@@ -1300,7 +1616,8 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req).catch(() => ({}));
     const result = await registerServiceErc8004Identity(store, serviceId, {
       baseUrl,
-      metadataUri: body.metadata_uri || body.metadataUri || ""
+      metadataUri: body.metadata_uri || body.metadataUri || "",
+      writeEvent: serviceEventPersistence.writeEvent
     });
     sendJson(res, 200, result);
     return;
@@ -1313,7 +1630,11 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
     if (!requireServiceOwner(req, res, auth, record)) return;
     if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
-    const result = await validateService(store, serviceId);
+    const result = await validateService(store, serviceId, {
+      // CLI onboarding's demo upstream is an application-owned route on this
+      // exact origin; provider manifests cannot extend this allowlist.
+      trustedOrigins: [{ origin: baseUrl, pathPrefixes: ["/mock/upstream/"] }]
+    });
     sendJson(res, result.ok ? 200 : 422, result);
     return;
   }
@@ -1331,7 +1652,7 @@ async function routeRequest(req, res, store, baseUrl, {
     const serviceId = url.pathname.split("/")[2];
     const record = store.services.get(serviceId);
     if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
-    sendJson(res, 200, withCurrentRuntimeEndpoint(record.manifest, baseUrl));
+    sendJson(res, 200, publicManifestProjection(withCurrentRuntimeEndpoint(record.manifest, baseUrl)));
     return;
   }
 
@@ -1369,7 +1690,8 @@ async function routeRequest(req, res, store, baseUrl, {
     }
     const result = await recordConsumerFeedback(store, body, {
       actorKey: feedbackActorKey,
-      requireKnownInvocation: true
+      requireKnownInvocation: true,
+      writeEvent: serviceEventPersistence.writeEvent
     });
     const trustAnchor = result.status === "consumer_feedback_already_recorded" && result.trust_anchor
       ? result.trust_anchor
@@ -1389,16 +1711,29 @@ async function routeRequest(req, res, store, baseUrl, {
     }
     if (!allowSensitiveWrite(req, res, writeRateLimiter, feedbackActorKey)) return;
     const body = await readJson(req);
-    const result = await issueLocalFeedbackGrant(store, body, { actorKey: feedbackActorKey });
+    const result = await issueLocalFeedbackGrant(store, body, {
+      actorKey: feedbackActorKey,
+      writeEvent: serviceEventPersistence.writeEvent
+    });
     sendJson(res, 201, result);
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/feedback/erc8004") {
-    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user) || paymentContext.ownerKey)) return;
+    const feedbackActorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    if (!feedbackActorKey) {
+      sendJson(res, 401, {
+        error: {
+          code: "AUTH_REQUIRED",
+          message: "An authenticated AgentRouter connection is required to attach ERC-8004 feedback."
+        }
+      });
+      return;
+    }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, feedbackActorKey)) return;
     const body = await readJson(req);
-    const result = await recordClientSubmittedErc8004Feedback(store, body);
-    sendJson(res, result.ok ? 200 : 422, result);
+    const result = await recordClientSubmittedErc8004Feedback(store, body, { actorKey: feedbackActorKey });
+    sendJson(res, result.ok ? 200 : result.statusCode || 422, result);
     return;
   }
 
@@ -1427,11 +1762,62 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/agent-router/calls/complete") {
-    if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user) || paymentContext.ownerKey)) return;
+  if (req.method === "POST" && url.pathname === "/agent-router/calls/grant") {
+    if (!allowSensitiveWrite(req, res, writeRateLimiter)) return;
     const body = await readJson(req);
-    const result = await recordCompletedAgentCall(store, body);
-    sendJson(res, result.ok ? 201 : 422, result);
+    const serviceId = String(body.service_id || "");
+    const record = store.services.get(serviceId);
+    if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
+    if (record.verification_status !== "verified") {
+      sendJson(res, 409, { error: { code: "SERVICE_NOT_VERIFIED", message: "Completion grants are issued only for verified services." } });
+      return;
+    }
+    const completionNonce = String(body.completion_nonce || `server_${crypto.randomUUID()}`);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const completionGrant = issueCompletionGrant({
+      serviceId,
+      inputHash: hashJson(body.input || {}),
+      challengeNonce: completionNonce,
+      expiresAt
+    });
+    sendJson(res, 201, {
+      ok: true,
+      status: "completion_grant_issued",
+      service_id: serviceId,
+      completion_nonce: completionNonce,
+      completion_grant: completionGrant,
+      expires_at: expiresAt
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/agent-router/calls/complete") {
+    const body = await readJson(req);
+    let callActorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    if (!callActorKey) {
+      const serviceId = body.service_id || body.feedback?.service_id || body.result?.service_id;
+      const input = body.input || body.request?.params || {};
+      const challengeNonce = body.completion_nonce || body.local_payment?.challenge_nonce;
+      const grant = verifyCompletionGrant(body.completion_grant, {
+        serviceId,
+        inputHash: hashJson(input),
+        challengeNonce
+      });
+      const payer = String(body.local_payment?.payer || "").toLowerCase();
+      if (grant.ok && /^0x[0-9a-f]{40}$/.test(payer)) callActorKey = `wallet:${payer}`;
+    }
+    if (!callActorKey) {
+      sendJson(res, 401, {
+        error: {
+          code: "AUTH_REQUIRED",
+          message: "An authenticated AgentRouter connection or a valid completion grant is required to record a completed call."
+        }
+      });
+      return;
+    }
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, callActorKey)) return;
+    const result = await recordCompletedAgentCall(store, body, { actorKey: callActorKey });
+    sendJson(res, result.ok ? (result.status === "completed_invocation_already_recorded" ? 200 : 201) : result.statusCode || 422, result);
     return;
   }
 
@@ -1451,7 +1837,16 @@ async function routeRequest(req, res, store, baseUrl, {
     const { service_id: serviceId } = await readJson(req);
     const record = store.services.get(serviceId);
     if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
-    sendJson(res, 200, withCurrentRuntimeEndpoint(record.manifest, baseUrl));
+    if (record.verification_status !== "verified") {
+      sendJson(res, 409, {
+        error: {
+          code: "SERVICE_NOT_VERIFIED",
+          message: "Connector manifests are available for paid invocation only after service verification."
+        }
+      });
+      return;
+    }
+    sendJson(res, 200, publicManifestProjection(withCurrentRuntimeEndpoint(record.manifest, baseUrl)));
     return;
   }
 
@@ -1596,7 +1991,7 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req);
     const result = await askAgentRouter(store, {
       task: body.task || body.query || "",
-      max_price: body.max_price || body.maxPrice || "0.05",
+      max_price: body.max_price ?? body.maxPrice ?? "0.05",
       currency: body.currency || "USDC",
       invoke: paymentContext.invoke,
       consumerApiKey: paymentContext.consumerApiKey
@@ -1619,7 +2014,7 @@ async function routeRequest(req, res, store, baseUrl, {
       chain_anchor: `${settlementChain().network}_hash_anchor`,
       storage_model: "full_evidence_offchain_hashes_onchain",
       count: events.length,
-      events
+      events: events.map(publicEvidenceEvent)
     });
     return;
   }
@@ -1639,7 +2034,7 @@ async function routeRequest(req, res, store, baseUrl, {
       storage: "offchain_memory_db",
       note: "Route observations are lightweight training/evaluation records for future learned routing.",
       count: observations.length,
-      observations
+      observations: observations.map(publicRouteObservation)
     });
     return;
   }
@@ -1681,7 +2076,9 @@ async function routeRequest(req, res, store, baseUrl, {
     if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
     if (!requireServiceOwner(req, res, auth, record)) return;
     if (!allowSensitiveWrite(req, res, writeRateLimiter, authUserKey(auth.user))) return;
-    const result = await runServiceHealthCheck(store, body.service_id);
+    const result = await runServiceHealthCheck(store, body.service_id, {
+      trustedOrigins: [{ origin: baseUrl, pathPrefixes: ["/provider/"] }]
+    });
     sendJson(res, result.ok === false ? 422 : 200, result);
     return;
   }
@@ -1690,22 +2087,25 @@ async function routeRequest(req, res, store, baseUrl, {
     const { service_id: serviceId } = await readJson(req);
     const record = store.services.get(serviceId);
     if (!record) return sendNotFound(res, "SERVICE_NOT_FOUND");
-    sendJson(res, 200, record.feedback_events || []);
+    sendJson(res, 200, (record.feedback_events || []).map(publicFeedbackEvent));
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/provider/chain-fund-flow") {
+    if (!allowVerifiedProviderRuntime(req, res, store, "chain_fund_flow_7d_base")) return;
     await handleFundFlowProvider(req, res, { store, baseUrl });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/provider/btc-liquidation-max-pain") {
+    if (!allowVerifiedProviderRuntime(req, res, store, "btc_liquidation_max_pain_demo")) return;
     await handleBtcLiquidationProvider(req, res, { store, baseUrl });
     return;
   }
 
   if (req.method === "POST" && url.pathname.startsWith("/provider/custom/")) {
     const serviceId = decodeURIComponent(url.pathname.split("/")[3] || "");
+    if (!allowVerifiedProviderRuntime(req, res, store, serviceId)) return;
     await handleCustomProvider(req, res, serviceId, { store, baseUrl });
     return;
   }
@@ -1821,16 +2221,25 @@ function requestError(code, message, statusCode = 422) {
 
 export async function agentRouterReadiness({
   persistenceProbe = persistenceReadiness,
+  bootstrapProbe = async () => ({ ok: true, status: "completed" }),
   environment = process.env
 } = {}) {
   const persistence = await persistenceProbe();
+  let bootstrap;
+  try {
+    bootstrap = await bootstrapProbe();
+  } catch (error) {
+    bootstrap = { ok: false, status: "failed", error: error.message };
+  }
   const hosted = environment.NODE_ENV === "production" || Boolean(environment.RENDER);
   const signingSecret = String(environment.ADN_BROWSER_HANDOFF_SECRET || "");
   const signingReady = !hosted || signingSecret.length >= 32;
+  const bootstrapReady = bootstrap?.ok === true && bootstrap?.status === "completed";
   return {
-    ok: Boolean(persistence.ok && signingReady),
+    ok: Boolean(persistence.ok && signingReady && bootstrapReady),
     checks: {
       ...(persistence.checks || {}),
+      bootstrap,
       browser_handoff_signing: {
         ok: signingReady,
         required: hosted,
@@ -1917,11 +2326,8 @@ function platformOperatorMatches(auth) {
 function requireVendorIdentityOwner(req, res, auth, store, providerId) {
   if (auth.user?.role === "admin" || platformOperatorMatches(auth)) return true;
   const actorKey = authUserKey(auth.user);
-  const owned = [...store.services.values()].some((record) =>
-    record.manifest?.provider?.provider_id === providerId &&
-    record.manifest?.registration?.owner?.user_key === actorKey
-  );
-  if (owned) return true;
+  const claim = store.providerClaims?.get(providerId) || null;
+  if (claim?.owner_key === actorKey) return true;
   sendJson(res, 403, {
     error: {
       code: "VENDOR_IDENTITY_OWNER_REQUIRED",
@@ -2033,38 +2439,64 @@ function sensitiveWriteActorKey(req, actorKey = "") {
   return `anonymous:${crypto.createHash("sha256").update(socketAddress).digest("hex").slice(0, 24)}`;
 }
 
-function remoteMcpSession(req, store, now = Date.now()) {
-  if (!store.remoteMcpSessions) store.remoteMcpSessions = new Map();
-  for (const [id, record] of store.remoteMcpSessions) {
-    if (record.expires_at <= now) store.remoteMcpSessions.delete(id);
-  }
-  const requestedId = String(req.headers["mcp-session-id"] || "").trim();
-  const existing = requestedId ? store.remoteMcpSessions.get(requestedId) : null;
-  if (existing) {
-    existing.expires_at = now + REMOTE_MCP_SESSION_TTL_MS;
-    return existing;
-  }
-  const session = {
-    id: `armcp_${crypto.randomBytes(24).toString("base64url")}`,
-    device_authorization: null,
-    consumer_api_key: "",
-    created_at: now,
-    expires_at: now + REMOTE_MCP_SESSION_TTL_MS
-  };
-  store.remoteMcpSessions.set(session.id, session);
-  return session;
+async function remoteMcpSession(req, store, now = Date.now()) {
+  return loadRemoteMcpSession(store, String(req.headers["mcp-session-id"] || "").trim(), {
+    now,
+    ttlMs: REMOTE_MCP_SESSION_TTL_MS
+  });
 }
 
 async function remoteMcpPaymentContext(session, store, paymentContext) {
-  if (!session?.consumer_api_key) return paymentContext;
-  const identity = await authenticateCreditRequest(store, {
-    headers: { authorization: `Bearer ${session.consumer_api_key}` }
-  });
+  if (paymentContext?.credentialInvalid) return {
+    ...paymentContext,
+    invoke: false,
+    consumerApiKey: "",
+    ownerKey: "",
+    remoteAuthStatus: "revoked"
+  };
+  if (paymentContext?.ownerKey && paymentContext?.consumerApiKey) return paymentContext;
+  if (!session?.consumer_api_key) return {
+    ...paymentContext,
+    remoteAuthStatus: session?.reconnect_reason === "credential_revoked"
+      ? "revoked"
+      : session?.reconnect_reason
+        ? "reconnect_required"
+        : "anonymous"
+  };
+  let identity;
+  try {
+    identity = await authenticateCreditRequest(store, {
+      headers: { authorization: `Bearer ${session.consumer_api_key}` }
+    });
+  } catch {
+    return {
+      ...paymentContext,
+      invoke: false,
+      consumerApiKey: "",
+      ownerKey: "",
+      remoteAuthStatus: "validation_unavailable"
+    };
+  }
+  if (!identity) {
+    session.consumer_api_key = "";
+    session.credential_key_id = null;
+    session.device_authorization = null;
+    session.reconnect_reason = "credential_revoked";
+    return {
+      ...paymentContext,
+      invoke: false,
+      consumerApiKey: "",
+      ownerKey: "",
+      remoteAuthStatus: "revoked"
+    };
+  }
+  session.reconnect_reason = null;
   return {
     ...paymentContext,
     invoke: true,
     consumerApiKey: session.consumer_api_key,
-    ownerKey: identity?.account?.owner_key || ""
+    ownerKey: identity.account?.owner_key || "",
+    remoteAuthStatus: "connected"
   };
 }
 
@@ -2076,6 +2508,15 @@ async function connectRemoteMcpSession(store, session, baseUrl, args = {}) {
       message: "Initialize the AgentRouter MCP connection before authorizing an account."
     };
   }
+  if (session.persistence_required && !session.persistence_ready) {
+    return {
+      ok: false,
+      status: "authorization_unavailable",
+      action: "retry_agentrouter_connect",
+      retryable: true,
+      message: "AgentRouter cannot safely persist this connection right now. Retry after shared session storage is available."
+    };
+  }
   if (session.consumer_api_key) {
     return {
       ok: true,
@@ -2085,14 +2526,23 @@ async function connectRemoteMcpSession(store, session, baseUrl, args = {}) {
     };
   }
   if (args.restart === true || !session.device_authorization) {
-    session.device_authorization = beginDeviceAuthorization(store, {
+    const started = await beginDeviceAuthorization(store, {
       baseUrl,
       clientName: args.client_name || "Remote MCP client"
     });
+    session.device_authorization = {
+      device_code_hash: hashDeviceCode(started.device_code),
+      user_code: started.user_code,
+      verification_uri: started.verification_uri,
+      verification_uri_complete: started.verification_uri_complete,
+      expires_in: started.expires_in,
+      interval: started.interval
+    };
+    session.reconnect_reason = null;
     return remoteMcpAuthorizationRequired(session.device_authorization);
   }
   const result = await pollDeviceAuthorization(store, {
-    deviceCode: session.device_authorization.device_code,
+    deviceCodeHash: session.device_authorization.device_code_hash,
     issueCredential: ({ account, clientName }) => createCreditApiKey(store, {
       account,
       label: `Connected remote MCP · ${clientName}`,
@@ -2103,7 +2553,9 @@ async function connectRemoteMcpSession(store, session, baseUrl, args = {}) {
   });
   if (result.access_token) {
     session.consumer_api_key = result.access_token;
+    session.credential_key_id = result.key_id || null;
     session.device_authorization = null;
+    session.reconnect_reason = null;
     return {
       ok: true,
       status: "connected",
@@ -2183,13 +2635,14 @@ async function handleRemoteMcp(req, res, store, baseUrl, paymentContext = {}) {
   }
 
   const messages = Array.isArray(payload) ? payload : [payload];
-  const session = remoteMcpSession(req, store);
+  const session = await remoteMcpSession(req, store);
   const sessionPaymentContext = await remoteMcpPaymentContext(session, store, paymentContext);
   const responses = [];
   for (const message of messages) {
     const response = await dispatchRemoteMcpMessage(message, store, baseUrl, sessionPaymentContext, session);
     if (response) responses.push(response);
   }
+  await persistRemoteMcpSession(store, session);
   if (!responses.length) {
     res.writeHead(202, headers);
     res.end();
@@ -2237,7 +2690,28 @@ async function dispatchRemoteMcpMessage(message, store, baseUrl, paymentContext 
 async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}, session = null) {
   await loadProviderConfigs(store, baseUrl, { validate: false });
   if (name === "agentrouter_connect") {
+    if (paymentContext.remoteAuthStatus === "validation_unavailable") {
+      return {
+        ok: false,
+        status: "authorization_unavailable",
+        action: "retry_agentrouter_connect",
+        retryable: true,
+        message: "AgentRouter cannot verify whether this connection is still active. No call was authorized; retry when account storage is available."
+      };
+    }
     return connectRemoteMcpSession(store, session, baseUrl, args);
+  }
+  if (["revoked", "validation_unavailable", "reconnect_required"].includes(paymentContext.remoteAuthStatus)) {
+    return {
+      ...agentRouterConnectionRequired(),
+      status: "connection_required",
+      pending_reason: paymentContext.remoteAuthStatus === "revoked"
+        ? "credential_revoked"
+        : paymentContext.remoteAuthStatus === "reconnect_required"
+          ? "session_reconnect_required"
+          : "credential_validation_unavailable",
+      retryable: paymentContext.remoteAuthStatus === "validation_unavailable"
+    };
   }
   if (name === "agentrouter_complete_handoff") {
     return completeHostedBrowserHandoff(args, paymentContext.browserHandoffClaim || claimPersistentBrowserHandoff);
@@ -2373,7 +2847,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
   if (name === "agentrouter_ask") {
     return askAgentRouter(store, {
       task: args.task || args.query || "",
-      max_price: args.max_price || args.maxPrice || "0.05",
+      max_price: args.max_price ?? args.maxPrice ?? "0.05",
       currency: args.currency || "USDC",
       invoke: paymentContext.invoke,
       consumerApiKey: paymentContext.consumerApiKey
@@ -2395,7 +2869,7 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
   socialProviderFactory = socialProvidersForUser
 } = {}) {
   let requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
-  const maxPrice = args.max_price || args.constraints?.max_price_usdc || args.budget?.max_amount || "0.05";
+  const maxPrice = args.max_price ?? args.constraints?.max_price_usdc ?? args.budget?.max_amount ?? "0.05";
   const currency = args.currency || args.budget?.currency || "USDC";
 
   // Prefer a source the caller has actually connected over a default one.
@@ -2480,18 +2954,28 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
       results.push(requestPaymentRequired(quoteCapabilityRequest(store, request)));
     }
   }
-  const successful = results.filter((result) => result?.ok !== false && result?.result);
-  const failed = results.filter((result) => result?.ok === false);
-  const allPaymentRequired = failed.length === results.length && failed.every((result) => result?.status === "payment_required");
-  const connectionRequired = failed.find((result) => result?.status === "connection_required");
+  const successful = results.filter(resultReturnedUsableData);
+  const unsatisfied = results.filter((result) => !resultReturnedUsableData(result));
+  const allPaymentRequired = unsatisfied.length === results.length && unsatisfied.every((result) => result?.status === "payment_required");
+  const connectionRequired = unsatisfied.find((result) => result?.status === "connection_required");
+  const sourceRequired = unsatisfied.filter((result) =>
+    result?.status === "source_credentials_required" || result?.connection_action?.preferred_tool === "agentrouter_connect_source");
+  const sourceActions = sourceRequired.map((result) => ({
+    source: result?.source?.source || result?.source || result?.connection_action?.tool_arguments?.source || null,
+    status: result.status,
+    connection_action: result.connection_action,
+    message: result.message || result.error?.message || null
+  }));
   const feedbackRequired = results.some((result) => result?.consumer_feedback_request);
   return {
-    ok: failed.length === 0,
+    ok: unsatisfied.length === 0,
     status: connectionRequired && !successful.length
       ? "connection_required"
+      : sourceRequired.length && !successful.length
+        ? "source_credentials_required"
       : allPaymentRequired
         ? "payment_required"
-        : failed.length
+        : unsatisfied.length
           ? (successful.length ? "partial_data_returned" : "no_data_returned")
           : "data_returned",
     protocol: {
@@ -2505,11 +2989,32 @@ async function runRemoteAgentRouterFetch(store, args = {}, {
     results,
     compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
     ...(researchPlans.length ? { research_plans: researchPlans } : {}),
+    ...(sourceActions.length ? {
+      connection_action: sourceActions[0].connection_action,
+      source_actions: sourceActions,
+      retry_original_request_after_connection: true,
+      do_not_fallback_outside_agentrouter: true
+    } : {}),
     feedback_required: feedbackRequired,
-    next_required_action: connectionRequired?.action_required || (feedbackRequired
+    next_required_action: connectionRequired?.action_required || sourceActions[0]?.connection_action || (feedbackRequired
       ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
       : null)
   };
+}
+
+function resultReturnedUsableData(result) {
+  if (!result || result.ok === false || result.status === "no_results") return false;
+  const value = result.result;
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value !== "object") return true;
+  if (Array.isArray(value.items)) return value.items.length > 0;
+  if (Number.isFinite(Number(value.count))) return Number(value.count) > 0;
+  if (value.data !== undefined) {
+    if (Array.isArray(value.data)) return value.data.length > 0;
+    return value.data !== null && value.data !== "";
+  }
+  return Object.keys(value).length > 0;
 }
 
 function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice, currency }) {
@@ -2533,12 +3038,12 @@ function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice,
     constraints: {
       ...(args.constraints || {}),
       ...(constraints || {}),
-      max_price_usdc: constraints?.max_price_usdc || args.constraints?.max_price_usdc || maxPrice
+      max_price_usdc: constraints?.max_price_usdc ?? args.constraints?.max_price_usdc ?? maxPrice
     },
     budget: {
       ...(args.budget || {}),
       ...(budget || {}),
-      max_amount: budget?.max_amount || args.budget?.max_amount || maxPrice,
+      max_amount: budget?.max_amount ?? args.budget?.max_amount ?? maxPrice,
       currency: budget?.currency || args.budget?.currency || currency
     },
     consumer_context: {
@@ -3047,13 +3552,15 @@ async function paidInvocationContext(req, baseUrl, store) {
   const consumerApiKey = creditApiKeyFromRequest(req);
   const creditIdentity = consumerApiKey ? await authenticateCreditRequest(store, req) : null;
   const paymentBackend = currentPaymentBackend();
+  const authenticatedCreditKey = Boolean(consumerApiKey && creditIdentity);
   return {
     // Localhost may execute legacy local-payment backends, but credits are
     // authenticated server-side and must never be attempted without a key.
     invoke: (paymentBackend !== "credits" && localServerPaidInvocationsAllowed(baseUrl))
-      || (paymentBackend === "credits" && Boolean(consumerApiKey)),
-    consumerApiKey,
-    ownerKey: creditIdentity?.account?.owner_key || ""
+      || (paymentBackend === "credits" && authenticatedCreditKey),
+    consumerApiKey: authenticatedCreditKey ? consumerApiKey : "",
+    ownerKey: creditIdentity?.account?.owner_key || "",
+    credentialInvalid: Boolean(consumerApiKey && !creditIdentity)
   };
 }
 
@@ -3159,7 +3666,7 @@ function paymentRequiredForService(store, serviceId, input = {}, budget = {}) {
       body: { error: { code: "SERVICE_NOT_FOUND" } }
     };
   }
-  const maxAmount = budget.max_amount || budget.max_price_usdc;
+  const maxAmount = budget.max_amount ?? budget.max_price_usdc;
   const price = Number(record.manifest.pricing.amount);
   const max = maxAmount == null || maxAmount === "" ? null : Number(maxAmount);
   const allowed = max == null || price <= max;
@@ -3174,7 +3681,7 @@ function paymentRequiredForService(store, serviceId, input = {}, budget = {}) {
       provider_id: record.manifest.provider.provider_id,
       pricing: record.manifest.pricing,
       budget: {
-        max_price_usdc: maxAmount || null,
+        max_price_usdc: maxAmount ?? null,
         allowed
       },
       guard_result: allowed ? "pass" : "budget_too_low",
@@ -3747,7 +4254,7 @@ function mockOpenApi(baseUrl) {
   };
 }
 
-async function recordCompletedAgentCall(store, body = {}) {
+async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}) {
   const serviceId = body.service_id || body.feedback?.service_id || body.result?.service_id;
   const record = store.services.get(serviceId);
   if (!record) {
@@ -3755,6 +4262,20 @@ async function recordCompletedAgentCall(store, body = {}) {
       ok: false,
       status: "service_not_found",
       error: { code: "SERVICE_NOT_FOUND", message: `No registered service ${serviceId || ""}.` }
+    };
+  }
+  if (record.verification_status !== "verified") {
+    return {
+      ok: false,
+      statusCode: 409,
+      status: "service_not_verified",
+      service_id: serviceId,
+      error: {
+        code: "SERVICE_NOT_VERIFIED",
+        message: "Trust and evidence can be recorded only for a currently verified service.",
+        verification_status: record.verification_status || "unknown",
+        retryable: false
+      }
     };
   }
 
@@ -3780,7 +4301,8 @@ async function recordCompletedAgentCall(store, body = {}) {
     body,
     manifest,
     requestId,
-    verification
+    verification,
+    actorKey
   });
   const paymentVerification = await verifyCompletedCallPayment({ body, manifest, feedbackEvent });
   if (!paymentVerification.ok) {
@@ -3793,8 +4315,54 @@ async function recordCompletedAgentCall(store, body = {}) {
       payment_verification: paymentVerification,
       error: {
         code: paymentVerification.error || "PAYMENT_VERIFICATION_FAILED",
-        message: "Completed invocation was not recorded because the Arc payment could not be verified."
+        message: "Completed invocation was not recorded because the settlement payment could not be verified."
       }
+    };
+  }
+  const replayedEvidence = feedbackEvent.payment_tx
+    ? store.evidenceEvents.find((event) =>
+        event.service_id === serviceId &&
+        String(event.payment_tx || "").toLowerCase() === String(feedbackEvent.payment_tx).toLowerCase()
+      )
+    : null;
+  if (replayedEvidence) {
+    const sameInput = replayedEvidence.input_hash === hashJson(input);
+    const sameResult = replayedEvidence.result_hash === hashJson(result);
+    if (!sameInput || !sameResult) {
+      return {
+        ok: false,
+        statusCode: 409,
+        status: "completion_replay_conflict",
+        request_id: replayedEvidence.request_id,
+        service_id: serviceId,
+        error: {
+          code: "COMPLETION_REPLAY_CONFLICT",
+          message: "This settlement transaction was already bound to a different completed invocation."
+        }
+      };
+    }
+    const existingFeedback = [...(record.feedback_events || [])].reverse().find((event) =>
+      String(event.payment_tx || "").toLowerCase() === String(feedbackEvent.payment_tx).toLowerCase()
+    );
+    const consumerFeedbackRequest = await createAuthorizedConsumerFeedbackRequest(store, {
+      actorKey,
+      request,
+      requestId: replayedEvidence.request_id,
+      result: { ...result, request_id: replayedEvidence.request_id },
+      selectedService: publicServiceRecord(record),
+      serviceId,
+      verification: replayedEvidence.verification || verification
+    });
+    return {
+      ok: true,
+      status: "completed_invocation_already_recorded",
+      request_id: replayedEvidence.request_id,
+      service_id: serviceId,
+      verification: replayedEvidence.verification,
+      evidence: replayedEvidence,
+      feedback: existingFeedback || null,
+      payment_verification: paymentVerification,
+      consumer_feedback_request: consumerFeedbackRequest
     };
   }
   feedbackEvent.payment_verification = paymentVerification;
@@ -3866,10 +4434,13 @@ async function recordCompletedAgentCall(store, body = {}) {
     event: qualityEvent
   });
 
-  const consumerFeedbackRequest = createConsumerFeedbackRequest({
+  const consumerFeedbackRequest = await createAuthorizedConsumerFeedbackRequest(store, {
+    actorKey,
     request,
+    requestId,
     selectedService,
     result,
+    serviceId,
     verification
   });
 
@@ -3887,15 +4458,158 @@ async function recordCompletedAgentCall(store, body = {}) {
   };
 }
 
+function allowVerifiedProviderRuntime(req, res, store, serviceId) {
+  if (isInternalProviderValidationRequest(req)) return true;
+  const record = store.services.get(serviceId);
+  if (!record) {
+    sendNotFound(res, "SERVICE_NOT_FOUND");
+    return false;
+  }
+  if (record.verification_status !== "verified") {
+    sendJson(res, 409, {
+      error: {
+        code: "SERVICE_NOT_VERIFIED",
+        message: "Provider execution is available only after service verification.",
+        verification_status: record.verification_status || "unknown",
+        retryable: false
+      }
+    });
+    return false;
+  }
+  return true;
+}
+
+function persistentErc8004HireResponse(value = {}) {
+  const response = { ...(value.response || {}) };
+  if (response.dispatch) {
+    response.dispatch = { ...response.dispatch };
+    delete response.dispatch.input;
+  }
+  delete response.consumer_feedback_request;
+  return { response, invocation: value.invocation || null };
+}
+
+function erc8004HireSelectedService(agent, serviceId, policy) {
+  return {
+    service_id: serviceId,
+    title: agent.name || `ERC-8004 Agent #${agent.agent_id}`,
+    description_for_agent: agent.description || "Verified ERC-8004 read-only Agent.",
+    provider_id: serviceId,
+    capabilities: [policy.capability],
+    access: policy.access
+  };
+}
+
+function erc8004HireFeedbackResult(result, requestId, serviceId) {
+  if (isPlainRecord(result)) return { ...result, request_id: requestId, service_id: serviceId };
+  return { data: result, request_id: requestId, service_id: serviceId };
+}
+
+function erc8004HireVerification(agent, policy, evidence) {
+  return {
+    verification_model: "erc8004_verified_endpoint_read_only_policy_v1",
+    endpoint_verified: true,
+    identity_index_verified: true,
+    identity_source: agent.import_source || "8004scan",
+    policy_verified: true,
+    access: policy.access,
+    capability: policy.capability,
+    verified_at: agent.verified_at,
+    trace_hash: evidence?.trace_hash || null,
+    issues: []
+  };
+}
+
+function materializeErc8004HireArtifacts(store, { invocation, evidence } = {}) {
+  store.feedbackEvents ||= [];
+  store.invocationLogs ||= [];
+  store.evidenceEvents ||= [];
+  if (invocation && !store.feedbackEvents.some((item) =>
+    item.request_id === invocation.request_id && item.service_id === invocation.service_id
+  )) {
+    store.feedbackEvents.push(invocation);
+  }
+  if (invocation && !store.invocationLogs.some((item) =>
+    item.request_id === invocation.request_id && item.service_id === invocation.service_id
+  )) {
+    store.invocationLogs.push(invocation);
+  }
+  if (evidence && !store.evidenceEvents.some((item) => item.trace_hash === evidence.trace_hash)) {
+    store.evidenceEvents.push(evidence);
+  }
+}
+
+async function createAuthorizedConsumerFeedbackRequest(store, {
+  actorKey,
+  request,
+  requestId,
+  selectedService,
+  result,
+  serviceId,
+  verification,
+  writeEvent = writePersistentServiceEvent,
+  rotate = false
+}) {
+  const feedbackToken = crypto.randomBytes(32).toString("base64url");
+  const createdAt = new Date().toISOString();
+  const existing = store.feedbackGrants?.get(requestId);
+  const grant = {
+    event_version: "agent_invocation_feedback_grant_v1",
+    request_id: requestId,
+    service_id: serviceId,
+    actor_key: actorKey,
+    token_hash: hashJson(feedbackToken),
+    created_at: existing?.created_at || createdAt,
+    ...((rotate || existing) ? { rotated_at: createdAt } : {}),
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  };
+  await writeEvent({
+    eventType: rotate || existing ? "invocation_feedback_grant_rotation" : "invocation_feedback_grant",
+    serviceId,
+    requestId,
+    event: grant
+  });
+  store.feedbackGrants ||= new Map();
+  store.feedbackGrants.set(requestId, grant);
+  const feedbackRequest = createConsumerFeedbackRequest({
+    request,
+    selectedService,
+    result,
+    verification
+  });
+  feedbackRequest.feedback_token = feedbackToken;
+  feedbackRequest.submit_to.body_template.feedback_token = feedbackToken;
+  feedbackRequest.schema.required = [...new Set([...(feedbackRequest.schema.required || []), "feedback_token"])] ;
+  feedbackRequest.schema.properties.feedback_token = {
+    type: "string",
+    description: "Short-lived server-issued token bound to this completed invocation."
+  };
+  return feedbackRequest;
+}
+
 async function verifyCompletedCallPayment({ body, manifest, feedbackEvent }) {
   const receipt = feedbackEvent.settlement_receipt || {};
   const localPayment = body.local_payment || {};
-  const network = receipt.network || localPayment.network || manifest.pricing?.network;
-  if (!isArcNetwork(network)) {
+  const pricing = effectivePricing(manifest);
+  const activeChain = settlementChain();
+  const expectedChainId = completionChainId(pricing.chain_id ?? pricing.caip2 ?? pricing.network);
+  if (!expectedChainId || expectedChainId !== activeChain.id) {
+    return { ok: false, error: "PAYMENT_NETWORK_UNSUPPORTED", expected_chain_id: activeChain.id, manifest_chain_id: expectedChainId };
+  }
+  const suppliedNetworkValues = [
+    receipt.network,
+    receipt.caip2,
+    receipt.chain_id,
+    localPayment.network,
+    localPayment.caip2,
+    localPayment.chain_id
+  ].filter((value) => value !== undefined && value !== null && value !== "");
+  if (suppliedNetworkValues.some((value) => completionChainId(value) !== expectedChainId)) {
     return {
-      ok: true,
-      status: "not_checked_non_arc_payment",
-      network: network || null
+      ok: false,
+      error: "PAYMENT_NETWORK_MISMATCH",
+      expected_chain_id: expectedChainId,
+      supplied_networks: suppliedNetworkValues
     };
   }
   if (!feedbackEvent.payment_tx) {
@@ -3904,9 +4618,33 @@ async function verifyCompletedCallPayment({ body, manifest, feedbackEvent }) {
       error: "MISSING_PAYMENT_TX"
     };
   }
+  const suppliedTxHash = receipt.tx_hash || receipt.payment_tx || localPayment.payment_tx || null;
+  if (suppliedTxHash && String(suppliedTxHash).toLowerCase() !== String(feedbackEvent.payment_tx).toLowerCase()) {
+    return { ok: false, error: "PAYMENT_TX_MISMATCH" };
+  }
+  const expectedAmount = pricing.amount;
+  const suppliedAmounts = [receipt.amount, localPayment.amount]
+    .filter((value) => value !== undefined && value !== null && value !== "");
+  if (suppliedAmounts.some((value) => !sameDecimalAmount(value, expectedAmount))) {
+    return { ok: false, error: "PAYMENT_AMOUNT_MISMATCH", expected_amount: expectedAmount };
+  }
+  const expectedPayTo = pricing.pay_to || manifest.provider?.payout_address || null;
+  const suppliedPayTo = [receipt.pay_to, receipt.payTo, localPayment.pay_to, localPayment.payTo]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase());
+  if (expectedPayTo && suppliedPayTo.some((value) => value !== String(expectedPayTo).toLowerCase())) {
+    return { ok: false, error: "PAYMENT_TARGET_MISMATCH", expected_pay_to: expectedPayTo };
+  }
+  const expectedAsset = String(pricing.currency || "USDC").toUpperCase();
+  const suppliedAssets = [receipt.asset, receipt.currency, localPayment.asset, localPayment.currency]
+    .filter(Boolean)
+    .map((value) => String(value).toUpperCase());
+  if (suppliedAssets.some((value) => value !== expectedAsset)) {
+    return { ok: false, error: "PAYMENT_ASSET_MISMATCH", expected_asset: expectedAsset };
+  }
   const expected = {
-    amount: receipt.amount || localPayment.amount || manifest.pricing?.amount,
-    payTo: receipt.pay_to || localPayment.pay_to || manifest.pricing?.pay_to,
+    amount: expectedAmount,
+    payTo: expectedPayTo,
     payer: localPayment.payer || null
   };
   if (!expected.amount || !expected.payTo) {
@@ -3922,12 +4660,37 @@ async function verifyCompletedCallPayment({ body, manifest, feedbackEvent }) {
   });
   return {
     ...verified,
-    status: verified.ok ? "verified_arc_usdc_transfer" : "arc_usdc_transfer_invalid",
+    status: verified.ok ? "verified_settlement_transfer" : "settlement_transfer_invalid",
     expected
   };
 }
 
-function normalizeOperationalFeedback({ body, manifest, requestId, verification }) {
+function completionChainId(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (/^\d+$/.test(normalized)) return Number(normalized);
+  const caip = normalized.match(/^eip155:(\d+)$/);
+  if (caip) return Number(caip[1]);
+  return new Map([
+    ["bsc", 56],
+    ["bnb", 56],
+    ["bnb-chain", 56],
+    ["bsc-testnet", 97],
+    ["arc", 5042002],
+    ["arc-testnet", 5042002],
+    ["base", 8453],
+    ["base-mainnet", 8453],
+    ["base-sepolia", 84532]
+  ]).get(normalized) || null;
+}
+
+function sameDecimalAmount(left, right) {
+  const a = Number(left);
+  const b = Number(right);
+  return Number.isFinite(a) && Number.isFinite(b) && a >= 0 && b >= 0 && a === b;
+}
+
+function normalizeOperationalFeedback({ body, manifest, requestId, verification, actorKey = "" }) {
   const source = body.feedback || {};
   const localPayment = body.local_payment || {};
   const status = source.status || localPayment.status || (body.result?.status === "success" ? "success" : "error");
@@ -3936,7 +4699,8 @@ function normalizeOperationalFeedback({ body, manifest, requestId, verification 
     request_id: requestId,
     service_id: manifest.service_id,
     provider_id: manifest.provider.provider_id,
-    consumer_id: source.consumer_id || localPayment.payer || "local_agent_wallet",
+    consumer_id: actorKey || source.consumer_id || localPayment.payer || "local_agent_wallet",
+    invocation_actor_key: actorKey || undefined,
     payment_tx: source.payment_tx || localPayment.payment_tx || null,
     payment_collected: source.payment_collected ?? Boolean(source.payment_tx || localPayment.payment_tx),
     billing_status: source.billing_status || (source.payment_tx || localPayment.payment_tx ? "charged_success" : "unknown"),
@@ -4016,34 +4780,6 @@ function listFeedbackEvents(store, { requestId, serviceId } = {}) {
     .filter((event) => !requestId || event.request_id === requestId);
 }
 
-function publicFeedbackEvent(event = {}) {
-  const feedback = event.consumer_feedback;
-  return {
-    event_version: event.event_version,
-    request_id: event.request_id,
-    service_id: event.service_id,
-    provider_id: event.provider_id,
-    status: event.status,
-    schema_valid: event.schema_valid,
-    verification: event.verification,
-    latency_ms: event.latency_ms,
-    consumer_rating: event.consumer_rating,
-    consumer_feedback: feedback ? {
-      intent_fit: feedback.intent_fit,
-      answer_useful: feedback.answer_useful,
-      data_quality_score: feedback.data_quality_score,
-      used_in_final_answer: feedback.used_in_final_answer,
-      confidence: feedback.confidence,
-      consumer_score: feedback.consumer_score
-    } : null,
-    trust_anchor: event.consumer_feedback_trust_anchor || event.trust_anchor || null,
-    consumer_feedback_arc_anchor: event.consumer_feedback_arc_anchor || event.arc_anchor || null,
-    consumer_feedback_erc8004: event.consumer_feedback_erc8004 || event.erc8004 || null,
-    created_at: event.created_at,
-    updated_at: event.updated_at || null
-  };
-}
-
 function resolveFeedbackServiceId(store, requestId) {
   if (!requestId) return null;
   const matches = listFeedbackEvents(store, { requestId })
@@ -4068,6 +4804,7 @@ async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "")
   const providerId = record?.manifest?.provider?.provider_id || feedbackResult.provider_id || invocation?.provider_id || "";
   const feedbackManifest = record?.manifest
     || vendorIdentityManifest(store, providerId, baseUrl)
+    || importedErc8004IdentityManifest(store, feedbackResult.service_id)
     || (providerId === "agentrouter_network" ? platformIdentityManifest(store) : null);
   const anchor = {
     status: "not_used",
@@ -4164,6 +4901,33 @@ function platformIdentityManifest(store) {
   };
 }
 
+function importedErc8004IdentityManifest(store, serviceId) {
+  const match = /^erc8004:(\d+):([^:]+)$/.exec(String(serviceId || ""));
+  if (!match) return null;
+  const agent = store.erc8004Imports?.get(`${Number(match[1])}:${match[2]}`);
+  if (!agent || String(agent.agent_id) !== match[2]) return null;
+  return {
+    manifest_type: "agentrouter_imported_erc8004_identity",
+    service_id: serviceId,
+    version: "1.0.0",
+    title: agent.name || `ERC-8004 Agent #${agent.agent_id}`,
+    description_for_agent: agent.description || "Verified imported ERC-8004 Agent.",
+    status: "published",
+    provider: { provider_id: serviceId },
+    capabilities: agent.execution_policy?.allowed_capabilities || [],
+    pricing: { amount: "0", currency: "USDC", protocol: "none" },
+    registration: {
+      erc8004: {
+        standard: "ERC-8004",
+        chain_id: Number(agent.chain_id),
+        agent_id: String(agent.agent_id),
+        registry_address: agent.registry || erc8004Registries().identityRegistry,
+        explorer_url: agent.explorer_url || null
+      }
+    }
+  };
+}
+
 function vendorIdentityManifest(store, providerId, baseUrl = "") {
   const records = [...store.services.values()].filter((record) =>
     record.manifest?.provider?.provider_id === providerId
@@ -4233,7 +4997,7 @@ function listRegisterableVendors(store, auth) {
   });
 }
 
-async function recordClientSubmittedErc8004Feedback(store, body = {}) {
+async function recordClientSubmittedErc8004Feedback(store, body = {}, { actorKey = "" } = {}) {
   const serviceId = body.service_id || resolveFeedbackServiceId(store, body.request_id);
   const requestId = body.request_id;
   const erc8004 = body.erc8004;
@@ -4263,7 +5027,13 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
     return { ok: false, status: "erc8004_feedback_not_submitted", error: "A submitted feedback transaction must include tx_hash." };
   }
   const record = store.services.get(serviceId);
-  const event = [...(record?.feedback_events || [])].reverse().find((item) => item.request_id === requestId);
+  const candidates = [
+    ...[...(record?.feedback_events || [])].reverse().filter((item) => item.request_id === requestId),
+    ...[...(store.feedbackEvents || [])].reverse().filter((item) =>
+      item.request_id === requestId && item.service_id === serviceId
+    )
+  ];
+  const event = candidates.find((item) => item.consumer_feedback_erc8004 || item.erc8004) || candidates[0];
   if (!event) {
     return {
       ok: false,
@@ -4271,7 +5041,16 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
       error: "No feedback event exists for this request_id."
     };
   }
-  const pending = event.consumer_feedback_erc8004;
+  const invocationActorKey = event.invocation_actor_key || event.consumer_feedback_actor_key || "";
+  if (!actorKey || !invocationActorKey || invocationActorKey !== actorKey) {
+    return {
+      ok: false,
+      statusCode: 403,
+      status: "forbidden_feedback_actor",
+      error: "ERC-8004 feedback can only be attached by the account that made the original invocation."
+    };
+  }
+  const pending = event.consumer_feedback_erc8004 || event.erc8004;
   if (
     pending?.status !== "consumer_submission_required" ||
     !pending.chain_id ||
@@ -4337,14 +5116,20 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
       };
     }
   }
-  event.consumer_feedback_erc8004 = verified;
-  event.consumer_feedback_trust_anchor = {
-    ...(event.consumer_feedback_trust_anchor || {}),
+  const trustAnchor = {
+    ...(event.consumer_feedback_trust_anchor || event.trust_anchor || {}),
     primary_standard: "ERC-8004",
     state: verified.status === "submitted" ? "onchain_submitted" : "onchain_failed",
     erc8004: verified,
     updated_at: new Date().toISOString()
   };
+  if (event.event_version === "agent_consumer_feedback_v1") {
+    event.erc8004 = verified;
+    event.trust_anchor = trustAnchor;
+  } else {
+    event.consumer_feedback_erc8004 = verified;
+    event.consumer_feedback_trust_anchor = trustAnchor;
+  }
   const globalConsumer = [...(store.feedbackEvents || [])].reverse().find((item) =>
     item.request_id === requestId &&
     item.service_id === serviceId &&
@@ -4352,7 +5137,7 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
   );
   if (globalConsumer) {
     globalConsumer.erc8004 = verified;
-    globalConsumer.trust_anchor = event.consumer_feedback_trust_anchor;
+    globalConsumer.trust_anchor = trustAnchor;
   }
   await writePersistentServiceEvent({
     eventType: "consumer_feedback_erc8004_client",
@@ -4361,7 +5146,7 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
     event: {
       event_version: "agent_consumer_feedback_erc8004_client_v1",
       service_id: serviceId,
-      provider_id: record?.manifest?.provider?.provider_id || erc8004.provider_id || null,
+      provider_id: record?.manifest?.provider?.provider_id || event.provider_id || erc8004.provider_id || null,
       request_id: requestId,
       erc8004: verified,
       created_at: new Date().toISOString()
@@ -4373,7 +5158,7 @@ async function recordClientSubmittedErc8004Feedback(store, body = {}) {
     service_id: serviceId,
     request_id: requestId,
     erc8004: verified,
-    trust_anchor: event.consumer_feedback_trust_anchor
+    trust_anchor: trustAnchor
   };
 }
 
@@ -4573,10 +5358,16 @@ async function recordQuoteFeedback(store, body = {}, {
 }
 
 export async function seedDemoService(serverUrl, store) {
-  const record = registerService(store, baseFundFlowManifest, serverUrl);
-  await validateService(store, record.manifest.service_id);
-  const liquidationRecord = registerService(store, btcLiquidationMaxPainManifest, serverUrl);
-  await validateService(store, liquidationRecord.manifest.service_id);
+  const trustedPlatformProvider = {
+    trustedOrigins: [{
+      origin: serverUrl,
+      pathPrefixes: ["/provider/"]
+    }]
+  };
+  const record = registerTrustedService(store, baseFundFlowManifest, serverUrl);
+  await validateService(store, record.manifest.service_id, trustedPlatformProvider);
+  const liquidationRecord = registerTrustedService(store, btcLiquidationMaxPainManifest, serverUrl);
+  await validateService(store, liquidationRecord.manifest.service_id, trustedPlatformProvider);
   return record;
 }
 
@@ -4643,29 +5434,45 @@ function createErc8257ToolManifest({ manifest, baseUrl = "" } = {}) {
 }
 
 export async function bootstrapServer(server, baseUrl) {
-  if (process.env.ADN_SEED_EXAMPLE_SERVICES === "1") {
-    await seedDemoService(baseUrl, server.store);
-  }
-  await loadProviderConfigs(server.store, baseUrl, {
-    validate: process.env.ADN_VALIDATE_PROVIDER_CONFIGS_ON_BOOT === "1"
-  });
-  await hydratePersistentServiceEvents(server.store);
-  await hydrateSocialConnections(server.store);
-  await hydratePublicApiCoverage(server.store);
+  setBootstrapState(server, { ok: false, status: "running" });
+  try {
+    if (process.env.ADN_SEED_EXAMPLE_SERVICES === "1") {
+      await seedDemoService(baseUrl, server.store);
+    }
+    await loadProviderConfigs(server.store, baseUrl, {
+      validate: process.env.ADN_VALIDATE_PROVIDER_CONFIGS_ON_BOOT === "1"
+    });
+    await hydratePersistentServiceEvents(server.store);
+    await hydrateSocialConnections(server.store);
+    await hydratePublicApiCoverage(server.store);
 
-  const automation = publicApiAutomationOptions();
-  const publicApiBoot = await bootstrapPublicApiPipeline(server.store, {
-    ...server.publicApiPipelineOptions,
-    ...automation,
-    // The catalog was hydrated just above; avoid a duplicate database read.
-    hydrate: async () => publicApiCoverageReport(server.store)
-  });
-  server.publicApiPipelineBoot = publicApiBoot;
-  if (publicApiBoot.synced) server.publicApiLastCatalogSyncAt = Date.now();
-  if (!publicApiBoot.ok) {
-    console.warn("[public-api-pipeline] bootstrap deferred", JSON.stringify(publicApiBoot.error));
+    const automation = publicApiAutomationOptions();
+    const publicApiBoot = await bootstrapPublicApiPipeline(server.store, {
+      ...server.publicApiPipelineOptions,
+      ...automation,
+      // The catalog was hydrated just above; avoid a duplicate database read.
+      hydrate: async () => publicApiCoverageReport(server.store)
+    });
+    server.publicApiPipelineBoot = publicApiBoot;
+    if (publicApiBoot.synced) server.publicApiLastCatalogSyncAt = Date.now();
+    if (!publicApiBoot.ok) {
+      console.warn("[public-api-pipeline] bootstrap deferred", JSON.stringify(publicApiBoot.error));
+    }
+    schedulePublicApiRefresh(server, automation);
+    setBootstrapState(server, { ok: true, status: "completed" });
+  } catch (error) {
+    setBootstrapState(server, { ok: false, status: "failed", error: error.message });
+    throw error;
   }
-  schedulePublicApiRefresh(server, automation);
+}
+
+function setBootstrapState(server, nextState) {
+  const state = server.bootstrapState || {};
+  state.ok = nextState.ok;
+  state.status = nextState.status;
+  if (nextState.error) state.error = nextState.error;
+  else delete state.error;
+  server.bootstrapState = state;
 }
 
 export function publicApiAutomationOptions(env = process.env) {
@@ -4718,10 +5525,55 @@ function publicApiPipelineProgress(store) {
   };
 }
 
+async function closeHttpServer(server) {
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+export function installGracefulShutdown(server, {
+  timeoutMs = 10_000,
+  closePersistencePool = closePersistence,
+  signals = ["SIGTERM", "SIGINT"]
+} = {}) {
+  let closing = null;
+  const shutdown = async (signal) => {
+    if (closing) return closing;
+    closing = (async () => {
+      const timeout = setTimeout(() => {
+        console.error(`[shutdown] ${signal} timed out after ${timeoutMs}ms`);
+        process.exit(1);
+      }, timeoutMs);
+      timeout.unref?.();
+      try {
+        await closeHttpServer(server);
+        await closePersistencePool();
+        process.exit(0);
+      } catch (error) {
+        console.error(`[shutdown] ${signal} failed: ${error.message}`);
+        process.exit(1);
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+    return closing;
+  };
+  for (const signal of signals) {
+    process.on(signal, () => {
+      void shutdown(signal);
+    });
+  }
+  return { shutdown };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT || 8787);
   const host = process.env.HOST || "0.0.0.0";
   const server = createServer();
+  installGracefulShutdown(server);
   server.listen(port, host, async () => {
     const baseUrl = `http://127.0.0.1:${port}`;
     // Refuse to serve an on-chain backend whose RPC is a different chain than
@@ -4740,7 +5592,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.error(`On-chain preflight failed: ${error.message}`);
       process.exit(1);
     }
-    await bootstrapServer(server, baseUrl);
-    console.log(`Agent Native Data Network MVP running at ${baseUrl} on ${host}`);
+    try {
+      await bootstrapServer(server, baseUrl);
+      console.log(`Agent Native Data Network MVP running at ${baseUrl} on ${host}`);
+    } catch (error) {
+      // Keep liveness available for diagnostics while readiness remains 503,
+      // so the platform never sends traffic to a partially hydrated process.
+      console.error(`Server bootstrap failed: ${error.message}`);
+    }
   });
 }

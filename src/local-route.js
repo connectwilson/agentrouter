@@ -32,7 +32,7 @@ export async function routeTaskWithLocalWallet({ baseUrl, task, constraints = {}
       serviceId: resolved.selected_service.service_id,
       input: resolved.input,
       budget: {
-        max_amount: constraints.max_price_usdc || budget.max_amount || "0.05",
+        max_amount: constraints.max_price_usdc ?? budget.max_amount ?? "0.05",
         currency: budget.currency || "USDC"
       },
       request: {
@@ -105,7 +105,7 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
   const connector = new DiscoveryConnector({ baseUrl });
   const timing = createRouteTiming();
   const normalizedBudget = {
-    max_amount: request.constraints?.max_price_usdc || request.budget?.max_amount || budget.max_amount || "0.05",
+    max_amount: request.constraints?.max_price_usdc ?? request.budget?.max_amount ?? budget.max_amount ?? "0.05",
     currency: request.budget?.currency || budget.currency || "USDC"
   };
   const requested = {
@@ -227,7 +227,7 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
 }
 
 async function routeTokenSmartMoneyActivityWithLocalWallet({ baseUrl, connector, task, intent, constraints, budget, timing }) {
-  const maxAmount = constraints.max_price_usdc || budget.max_amount || "0.05";
+  const maxAmount = constraints.max_price_usdc ?? budget.max_amount ?? "0.05";
   const currency = budget.currency || "USDC";
   const tokenResolution = await resolveTokenWithLocalWallet({
     connector,

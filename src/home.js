@@ -832,13 +832,28 @@ export function agentHtml({ auth = {} } = {}) {
             '<p class="api-description">' + escapeHtml(truncate(agent.description || "On-chain agent discovered through 8004scan.", 132)) + '</p>' +
             '<div class="api-core-metrics"><div class="api-price"><span>Payment</span><strong>' + (agent.x402_supported ? "x402" : "Declared by agent") + '</strong><small>Verify before call</small></div>' +
             '<div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>' + escapeHtml(score) + '</strong><small>8004scan score</small></div></div></div>' +
-            '<div class="execution-result" data-execution-result hidden></div>' +
+            '<div class="execution-result" data-execution-result role="status" aria-live="polite" hidden></div>' +
             '<div class="api-card-footer"><div class="pill-row">' + renderPills(protocols) + '</div>' +
             '<button type="button" class="button ' + (verified ? "primary" : "ghost") + '" onclick="hireErc8004Agent(this,\'' + escapeAttr(agent.agent_id) + '\')">Hire / call</button></div>' +
           '</article>';
         }
         async function hireErc8004Agent(button, agentId) {
           const original = button.textContent;
+          const task = document.getElementById("service-search").value.trim();
+          const result = button.closest(".erc8004-agent-card")?.querySelector("[data-execution-result]");
+          const showAuthRequired = (message) => {
+            const returnParams = new URLSearchParams(location.search);
+            if (task) returnParams.set("q", task);
+            const returnTo = location.pathname + (returnParams.toString() ? "?" + returnParams.toString() : "");
+            const loginHref = "?login=1&return_to=" + encodeURIComponent(returnTo);
+            if (result) {
+              result.hidden = false;
+              result.textContent = message + " Your task will be restored after sign-in.";
+            }
+            button.textContent = "Sign in to hire";
+            button.title = message;
+            button.onclick = () => window.location.assign(loginHref);
+          };
           button.disabled = true;
           button.textContent = "Verifying…";
           try {
@@ -847,16 +862,23 @@ export function agentHtml({ auth = {} } = {}) {
               body: JSON.stringify({ chain_id: 56, agent_id: agentId })
             });
             const imported = await importedResponse.json();
+            if (importedResponse.status === 401) {
+              showAuthRequired(imported.error?.message || "Sign in to verify and hire this agent.");
+              return;
+            }
             if (!importedResponse.ok) throw new Error(imported.error?.message || "Sign in to verify and hire this agent.");
             if (!imported.agent?.callable) throw new Error(imported.agent?.verification_error || "Registered on-chain, not verified callable.");
             const hireResponse = await fetch("/agent-router/erc8004/hire", {
               method: "POST", headers: { "content-type": "application/json" },
-              body: JSON.stringify({ chain_id: 56, agent_id: agentId, execute: true, input: { task: document.getElementById("service-search").value.trim() } })
+              body: JSON.stringify({ chain_id: 56, agent_id: agentId, execute: true, input: { task } })
             });
             const hired = await hireResponse.json();
+            if (hireResponse.status === 401) {
+              showAuthRequired(hired.error?.message || "Sign in to call this agent.");
+              return;
+            }
             if (!hireResponse.ok) throw new Error(hired.error?.message || "Agent is not ready to call.");
             if (hired.status === "completed") {
-              const result = button.closest(".erc8004-agent-card")?.querySelector("[data-execution-result]");
               if (result) {
                 result.hidden = false;
                 result.textContent = truncate(JSON.stringify(hired.result), 240);
@@ -870,6 +892,10 @@ export function agentHtml({ auth = {} } = {}) {
           } catch (error) {
             button.textContent = "Unavailable";
             button.title = error.message;
+            if (result) {
+              result.hidden = false;
+              result.textContent = error.message;
+            }
           } finally {
             button.disabled = false;
             if (button.textContent === "Verifying…") button.textContent = original;
@@ -1566,12 +1592,44 @@ export function accountHtml({ auth = {} } = {}) {
         });
         // The deposit needs confirmations before it can be credited, so the
         // claim is retried rather than failing the moment the block is young.
+        async function signDepositOwnership(challenge, status) {
+          if (!window.ethereum) {
+            throw new Error("Connect the wallet that sent this first deposit. Approve only inside your wallet and never paste wallet secrets.");
+          }
+          if (!challenge?.message || !challenge?.nonce || !challenge?.sender_address) {
+            throw new Error("AgentRouter returned an incomplete wallet ownership challenge.");
+          }
+          await ensureChain(challenge.chain_id);
+          status.textContent = "Confirm wallet ownership (no gas or transaction)…";
+          const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+          const sender = String(challenge.sender_address).toLowerCase();
+          const connected = (accounts || []).find((address) => String(address).toLowerCase() === sender);
+          if (!connected) {
+            throw new Error("Switch your browser wallet to the address that sent this deposit: " + sender.slice(0, 8) + "…" + sender.slice(-6));
+          }
+          const signature = await window.ethereum.request({
+            method: "personal_sign",
+            params: [challenge.message, connected]
+          });
+          return { nonce: challenge.nonce, signature, sender_address: connected };
+        }
         async function claimWhenConfirmed(txHash, status) {
+          let ownershipProof = null;
           for (let attempt = 0; attempt < 40; attempt++) {
-            const response = await fetch("/account/credits/deposit", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ tx_hash: txHash }) });
+            const response = await fetch("/account/credits/deposit", {
+              method:"POST",
+              headers:{ "content-type":"application/json" },
+              body:JSON.stringify({ tx_hash: txHash, ...(ownershipProof ? { ownership_proof: ownershipProof } : {}) })
+            });
             const payload = await response.json();
             if (response.ok) return payload;
-            if (payload.code !== "DEPOSIT_NOT_CONFIRMED" && payload.code !== "DEPOSIT_NOT_FOUND") {
+            const errorCode = payload.error?.code || payload.code;
+            if (errorCode === "DEPOSIT_OWNERSHIP_PROOF_REQUIRED") {
+              ownershipProof = await signDepositOwnership(payload.ownership_challenge, status);
+              status.textContent = "Wallet ownership confirmed. Crediting deposit…";
+              continue;
+            }
+            if (errorCode !== "DEPOSIT_NOT_CONFIRMED" && errorCode !== "DEPOSIT_NOT_FOUND") {
               throw new Error(payload.error?.message || payload.message || "Deposit could not be claimed.");
             }
             status.textContent = "Waiting for confirmations… (" + (attempt + 1) + ")";
@@ -1635,9 +1693,7 @@ export function accountHtml({ auth = {} } = {}) {
           status.className = "dash-status";
           status.textContent = "Reading the transaction from the chain…";
           try {
-            const response = await fetch("/account/credits/deposit", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ tx_hash: document.getElementById("deposit-tx").value.trim() }) });
-            const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error?.message || payload.message || "Deposit could not be claimed.");
+            const payload = await claimWhenConfirmed(document.getElementById("deposit-tx").value.trim(), status);
             status.textContent = "Credited " + payload.deposit.amount + " " + payload.deposit.asset + ".";
             document.getElementById("deposit-tx").value = "";
             await loadDashboard();

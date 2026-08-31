@@ -3,16 +3,20 @@ import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { discoverApiServices, fetchApisGuruCatalogEntries, fetchPublicApiCatalogEntries } from "./openapi-import.js";
 import {
+  claimPersistentPublicApiCandidateLease,
+  completePersistentPublicApiCandidateLease,
   listPersistentPublicApiCandidates,
   listPersistentPublicApiPipelineRuns,
   writePersistentPublicApiCandidates,
   writePersistentPublicApiPipelineRun
 } from "./persistence.js";
-import { createHostedHttpProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
-import { registerService, unregisterService, validateService } from "./registry.js";
+import { createHostedHttpProviderConfig, deleteProviderConfig, prepareProviderConfigForPersistence, writePreparedProviderConfigFile } from "./provider-config.js";
+import { abortServiceRegistration, finalizeServiceRegistration, registerServiceDurably, unregisterService, validateService } from "./registry.js";
 
 const RETRYABLE_STATUSES = new Set(["queued", "retryable_failure"]);
 const DEFAULT_SOURCE_CATALOG = "github:public-apis/public-apis";
+const DEFAULT_CANDIDATE_LEASE_MS = 10 * 60 * 1000;
+const localCandidateLeases = new Set();
 
 // Small, intentionally curated bootstrap set. These are public JSON endpoints
 // that give a fresh install useful callable coverage even when a third-party
@@ -310,6 +314,11 @@ export async function runPublicApiConversionBatch(store, options = {}) {
   ensurePipelineStore(store);
   const limit = clamp(options.limit, 1, 100, 25);
   const concurrency = clamp(options.concurrency, 1, 5, 3);
+  const candidateLeaseMs = clamp(options.candidateLeaseMs, 1, 30 * 60 * 1000, DEFAULT_CANDIDATE_LEASE_MS);
+  const claimCandidateLease = options.claimCandidateLease || claimPersistentPublicApiCandidateLease;
+  const completeCandidateLease = options.completeCandidateLease || completePersistentPublicApiCandidateLease;
+  const runId = randomUUID();
+  let processed = 0;
   const categoryFilter = normalizeCategoryFilter(options.categories);
   const sourceFilter = normalizeCategoryFilter(options.sources);
   const candidateIdFilter = normalizeCategoryFilter(options.candidateIds || options.candidate_ids);
@@ -337,15 +346,36 @@ export async function runPublicApiConversionBatch(store, options = {}) {
     rawFetch: options.rawFetch || options.fetchImpl || globalThis.fetch
   });
 
-  await mapConcurrent(selected, concurrency, async (candidate) => {
-    const now = timestamp(options);
-    candidate.attempt_count = (candidate.attempt_count || 0) + 1;
-    candidate.retry_priority = false;
-    candidate.last_attempt_at = now;
-    candidate.updated_at = now;
-    candidate.last_error = null;
-    candidate.blocking_reason = null;
+  await mapConcurrent(selected, concurrency, async (selectedCandidate) => {
+    const candidateId = selectedCandidate.candidate_id;
+    const leaseOwner = `${runId}:${candidateId}:${randomUUID()}`;
+    const lease = await claimCandidateLease({ candidateId, leaseOwner, leaseMs: candidateLeaseMs });
+    let candidate = selectedCandidate;
+    let localLease = false;
+    const persistentLease = lease !== null;
+    if (persistentLease) {
+      if (!lease?.claimed) {
+        if (lease?.candidate?.candidate_id) store.publicApiCatalog.set(candidateId, lease.candidate);
+        return;
+      }
+      if (lease.candidate?.candidate_id) {
+        candidate = lease.candidate;
+        store.publicApiCatalog.set(candidateId, candidate);
+      }
+    } else {
+      if (localCandidateLeases.has(candidateId)) return;
+      localCandidateLeases.add(candidateId);
+      localLease = true;
+    }
+    processed += 1;
     try {
+      const now = timestamp(options);
+      candidate.attempt_count = (candidate.attempt_count || 0) + 1;
+      candidate.retry_priority = false;
+      candidate.last_attempt_at = now;
+      candidate.updated_at = now;
+      candidate.last_error = null;
+      candidate.blocking_reason = null;
       // The catalog already states this one needs a credential, and that
       // cannot change during discovery — settle it without spending a document
       // fetch. This must stay inside the try so it still reaches the finally
@@ -459,25 +489,35 @@ export async function runPublicApiConversionBatch(store, options = {}) {
         message: String(error.message || error)
       };
     } finally {
-      await persistCandidate(candidate, options);
+      try {
+        if (persistentLease) {
+          const completion = await completeCandidateLease({ candidate, leaseOwner });
+          if (completion?.candidate?.candidate_id) {
+            store.publicApiCatalog.set(candidateId, completion.candidate);
+          }
+        } else {
+          await persistCandidate(candidate, options);
+        }
+      } finally {
+        if (localLease) localCandidateLeases.delete(candidateId);
+      }
     }
   });
 
   const run = {
-    run_id: randomUUID(),
+    run_id: runId,
     type: "conversion_batch",
     ok: true,
-    processed: selected.length,
+    processed,
     limit,
     concurrency,
     created_at: timestamp(options)
   };
   store.publicApiPipelineRuns.push(run);
-  await persistCandidates(store, options);
   await (options.persistRun || writePersistentPublicApiPipelineRun)(run);
   return {
     ok: true,
-    processed: selected.length,
+    processed,
     coverage: publicApiCoverageReport(store),
     run
   };
@@ -487,12 +527,23 @@ export async function promoteValidatedPublicApiDrafts(store, candidate, drafts, 
   const published = [];
   const failed = [];
   const providerId = "public_apis_catalog";
+  const ownerKey = options.registrationOwnerKey || "platform:public_api_pipeline";
   const baseUrl = options.baseUrl || "";
 
   for (const [index, draft] of drafts.entries()) {
     const serviceId = publicApiServiceId(candidate, index);
+    let registeredByAttempt = false;
+    let configWrittenByAttempt = false;
+    let registrationRecord = null;
     try {
       const existing = store.services.get(serviceId);
+      const existingOwnerKey = String(existing?.manifest?.registration?.owner?.user_key || "");
+      if (existingOwnerKey && existingOwnerKey !== ownerKey) {
+        const error = new Error(`Service ${serviceId} is already registered by another account.`);
+        error.statusCode = 409;
+        error.code = "SERVICE_ALREADY_REGISTERED";
+        throw error;
+      }
       if (existing?.verification_status === "verified") {
         published.push({ service_id: serviceId, already_registered: true });
         continue;
@@ -524,21 +575,46 @@ export async function promoteValidatedPublicApiDrafts(store, candidate, drafts, 
         documentation_url: candidate.documentation_url || null,
         validation: draft.validation || candidate.validation || null
       };
+      config.manifest.registration = {
+        ...(config.manifest.registration || {}),
+        owner: {
+          user_key: ownerKey,
+          provider: "platform"
+        }
+      };
       config.source.catalog = config.manifest.source_provenance;
 
-      await writeProviderConfig(config);
-      registerService(store, config.manifest, baseUrl);
-      const validation = await validateService(store, serviceId);
+      registrationRecord = await registerServiceDurably(store, config.manifest, baseUrl, options.registrationPersistence || {});
+      registeredByAttempt = true;
+      const validation = await validateService(store, serviceId, { providerConfig: config });
       if (!validation.ok) {
-        unregisterService(store, serviceId);
-        await deleteProviderConfig(serviceId);
+        await abortServiceRegistration(store, registrationRecord);
+        registeredByAttempt = false;
         failed.push({ service_id: serviceId, error: "PROMOTION_VALIDATION_FAILED", validation });
         continue;
       }
+      config.manifest.registration = {
+        ...(config.manifest.registration || {}),
+        publish_state: "published"
+      };
+      const prepared = await prepareProviderConfigForPersistence(config);
+      const registrationPersistence = options.registrationPersistence || {};
+      const durable = Boolean(typeof registrationPersistence.enabled === "function"
+        ? registrationPersistence.enabled()
+        : registrationPersistence.enabled);
+      if (!durable) {
+        await writePreparedProviderConfigFile(prepared);
+        configWrittenByAttempt = true;
+      }
+      await finalizeServiceRegistration(store, registrationRecord, { config: prepared });
+      registeredByAttempt = false;
+      if (durable) {
+        configWrittenByAttempt = Boolean(await writePreparedProviderConfigFile(prepared).catch(() => null));
+      }
       published.push({ service_id: serviceId, validation });
     } catch (error) {
-      unregisterService(store, serviceId);
-      await deleteProviderConfig(serviceId);
+      if (registeredByAttempt && registrationRecord) await abortServiceRegistration(store, registrationRecord);
+      if (configWrittenByAttempt) await deleteProviderConfig(serviceId);
       failed.push({
         service_id: serviceId,
         error: error.code || "PUBLIC_API_PROMOTION_FAILED",

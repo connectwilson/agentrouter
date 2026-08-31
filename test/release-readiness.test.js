@@ -101,6 +101,13 @@ test("packed MCP smoke test bounds pack and install subprocess time", async () =
   assert.match(smoke, /Installing packed MCP/);
 });
 
+test("production image installs reproducibly and drops root privileges", async () => {
+  const dockerfile = await fs.readFile("Dockerfile", "utf8");
+  assert.match(dockerfile, /RUN npm ci --omit=dev/);
+  assert.match(dockerfile, /COPY --chown=node:node \. \./);
+  assert.match(dockerfile, /\nUSER node\n/);
+});
+
 test("hosted readiness requires one shared browser handoff signing secret", async () => {
   const missing = await agentRouterReadiness({
     persistenceProbe: async () => ({ ok: true, checks: { database: { ok: true } } }),
@@ -114,4 +121,42 @@ test("hosted readiness requires one shared browser handoff signing secret", asyn
     environment: { NODE_ENV: "production", ADN_BROWSER_HANDOFF_SECRET: "shared-secret-at-least-32-characters" }
   });
   assert.equal(configured.ok, true);
+});
+
+test("all Render web runtimes expose the same hosted auth and routing env surface", async () => {
+  const blueprint = await fs.readFile("render.yaml", "utf8");
+  const webBlocks = blueprint
+    .split(/\n(?=\s*-\stype:\sweb\b)/)
+    .filter((block) => /\btype:\sweb\b/.test(block));
+  assert.ok(webBlocks.length >= 2);
+  for (const block of webBlocks) {
+    assert.match(block, /key: AGENT_ROUTER_PUBLIC_URL/);
+    assert.match(block, /key: GITHUB_CLIENT_ID/);
+    assert.match(block, /key: GITHUB_CLIENT_SECRET/);
+    assert.match(block, /key: ADN_BROWSER_HANDOFF_SECRET/);
+  }
+});
+
+test("entrypoint installs graceful shutdown for http server and persistence pool", async () => {
+  const serverSource = await fs.readFile("src/server.js", "utf8");
+  assert.match(serverSource, /installGracefulShutdown\(server\)/);
+  assert.match(serverSource, /signals = \["SIGTERM", "SIGINT"\]/);
+  assert.match(serverSource, /closePersistencePool = closePersistence/);
+});
+
+test("unexpected request failures return a request id header for diagnosis", async () => {
+  const app = createServer({
+    store: createMemoryStore(),
+    readinessProbe: async () => {
+      throw Object.assign(new Error("boom"), { statusCode: 500 });
+    }
+  });
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${app.address().port}/agent-router/ready`);
+    assert.equal(response.status, 500);
+    assert.match(String(response.headers.get("x-request-id") || ""), /^req_/);
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+  }
 });

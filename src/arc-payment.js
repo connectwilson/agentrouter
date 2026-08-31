@@ -32,20 +32,18 @@ const ERC20_ABI = [
 
 // Recognises the chain this deployment actually settles on. Hardcoding Arc here
 // meant a BSC payment proof was rejected as a foreign network, which blocked
-// settlement on any chain but Arc. The Arc aliases stay accepted so existing
-// proofs and stored challenges keep verifying.
+// settlement on any chain but Arc. Only aliases for the active chain are
+// accepted: carrying old Arc aliases across a chain switch would make a
+// foreign-chain proof look valid on BSC.
 export function isSettlementNetwork(network, chain = settlementChain()) {
   const normalized = String(network || "").toLowerCase();
   if (!normalized) return false;
   const accepted = new Set([
     chain.network.toLowerCase(),
     chain.caip2.toLowerCase(),
-    String(chain.id),
-    "arc",
-    "arc-testnet",
-    "eip155:5042002",
-    "5042002"
+    String(chain.id)
   ]);
+  if (chain.network === "arc-testnet") accepted.add("arc");
   return accepted.has(normalized);
 }
 

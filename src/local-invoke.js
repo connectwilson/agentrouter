@@ -1,27 +1,49 @@
+import crypto from "node:crypto";
 import { assertArcUsdcBalance, sendArcUsdcTransfer } from "./arc-payment.js";
 import { hashJson } from "./evidence.js";
 import { createArcPaymentProof } from "./payment.js";
 import { createSettlementReceipt, currentPaymentBackend } from "./payment-adapter.js";
+import { requestProviderHttp } from "./provider-http-transport.js";
 import { invokeWithRealX402, isRealX402Enabled } from "./real-x402-client.js";
 import { assertPolicyAllows, readWallet, recordPayment } from "./wallet.js";
+import { validateBudgetAmount } from "./budget-normalization.js";
 
-export async function invokePaidServiceWithLocalWallet({ baseUrl, serviceId, input = {}, budget = { max_amount: "0.05", currency: "USDC" }, request = null }) {
+export async function invokePaidServiceWithLocalWallet({
+  baseUrl,
+  serviceId,
+  input = {},
+  budget = { max_amount: "0.05", currency: "USDC" },
+  request = null,
+  transportOptions = {}
+}) {
+  const rawMaxAmount = budget?.max_amount ?? budget?.max_price_usdc ?? budget?.max_price;
+  const budgetValidation = validateBudgetAmount(rawMaxAmount, { field: "budget.max_amount" });
+  if (!budgetValidation.ok) throw localBudgetError(budgetValidation);
   const manifest = await postJson(baseUrl, "/connector/get_manifest", { service_id: serviceId });
-  if (budget.max_amount != null && Number(manifest.pricing.amount) > Number(budget.max_amount)) {
-    throw new Error(`Service costs ${manifest.pricing.amount} ${manifest.pricing.currency}, above budget ${budget.max_amount} ${budget.currency}.`);
+  if (budgetValidation.present && Number(manifest.pricing.amount) > budgetValidation.amount) {
+    throw new Error(`Service costs ${manifest.pricing.amount} ${manifest.pricing.currency}, above budget ${rawMaxAmount} ${budget.currency}.`);
   }
+  const providerTransportOptions = localProviderTransportOptions(baseUrl, transportOptions);
   if (isRealX402Enabled()) {
-    return invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, request });
+    return invokeOfficialX402Service({
+      baseUrl,
+      manifest,
+      serviceId,
+      input,
+      budget,
+      request,
+      transportOptions: providerTransportOptions
+    });
   }
   if (currentPaymentBackend() !== "circle_arc") {
     throw new Error("Local paid invocation requires ADN_PAYMENT_BACKEND=circle_arc or official x402 configuration.");
   }
 
-  const firstResponse = await fetch(manifest.endpoint.url, {
+  const firstResponse = await requestProviderBeforePayment(manifest.endpoint.url, {
     method: manifest.endpoint.method || "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input)
-  });
+  }, providerTransportOptions);
   if (firstResponse.status !== 402) {
     let payload = null;
     try {
@@ -81,14 +103,14 @@ export async function invokePaidServiceWithLocalWallet({ baseUrl, serviceId, inp
     tx: arcTransfer
   });
 
-  const paidResponse = await fetch(manifest.endpoint.url, {
+  const paidResponse = await requestProviderHttp(manifest.endpoint.url, {
     method: manifest.endpoint.method || "POST",
     headers: {
       "content-type": "application/json",
       "x-payment": proof
     },
     body: JSON.stringify(input)
-  });
+  }, providerTransportOptions);
   const result = await paidResponse.json();
   const event = {
     event_version: "agent_local_payment_event_v1",
@@ -139,6 +161,7 @@ export async function invokePaidServiceWithLocalWallet({ baseUrl, serviceId, inp
     result,
     feedback,
     localPayment: event,
+    completionGrant: payment.completion_grant,
     budget,
     request: request || {
       capability: "direct_service_invocation",
@@ -164,7 +187,18 @@ export async function invokePaidServiceWithLocalWallet({ baseUrl, serviceId, inp
   };
 }
 
-async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, request = null }) {
+function localBudgetError(validation) {
+  const error = new Error(validation.message);
+  error.code = validation.code;
+  error.status = validation.code;
+  error.statusCode = 422;
+  error.field = validation.field;
+  error.retryable = false;
+  return error;
+}
+
+async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, budget, request = null, transportOptions = {} }) {
+  const completionAuthorization = await requestCompletionGrant(baseUrl, serviceId, input);
   const wallet = await readWallet();
   const started = Date.now();
   const body = methodAllowsBody(manifest.endpoint.method) ? JSON.stringify(input) : undefined;
@@ -172,7 +206,9 @@ async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, 
     url: manifest.endpoint.url,
     method: manifest.endpoint.method || "POST",
     body,
-    wallet
+    wallet,
+    transportOptions,
+    paymentPolicy: createManifestBoundX402Policy({ manifest, budget })
   });
   const result = paid.payload;
   const settlement = paid.settlement;
@@ -222,13 +258,15 @@ async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, 
     result,
     feedback,
     localPayment: event,
-    budget: { max_amount: manifest.pricing.amount, currency: manifest.pricing.currency },
+    completionGrant: completionAuthorization.completion_grant,
+    completionNonce: completionAuthorization.completion_nonce,
+    budget,
     request: request || {
       capability: "direct_service_invocation",
       params: input,
       constraints: {
-        max_price_usdc: manifest.pricing.amount,
-        currency: manifest.pricing.currency
+        max_price_usdc: budget?.max_amount ?? manifest.pricing.amount,
+        currency: budget?.currency || manifest.pricing.currency
       },
       consumer_context: {
         source: "local_agent_wallet",
@@ -247,7 +285,132 @@ async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, 
   };
 }
 
-async function recordCompletedInvocation({ baseUrl, serviceId, input, result, feedback, localPayment, budget, request }) {
+// The x402 SDK invokes registered policies after receiving the live 402
+// requirements and before it creates a signature. Treat the catalog manifest
+// and the caller's budget as an immutable quote: a provider may offer a lower
+// amount, but it cannot silently change the recipient, chain, asset, or raise
+// the amount beyond either boundary.
+export function createManifestBoundX402Policy({ manifest, budget = {} } = {}) {
+  const pricing = manifest?.pricing || {};
+  const expectedNetwork = canonicalX402Network(
+    pricing.caip2 || pricing.network || pricing.chain_id
+  );
+  const expectedPayTo = normalizeX402Address(
+    pricing.pay_to || manifest?.provider?.payout_address
+  );
+  const currency = String(pricing.currency || "").trim().toUpperCase();
+  const expectedAsset = normalizeX402Address(
+    pricing.token_address || pricing.asset_address || pricing.asset || knownX402Asset(expectedNetwork, currency)
+  );
+  const decimals = x402AssetDecimals(pricing, expectedNetwork, currency);
+  const manifestAmount = decimalToAtomicUnits(pricing.amount, decimals);
+  const budgetCurrency = String(budget?.currency || currency).trim().toUpperCase();
+  const budgetAmount = budget?.max_amount == null
+    ? manifestAmount
+    : decimalToAtomicUnits(budget.max_amount, decimals);
+  const termsAreComplete = Boolean(
+    expectedNetwork
+    && expectedPayTo
+    && expectedAsset
+    && currency
+    && manifestAmount != null
+    && manifestAmount > 0n
+    && budgetAmount != null
+    && budgetAmount > 0n
+    && budgetCurrency === currency
+    && manifestAmount <= budgetAmount
+  );
+
+  return (_x402Version, requirements = []) => {
+    if (!termsAreComplete || !Array.isArray(requirements)) return [];
+    return requirements.filter((requirement) => {
+      const actualAmount = atomicAmountFromRequirement(requirement);
+      return String(requirement?.scheme || "").toLowerCase() === "exact"
+        && canonicalX402Network(requirement?.network) === expectedNetwork
+        && normalizeX402Address(requirement?.payTo || requirement?.pay_to) === expectedPayTo
+        && normalizeX402Address(requirement?.asset || requirement?.token_address) === expectedAsset
+        && actualAmount != null
+        && actualAmount > 0n
+        && actualAmount <= manifestAmount
+        && actualAmount <= budgetAmount;
+    });
+  };
+}
+
+const X402_NETWORK_ALIASES = new Map([
+  ["base", "eip155:8453"],
+  ["base-mainnet", "eip155:8453"],
+  ["base-sepolia", "eip155:84532"],
+  ["bsc", "eip155:56"],
+  ["bnb", "eip155:56"],
+  ["bnb-chain", "eip155:56"],
+  ["bsc-testnet", "eip155:97"],
+  ["arc-testnet", "eip155:5042002"]
+]);
+
+const X402_KNOWN_ASSETS = new Map([
+  ["eip155:8453:USDC", "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"],
+  ["eip155:84532:USDC", "0x036cbd53842c5426634e7929541ec2318f3dcf7c"]
+]);
+
+function canonicalX402Network(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized || normalized.length > 80) return null;
+  if (X402_NETWORK_ALIASES.has(normalized)) return X402_NETWORK_ALIASES.get(normalized);
+  const caip2 = /^eip155:(\d+)$/.exec(normalized);
+  if (caip2) return `eip155:${BigInt(caip2[1])}`;
+  if (/^\d+$/.test(normalized)) return `eip155:${BigInt(normalized)}`;
+  return null;
+}
+
+function normalizeX402Address(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(normalized) ? normalized : null;
+}
+
+function knownX402Asset(network, currency) {
+  return X402_KNOWN_ASSETS.get(`${network}:${currency}`) || null;
+}
+
+function x402AssetDecimals(pricing, network, currency) {
+  const declared = pricing.asset_decimals ?? pricing.token_decimals ?? pricing.decimals;
+  if (declared != null && /^\d+$/.test(String(declared)) && Number(declared) <= 255) {
+    return Number(declared);
+  }
+  if (currency === "USDC" && (network === "eip155:8453" || network === "eip155:84532")) {
+    return 6;
+  }
+  return null;
+}
+
+function decimalToAtomicUnits(value, decimals) {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) return null;
+  const normalized = String(value ?? "").trim();
+  if (normalized.length > 128) return null;
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(normalized);
+  if (!match) return null;
+  const fraction = match[2] || "";
+  if (fraction.length > decimals) return null;
+  try {
+    return BigInt(match[1]) * (10n ** BigInt(decimals))
+      + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+  } catch {
+    return null;
+  }
+}
+
+function atomicAmountFromRequirement(requirement) {
+  const value = requirement?.amount ?? requirement?.maxAmountRequired;
+  const normalized = String(value ?? "");
+  if (normalized.length > 256 || !/^\d+$/.test(normalized)) return null;
+  try {
+    return BigInt(normalized);
+  } catch {
+    return null;
+  }
+}
+
+async function recordCompletedInvocation({ baseUrl, serviceId, input, result, feedback, localPayment, completionGrant = null, completionNonce = null, budget, request }) {
   if (!baseUrl) return { ok: false, status: "skipped", reason: "missing_registry_url" };
   try {
     return await postJson(baseUrl, "/agent-router/calls/complete", {
@@ -257,6 +420,8 @@ async function recordCompletedInvocation({ baseUrl, serviceId, input, result, fe
       result,
       feedback,
       local_payment: localPayment,
+      completion_grant: completionGrant,
+      completion_nonce: completionNonce,
       budget
     });
   } catch (error) {
@@ -271,6 +436,19 @@ async function recordCompletedInvocation({ baseUrl, serviceId, input, result, fe
   }
 }
 
+async function requestCompletionGrant(baseUrl, serviceId, input) {
+  const completionNonce = `local_${crypto.randomUUID()}`;
+  const result = await postJson(baseUrl, "/agent-router/calls/grant", {
+    service_id: serviceId,
+    input,
+    completion_nonce: completionNonce
+  });
+  return {
+    completion_grant: result.completion_grant,
+    completion_nonce: completionNonce
+  };
+}
+
 async function postJson(baseUrl, path, body) {
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
     method: "POST",
@@ -280,6 +458,10 @@ async function postJson(baseUrl, path, body) {
   const payload = await response.json();
   if (!response.ok) {
     const error = new Error(payload?.error?.message || payload?.error?.code || `HTTP ${response.status}`);
+    error.code = payload?.error?.code || "AGENTROUTER_REQUEST_FAILED";
+    error.status = response.status;
+    error.statusCode = response.status;
+    error.retryable = response.status >= 500;
     error.payload = payload;
     throw error;
   }
@@ -296,4 +478,32 @@ function decodePaymentTx(proof) {
 
 function methodAllowsBody(method = "POST") {
   return !["GET", "HEAD"].includes(String(method).toUpperCase());
+}
+
+function localProviderTransportOptions(baseUrl, overrides = {}) {
+  // Dependency-injection hooks (lookup/requestHop) are useful for deterministic
+  // tests, but callers cannot use this object to nominate additional trusted
+  // origins. Only AgentRouter's own /provider/* path may be loopback in local
+  // development; every external provider remains public-address only.
+  const { trustedOrigins: _ignored, ...safeOverrides } = overrides || {};
+  const trustedOrigins = [];
+  try {
+    trustedOrigins.push({
+      origin: new URL(baseUrl).origin,
+      pathPrefixes: ["/provider/"]
+    });
+  } catch {}
+  return { ...safeOverrides, trustedOrigins };
+}
+
+async function requestProviderBeforePayment(url, init, transportOptions) {
+  try {
+    return await requestProviderHttp(url, init, transportOptions);
+  } catch (error) {
+    // "retryable" means the router may exclude this service and try a
+    // different verified provider. This annotation is intentionally limited
+    // to the pre-payment request so it can never authorize a second charge.
+    if (error?.code === "PROVIDER_HTTP_UNSAFE_TARGET") error.retryable = true;
+    throw error;
+  }
 }

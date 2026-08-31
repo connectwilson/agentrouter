@@ -1,4 +1,4 @@
-import { invokePaidService, searchServices } from "./registry.js";
+import { invokePaidService, searchServices, validateBudgetAmount } from "./registry.js";
 import { resolveCapabilityPackCall } from "./capability-packs.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { createPaymentQuote, effectivePricing } from "./payment-adapter.js";
@@ -7,6 +7,7 @@ import { anchorEvidenceOnArc } from "./arc-anchor.js";
 import { summarizeHealth, summarizeProvenance, summarizeTrust } from "./store.js";
 import { writePersistentServiceEvent } from "./persistence.js";
 import { createCompactResult } from "./compact-result.js";
+import { validateJsonSchema } from "./schema.js";
 
 export const ROUTER_STATUSES = {
   READY: "ready_to_route",
@@ -348,7 +349,13 @@ export function getCapabilityCatalog() {
 }
 
 export async function routeTask(store, { task = "", intent: providedIntent, constraints = {}, budget = {} } = {}, options = {}) {
-  const resolved = resolveRoute(store, { task, intent: providedIntent, constraints });
+  const normalizedConstraints = normalizeRequestConstraints(constraints, budget);
+  const budgetValidation = validateBudgetAmount(normalizedConstraints.max_price_usdc);
+  if (!budgetValidation.ok) {
+    return invalidBudgetRouteResult({ task, intent: providedIntent, constraints: normalizedConstraints }, budgetValidation);
+  }
+  if (budgetValidation.present) normalizedConstraints.max_price_usdc = String(budgetValidation.amount);
+  const resolved = resolveRoute(store, { task, intent: providedIntent, constraints: normalizedConstraints });
   if (resolved.status === ROUTER_STATUSES.NEEDS_CLARIFICATION || resolved.status === ROUTER_STATUSES.NO_MATCH) {
     return resolved;
   }
@@ -359,7 +366,7 @@ export async function routeTask(store, { task = "", intent: providedIntent, cons
     store,
     selected.service_id,
     resolved.input,
-    { max_amount: constraints.max_price_usdc || budget.max_amount || "0.05", currency: budget.currency || "USDC" },
+    { max_amount: normalizedConstraints.max_price_usdc ?? "0.05", currency: budget.currency || "USDC" },
     options
   );
   if (invocation.statusCode >= 400) {
@@ -478,6 +485,7 @@ export async function routeCapabilityRequest(store, {
   budget = {},
   consumer_context: consumerContext = {}
 } = {}, options = {}) {
+  const writeArtifact = options.writeServiceEvent || writePersistentServiceEvent;
   const packResolution = resolveCapabilityPackCall([...store.services.values()], { contract: capability, params });
   if (packResolution) {
     if (!packResolution.ok) return capabilityPackFailure(packResolution, { capability, params, constraints, consumerContext });
@@ -525,13 +533,24 @@ export async function routeCapabilityRequest(store, {
     consumer_context: consumerContext
   };
   const normalizedConstraints = normalizeRequestConstraints(constraints, budget);
+  const budgetValidation = validateBudgetAmount(normalizedConstraints.max_price_usdc);
+  if (!budgetValidation.ok) {
+    return invalidBudgetRouteResult({
+      capability,
+      params,
+      constraints: normalizedConstraints,
+      consumer_context: consumerContext
+    }, budgetValidation);
+  }
+  if (budgetValidation.present) normalizedConstraints.max_price_usdc = String(budgetValidation.amount);
   const tokenResolution = await resolveStructuredTokenIfNeeded(store, intent, normalizedConstraints, budget, options);
   if (tokenResolution?.ok === false) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
-    const observation = recordRouteObservation(store, {
+    const observation = await recordRouteObservation(store, {
       status: tokenResolution.status,
       request,
-      error: tokenResolution
+      error: tokenResolution,
+      writeEvent: writeArtifact
     });
     return {
       ok: false,
@@ -552,11 +571,12 @@ export async function routeCapabilityRequest(store, {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
     const diagnostics = diagnoseNoMatch(store, { capability, params, constraints: normalizedConstraints });
     const alternatives = suggestCapabilityAlternatives(store, { capability, params, constraints: normalizedConstraints });
-    const observation = recordRouteObservation(store, {
+    const observation = await recordRouteObservation(store, {
       status: ROUTER_STATUSES.NO_MATCH,
       request,
       candidates,
-      error: diagnostics
+      error: diagnostics,
+      writeEvent: writeArtifact
     });
     return {
       ok: false,
@@ -623,24 +643,58 @@ export async function routeCapabilityRequest(store, {
     constraints: normalizedConstraints,
     selectedService: selected
   });
+  if (!quote.would_pay) {
+    const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
+    return {
+      ok: false,
+      status: "quote_blocked",
+      request,
+      selected_service: selected,
+      exact_match: true,
+      candidates_considered: candidates.length,
+      candidates: summarizeCandidates(candidates),
+      input,
+      preflight_validation: preflight,
+      quote,
+      route_decision: createRouteDecision({
+        status: "quote_blocked",
+        request,
+        exactMatch: true,
+        selected,
+        candidates,
+        input,
+        quote,
+        preflight
+      }),
+      retry_plan: createRetryPlan({
+        status: "quote_blocked",
+        request,
+        selected,
+        input,
+        error: { code: "BUDGET_TOO_LOW", message: quote.reason },
+        candidates
+      })
+    };
+  }
   const invocation = await invokePaidService(
     store,
     selected.service_id,
     input,
-    { max_amount: normalizedConstraints.max_price_usdc || "0.05", currency: budget.currency || "USDC" },
+    { max_amount: normalizedConstraints.max_price_usdc ?? "0.05", currency: budget.currency || "USDC" },
     options
   );
   if (invocation.statusCode >= 400) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
     const error = invocation.body.error || invocation.body.result?.error || invocation.body;
-    const observation = recordRouteObservation(store, {
+    const observation = await recordRouteObservation(store, {
       status: "route_failed",
       request,
       candidates,
       selected,
       quote,
       invocation,
-      error
+      error,
+      writeEvent: writeArtifact
     });
     return {
       ok: false,
@@ -683,21 +737,33 @@ export async function routeCapabilityRequest(store, {
   });
   evidence.arc_anchor = await anchorEvidenceOnArc(evidence);
   store.evidenceEvents.push(evidence);
-  writePersistentServiceEvent({
+  const evidenceDurability = await persistRouterArtifact(writeArtifact, {
     eventType: "evidence",
     serviceId: selected.service_id,
     requestId: invocation.body.result?.request_id,
     event: evidence
-  }).catch(() => {});
-  const observation = recordRouteObservation(store, {
-    status: "routed",
+  });
+  const qualityFailure = verification.schema_valid === false
+    || verification.coverage_valid === false
+    || verification.data_non_empty === false
+    || verification.sanity_valid === false
+    || invocation.body.result?.status !== "success";
+  const qualityWarning = !qualityFailure && verification.freshness_valid === false;
+  const routeStatus = qualityFailure
+    ? "data_quality_failed"
+    : qualityWarning
+      ? "routed_with_quality_warning"
+      : "routed";
+  const observation = await recordRouteObservation(store, {
+    status: routeStatus,
     request,
     candidates,
     selected,
     quote,
     invocation,
     verification,
-    evidence
+    evidence,
+    writeEvent: writeArtifact
   });
   const consumer_feedback_request = createConsumerFeedbackRequest({
     request,
@@ -714,9 +780,9 @@ export async function routeCapabilityRequest(store, {
     request,
     input
   });
-  const retryPlan = verification.sanity_valid === false || verification.data_non_empty === false
+  const retryPlan = qualityFailure || qualityWarning
     ? createRetryPlan({
-        status: "data_quality_failed",
+        status: qualityFailure ? "data_quality_failed" : "data_quality_warning",
         request,
         selected,
         input,
@@ -724,10 +790,28 @@ export async function routeCapabilityRequest(store, {
         candidates
       })
     : null;
+  const durabilityArtifacts = [
+    { event_type: "evidence", ...evidenceDurability },
+    {
+      event_type: "route_observation",
+      status: observation.durability_status,
+      ...(observation.durability_error ? { error: observation.durability_error } : {})
+    }
+  ];
+  const durabilityErrors = durabilityArtifacts.flatMap((artifact) => artifact.error ? [{
+    event_type: artifact.event_type,
+    code: artifact.error.code,
+    message: artifact.error.message
+  }] : []);
+  const durabilityStatus = durabilityErrors.length
+    ? "degraded"
+    : durabilityArtifacts.some((artifact) => artifact.status === "memory_only")
+      ? "memory_only"
+      : "durable";
 
   return {
-    ok: true,
-    status: retryPlan ? "routed_with_quality_warning" : "routed",
+    ok: !qualityFailure,
+    status: routeStatus,
     protocol: {
       protocol_version: "agent_router_request_v1",
       semantic_parser: "external_main_agent",
@@ -741,7 +825,7 @@ export async function routeCapabilityRequest(store, {
     candidates: summarizeCandidates(candidates),
     preflight_validation: preflight,
     route_decision: createRouteDecision({
-      status: retryPlan ? "routed_with_quality_warning" : "routed",
+      status: routeStatus,
       request,
       exactMatch: true,
       selected,
@@ -760,6 +844,8 @@ export async function routeCapabilityRequest(store, {
     consumer_feedback_request,
     evidence,
     observation,
+    durability_status: durabilityStatus,
+    ...(durabilityErrors.length ? { durability_errors: durabilityErrors } : {}),
     retry_plan: retryPlan
   };
 }
@@ -770,7 +856,10 @@ export function quoteCapabilityRequest(store, {
   constraints = {},
   budget = {},
   consumer_context: consumerContext = {}
-} = {}, { actorKey = "" } = {}) {
+} = {}, {
+  actorKey = "",
+  writeServiceEvent: writeEvent = writePersistentServiceEvent
+} = {}) {
   const packResolution = resolveCapabilityPackCall([...store.services.values()], { contract: capability, params });
   if (packResolution) {
     if (!packResolution.ok) return capabilityPackFailure(packResolution, { capability, params, constraints, consumerContext });
@@ -784,7 +873,7 @@ export function quoteCapabilityRequest(store, {
         capability_pack_contract: capability,
         capability_pack_id: packResolution.pack.id
       }
-    }, { actorKey });
+    }, { actorKey, writeServiceEvent: writeEvent });
     return decorateCapabilityPackResult(quoted, packResolution, { capability, params });
   }
   const validation = validateCapabilityRequest({ capability, params });
@@ -813,6 +902,16 @@ export function quoteCapabilityRequest(store, {
     consumer_context: consumerContext
   };
   const normalizedConstraints = normalizeRequestConstraints(constraints, budget);
+  const budgetValidation = validateBudgetAmount(normalizedConstraints.max_price_usdc);
+  if (!budgetValidation.ok) {
+    return invalidBudgetRouteResult({
+      capability,
+      params,
+      constraints: normalizedConstraints,
+      consumer_context: consumerContext
+    }, budgetValidation);
+  }
+  if (budgetValidation.present) normalizedConstraints.max_price_usdc = String(budgetValidation.amount);
   const candidateConstraints = constraintsWithoutBudgetGuard(normalizedConstraints);
   const candidates = rankCandidates(store, intent, candidateConstraints);
   if (!candidates.length) {
@@ -870,7 +969,7 @@ export function quoteCapabilityRequest(store, {
     constraints: normalizedConstraints,
     selectedService: selected
   });
-  recordIssuedQuote(store, quote, actorKey);
+  recordIssuedQuote(store, quote, actorKey, writeEvent);
   const quoteFeedbackRequest = createQuoteFeedbackRequest({ quote, selectedService: selected, request: { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext } });
   return {
     ok: quote.would_pay,
@@ -897,7 +996,7 @@ export function quoteCapabilityRequest(store, {
   };
 }
 
-function recordIssuedQuote(store, quote, actorKey = "") {
+function recordIssuedQuote(store, quote, actorKey = "", writeEvent = writePersistentServiceEvent) {
   store.issuedQuotes ||= new Map();
   const now = Date.now();
   const expiresAt = now + 24 * 60 * 60 * 1000;
@@ -914,12 +1013,28 @@ function recordIssuedQuote(store, quote, actorKey = "") {
     expires_at: expiresAt
   };
   store.issuedQuotes.set(quote.quote_id, event);
-  writePersistentServiceEvent({
+  const entry = {
     eventType: "issued_quote",
     serviceId: quote.service_id,
     requestId: quote.quote_id,
     event
-  }).catch(() => {});
+  };
+  Promise.resolve()
+    .then(() => writeEvent(entry))
+    .catch((error) => recordRouterDurabilityFailure(store, entry, error));
+}
+
+function recordRouterDurabilityFailure(store, entry, error) {
+  const failure = {
+    event_type: entry.eventType,
+    service_id: entry.serviceId || null,
+    request_id: entry.requestId || null,
+    code: error?.code || "PERSISTENCE_WRITE_FAILED",
+    created_at: new Date().toISOString()
+  };
+  store.routerDurabilityFailures ||= [];
+  store.routerDurabilityFailures.push(failure);
+  console.error("[router-durability] degraded", JSON.stringify(failure));
 }
 
 function createQuoteFeedbackRequest({ quote, selectedService, request }) {
@@ -1011,7 +1126,7 @@ export function rankCandidates(store, intent, constraints = {}) {
     query: buildSearchQuery(intent),
     capabilities: [],
     maxPrice: constraints.max_price_usdc,
-    verifiedOnly: false
+    verifiedOnly: true
   });
 
   return searchResults
@@ -1425,35 +1540,19 @@ function routeNextAction({ status, exactMatch, quote, alternatives, preflight, v
 
 function validateManifestInput(manifest = {}, input = {}) {
   const schema = manifest.input_schema || {};
-  const properties = schema.properties || {};
   const required = Array.isArray(schema.required) ? schema.required : [];
   const missing_fields = required.filter((field) => input[field] === undefined || input[field] === null || input[field] === "");
-  const invalid_fields = [];
-  for (const [field, rule] of Object.entries(properties)) {
-    const value = input[field];
-    if (value === undefined || value === null) continue;
-    if (rule?.enum && !rule.enum.includes(value)) {
-      invalid_fields.push({ field, value, allowed: rule.enum });
-    }
-    if (rule?.type === "number" && typeof value !== "number") {
-      invalid_fields.push({ field, value, expected_type: "number" });
-    }
-    if (rule?.type === "string" && typeof value !== "string") {
-      invalid_fields.push({ field, value, expected_type: "string" });
-    }
-    if (rule?.type === "array" && !Array.isArray(value)) {
-      invalid_fields.push({ field, value, expected_type: "array" });
-    }
-    if (rule?.type === "object" && (typeof value !== "object" || Array.isArray(value))) {
-      invalid_fields.push({ field, value, expected_type: "object" });
-    }
-  }
+  const schema_errors = validateJsonSchema(input, schema);
+  const invalid_fields = schema_errors
+    .filter((message) => !message.endsWith(" is required"))
+    .map((message) => ({ message }));
   return {
-    ok: missing_fields.length === 0 && invalid_fields.length === 0,
+    ok: missing_fields.length === 0 && schema_errors.length === 0,
     validation_version: "agent_router_preflight_validation_v1",
     service_id: manifest.service_id,
     missing_fields,
     invalid_fields,
+    schema_errors,
     input_schema: schema
   };
 }
@@ -1521,7 +1620,7 @@ function expandedAlternativeTerms(capability, params = {}) {
   return terms;
 }
 
-function recordRouteObservation(store, {
+async function recordRouteObservation(store, {
   status,
   request,
   candidates = [],
@@ -1530,7 +1629,8 @@ function recordRouteObservation(store, {
   invocation = null,
   verification = null,
   evidence = null,
-  error = null
+  error = null,
+  writeEvent = writePersistentServiceEvent
 }) {
   if (!store.routeObservations) store.routeObservations = [];
   const observation = {
@@ -1567,13 +1667,34 @@ function recordRouteObservation(store, {
     }
   };
   store.routeObservations.push(observation);
-  writePersistentServiceEvent({
+  const durability = await persistRouterArtifact(writeEvent, {
     eventType: "route_observation",
     serviceId: selected?.service_id || null,
     requestId: invocation?.body?.result?.request_id || null,
     event: observation
-  }).catch(() => {});
+  });
+  observation.durability_status = durability.status;
+  if (durability.error) observation.durability_error = durability.error;
   return observation;
+}
+
+async function persistRouterArtifact(writeEvent, entry) {
+  try {
+    const written = await writeEvent(entry);
+    return { status: written === false ? "memory_only" : "durable" };
+  } catch (error) {
+    const failure = {
+      code: error.code || "PERSISTENCE_WRITE_FAILED",
+      message: "AgentRouter could not durably store this routing artifact."
+    };
+    console.error("[router-durability] degraded", JSON.stringify({
+      event_type: entry.eventType,
+      service_id: entry.serviceId || null,
+      request_id: entry.requestId || null,
+      code: failure.code
+    }));
+    return { status: "degraded", error: failure };
+  }
 }
 
 export function buildInput(manifest, intent) {
@@ -1659,17 +1780,11 @@ async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, b
     message: "token_smart_money_activity requires token_symbol or token_address."
   };
 
-  const verifiedResolver = pickTokenResolver(searchServices(store, {
+  const resolver = pickTokenResolver(searchServices(store, {
     query: "token search",
     verifiedOnly: true,
-    maxPrice: constraints.max_price_usdc || budget.max_amount
+    maxPrice: constraints.max_price_usdc ?? budget.max_amount
   }));
-  const fallbackResolver = verifiedResolver ? null : pickTokenResolver(searchServices(store, {
-    query: "token search",
-    verifiedOnly: false,
-    maxPrice: constraints.max_price_usdc || budget.max_amount
-  }));
-  const resolver = verifiedResolver || fallbackResolver;
 
   if (!resolver) return {
     ok: false,
@@ -1678,7 +1793,7 @@ async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, b
     message: "No token resolver service is registered."
   };
 
-  const resolverVerificationMode = verifiedResolver ? "verified" : "trusted_pending";
+  const resolverVerificationMode = "verified";
 
   const resolverInput = {
     search_query: tokenSymbol,
@@ -1687,7 +1802,7 @@ async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, b
     limit: 5
   };
   const invocation = await invokePaidService(store, resolver.service_id, resolverInput, {
-    max_amount: constraints.max_price_usdc || budget.max_amount || "0.05",
+    max_amount: constraints.max_price_usdc ?? budget.max_amount ?? "0.05",
     currency: budget.currency || "USDC"
   }, options);
   if (invocation.statusCode >= 400) {
@@ -2095,6 +2210,7 @@ function createRetryPlan({
   const providerInputRejected = /PREPAY_VALIDATION|UNRECOGNIZED_FIELD|INVALID_REQUEST|422/.test(String(code)) ||
     /unrecognized field|invalid request|validation/i.test(JSON.stringify(error || {}));
   const dataQualityFailed = status === "data_quality_failed" || verification?.sanity_valid === false || verification?.data_non_empty === false;
+  const dataQualityWarning = status === "data_quality_warning";
   const noMatch = status === ROUTER_STATUSES.NO_MATCH;
   const excluded = selected?.service_id ? [selected.service_id] : [];
   const alternateCandidates = candidates
@@ -2120,17 +2236,25 @@ function createRetryPlan({
     };
   }
 
-  if (dataQualityFailed) {
+  if (dataQualityFailed || dataQualityWarning) {
     return {
       retry_plan_version: "agent_router_retry_plan_v1",
       retryable: true,
-      reason_code: "data_quality_failed",
+      reason_code: dataQualityFailed ? "data_quality_failed" : "data_quality_warning",
       exclude_service_ids: excluded,
       alternate_service_ids: alternateCandidates,
       adjusted_request: { ...request, constraints: { ...(request.constraints || {}), exclude_service_ids: excluded } },
       quality_issues: [
         ...(verification?.data_quality_issues || []),
-        ...(verification?.issues || []).filter((issue) => issue.code === "EMPTY_RESULT" || issue.code === "DATA_QUALITY_SANITY_FAILED")
+        ...(verification?.issues || []).filter((issue) => [
+          "EMPTY_RESULT",
+          "DATA_QUALITY_SANITY_FAILED",
+          "STATUS_NOT_SUCCESS",
+          "SCHEMA_ERROR",
+          "ENVELOPE_ERROR",
+          "FRESHNESS_NOT_VERIFIABLE",
+          "ASSET_NOT_COVERED"
+        ].includes(issue.code))
       ].map((issue) => issue.code).filter(Boolean),
       suggested_next_actions: [
         "Retry against the next ranked service if one is available.",
@@ -2180,9 +2304,40 @@ function searchableValues(value) {
 function normalizeRequestConstraints(constraints = {}, budget = {}) {
   return {
     ...constraints,
-    max_price_usdc: constraints.max_price_usdc || constraints.max_price || budget.max_amount,
+    max_price_usdc: constraints.max_price_usdc
+      ?? constraints.max_price
+      ?? constraints.max_amount
+      ?? budget.max_amount
+      ?? budget.max_price_usdc
+      ?? budget.max_price,
     freshness_seconds: constraints.freshness_seconds,
     min_confidence: constraints.min_confidence
+  };
+}
+
+function invalidBudgetRouteResult(request, validation) {
+  return {
+    ok: false,
+    status: "invalid_request",
+    error: validation.code,
+    error_detail: {
+      code: validation.code,
+      field: validation.field,
+      message: validation.message,
+      retryable: false
+    },
+    request,
+    route_decision: createRouteDecision({
+      status: "invalid_request",
+      request,
+      exactMatch: false,
+      validation: {
+        ok: false,
+        error: validation.code,
+        field: validation.field,
+        message: validation.message
+      }
+    })
   };
 }
 

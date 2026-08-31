@@ -1046,3 +1046,210 @@ test("credential-settled candidates are still persisted, and source filtering is
   assert.deepEqual(persisted.sort(), ["Guru Keyed", "Guru Open"]);
   assert.equal(store.publicApiCatalog.get("c").status, "credential_required");
 });
+
+test("shared persistence lets only one instance execute the same public API candidate", async () => {
+  const candidate = leasedPipelineCandidate("shared-once");
+  const persistence = fakeCandidateLeasePersistence(candidate);
+  const stores = [candidateStore(candidate), candidateStore(candidate)];
+  let discoveries = 0;
+  const options = leasedPipelineOptions(persistence, {
+    discoverApiServices: async () => {
+      discoveries += 1;
+      return successfulDiscovery("shared_once");
+    }
+  });
+
+  const results = await Promise.all(stores.map((store) => runPublicApiConversionBatch(store, options)));
+
+  assert.equal(discoveries, 1);
+  assert.deepEqual(results.map((result) => result.processed).sort(), [0, 1]);
+  assert.equal(persistence.read().candidate.status, "validated_ready");
+});
+
+test("an expired public API candidate lease can be recovered by another instance", async () => {
+  const candidate = leasedPipelineCandidate("expired-recovery");
+  const persistence = fakeCandidateLeasePersistence(candidate);
+  const crashed = await persistence.claimCandidateLease({
+    candidateId: candidate.candidate_id,
+    leaseOwner: "crashed-instance",
+    leaseMs: 100
+  });
+  assert.equal(crashed.claimed, true);
+  persistence.advance(101);
+
+  const result = await runPublicApiConversionBatch(candidateStore(candidate), leasedPipelineOptions(persistence));
+
+  assert.equal(persistence.claimCount(), 2, "the live instance must atomically reclaim the expired lease");
+  assert.equal(result.processed, 1);
+  assert.equal(persistence.read().candidate.status, "validated_ready");
+});
+
+test("a late failed worker cannot overwrite a newer successful candidate result", async () => {
+  const candidate = leasedPipelineCandidate("fenced-result");
+  const persistence = fakeCandidateLeasePersistence(candidate);
+  const staleStore = candidateStore(candidate);
+  const recoveryStore = candidateStore(candidate);
+  let markStaleStarted;
+  let releaseStale;
+  const staleStarted = new Promise((resolve) => { markStaleStarted = resolve; });
+  const staleGate = new Promise((resolve) => { releaseStale = resolve; });
+
+  const staleRun = runPublicApiConversionBatch(staleStore, leasedPipelineOptions(persistence, {
+    discoverApiServices: async () => {
+      markStaleStarted();
+      await staleGate;
+      throw Object.assign(new Error("late failure"), { code: "LATE_DISCOVERY_FAILURE" });
+    }
+  }));
+  await staleStarted;
+  persistence.advance(101);
+
+  const recoveryRun = await runPublicApiConversionBatch(recoveryStore, leasedPipelineOptions(persistence));
+  assert.equal(recoveryRun.processed, 1);
+  assert.equal(persistence.read().candidate.status, "validated_ready");
+
+  releaseStale();
+  await staleRun;
+
+  assert.equal(persistence.read().candidate.status, "validated_ready");
+  assert.equal(staleStore.publicApiCatalog.get(candidate.candidate_id).status, "validated_ready");
+  assert.equal(recoveryStore.publicApiCatalog.get(candidate.candidate_id).status, "validated_ready");
+});
+
+test("local mode keeps a process-wide candidate lock without database persistence", async () => {
+  const candidate = leasedPipelineCandidate("local-process-lock");
+  const stores = [candidateStore(candidate), candidateStore(candidate)];
+  let releaseDiscovery;
+  let markDiscoveryStarted;
+  const discoveryGate = new Promise((resolve) => { releaseDiscovery = resolve; });
+  const discoveryStarted = new Promise((resolve) => { markDiscoveryStarted = resolve; });
+  let discoveries = 0;
+  const options = {
+    ...leasedPipelineOptions({
+      claimCandidateLease: async () => null,
+      completeCandidateLease: async () => null,
+      persistCandidate: async () => true,
+      persistCandidates: async () => true
+    }),
+    discoverApiServices: async () => {
+      discoveries += 1;
+      markDiscoveryStarted();
+      await discoveryGate;
+      return successfulDiscovery("local_process_lock");
+    }
+  };
+
+  const runs = stores.map((store) => runPublicApiConversionBatch(store, options));
+  await discoveryStarted;
+  releaseDiscovery();
+  const results = await Promise.all(runs);
+
+  assert.equal(discoveries, 1);
+  assert.deepEqual(results.map((result) => result.processed).sort(), [0, 1]);
+});
+
+function leasedPipelineCandidate(candidateId) {
+  return {
+    candidate_id: candidateId,
+    catalog_presence: "active",
+    category: "Weather",
+    title: `Candidate ${candidateId}`,
+    documentation_url: `https://${candidateId}.example/docs`,
+    auth: "No",
+    https: true,
+    status: "queued",
+    attempt_count: 0
+  };
+}
+
+function candidateStore(candidate) {
+  const store = pipelineStore();
+  store.publicApiCatalog.set(candidate.candidate_id, structuredClone(candidate));
+  return store;
+}
+
+function successfulDiscovery(serviceId = "leased_service") {
+  return {
+    ok: true,
+    drafts: [{
+      service_id: serviceId,
+      method: "GET",
+      upstream_url: "https://api.example/data",
+      sample_request: {}
+    }]
+  };
+}
+
+function leasedPipelineOptions(persistence, overrides = {}) {
+  return {
+    limit: 1,
+    concurrency: 1,
+    candidateLeaseMs: 100,
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    discoverApiServices: async () => successfulDiscovery(),
+    probeDraft: async () => ({ ok: true, status: 200, result_shape: "object" }),
+    autoPublish: false,
+    claimCandidateLease: persistence.claimCandidateLease,
+    completeCandidateLease: persistence.completeCandidateLease,
+    persistCandidate: persistence.persistCandidate,
+    persistCandidates: persistence.persistCandidates,
+    persistRun: async () => true,
+    ...overrides
+  };
+}
+
+function fakeCandidateLeasePersistence(candidate) {
+  const state = {
+    candidate: structuredClone(candidate),
+    leaseOwner: null,
+    leaseExpiresAt: 0,
+    now: 0,
+    claims: 0
+  };
+  const eligible = () => RETRYABLE_TEST_STATUSES.has(state.candidate.status)
+    || (state.candidate.status === "validated_ready" && state.candidate.promotion?.ok === false);
+  const cloneState = () => ({
+    candidate: structuredClone(state.candidate),
+    lease_owner: state.leaseOwner,
+    lease_expires_at: state.leaseExpiresAt
+  });
+
+  return {
+    claimCandidateLease: async ({ candidateId, leaseOwner, leaseMs }) => {
+      state.claims += 1;
+      if (candidateId !== state.candidate.candidate_id
+        || !eligible()
+        || (state.leaseOwner && state.leaseExpiresAt > state.now)) {
+        return { claimed: false, ...cloneState() };
+      }
+      state.leaseOwner = leaseOwner;
+      state.leaseExpiresAt = state.now + leaseMs;
+      return { claimed: true, ...cloneState() };
+    },
+    completeCandidateLease: async ({ candidate: completed, leaseOwner }) => {
+      if (state.leaseOwner !== leaseOwner || state.leaseExpiresAt <= state.now) {
+        return { completed: false, ...cloneState() };
+      }
+      state.candidate = structuredClone(completed);
+      state.leaseOwner = null;
+      state.leaseExpiresAt = 0;
+      return { completed: true, ...cloneState() };
+    },
+    // These deliberately model the old unfenced last-writer persistence path.
+    // Lease-aware conversion must never call them for a claimed candidate.
+    persistCandidate: async (updated) => {
+      state.candidate = structuredClone(updated);
+      return true;
+    },
+    persistCandidates: async (updated) => {
+      const match = updated.find((item) => item.candidate_id === state.candidate.candidate_id);
+      if (match) state.candidate = structuredClone(match);
+      return true;
+    },
+    advance: (milliseconds) => { state.now += milliseconds; },
+    claimCount: () => state.claims,
+    read: cloneState
+  };
+}
+
+const RETRYABLE_TEST_STATUSES = new Set(["queued", "retryable_failure"]);

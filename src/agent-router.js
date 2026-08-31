@@ -991,7 +991,7 @@ function discoverServiceOptions(store, task, maxPrice) {
     status: services.length ? "services_found" : "no_service_found",
     query_type: "service_discovery",
     constraints: {
-      max_price_usdc: Number.isFinite(budget) ? String(budget) : String(maxPrice || "0.05"),
+      max_price_usdc: Number.isFinite(budget) ? String(budget) : String(maxPrice ?? "0.05"),
       verified_only: true,
       capabilities
     },
@@ -1007,7 +1007,7 @@ function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
       capability: "token_smart_money_activity",
       params: intent.input,
       constraints: {
-        max_price_usdc: maxPrice || "0.05",
+        max_price_usdc: maxPrice ?? "0.05",
         freshness_seconds: 300
       }
     };
@@ -1017,7 +1017,7 @@ function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
       capability: "smart_money_netflow",
       params: intent.input,
       constraints: {
-        max_price_usdc: maxPrice || "0.05",
+        max_price_usdc: maxPrice ?? "0.05",
         freshness_seconds: 300
       }
     };
@@ -1027,7 +1027,7 @@ function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
       capability: "netflow",
       params: intent.input,
       constraints: {
-        max_price_usdc: maxPrice || "0.05",
+        max_price_usdc: maxPrice ?? "0.05",
         freshness_seconds: 300
       }
     };
@@ -1037,7 +1037,7 @@ function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
       capability: "smart_money_holdings",
       params: intent.input,
       constraints: {
-        max_price_usdc: maxPrice || "0.05",
+        max_price_usdc: maxPrice ?? "0.05",
         freshness_seconds: 300
       }
     };
@@ -1053,7 +1053,7 @@ function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
         window: intent.input.window || "current"
       },
       constraints: {
-        max_price_usdc: maxPrice || "0.05",
+        max_price_usdc: maxPrice ?? "0.05",
         freshness_seconds: 300,
         min_confidence: 0.7
       }

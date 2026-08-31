@@ -325,6 +325,7 @@ test("quote feedback only accepts an issued quote and is idempotent", async () =
       "ar_session=owner-session"
     );
     assert.equal(registration.status, 201);
+    server.store.services.get("quote_security_service").verification_status = "verified";
 
     const invented = await postJson(`${baseUrl}/agent-router/quote-feedback`, {
       quote_id: "quote_not_issued",
@@ -366,14 +367,13 @@ test("quote feedback only accepts an issued quote and is idempotent", async () =
   });
 });
 
-test("expensive anonymous write endpoints are rate limited", async () => {
+test("anonymous trust writes require authentication before rate limiting", async () => {
   await withSecurityServer(async ({ baseUrl }) => {
     const first = await postJson(`${baseUrl}/agent-router/calls/complete`, {});
-    assert.equal(first.status, 422);
+    assert.equal(first.status, 401);
 
-    const blocked = await postJson(`${baseUrl}/agent-router/calls/complete`, {});
-    assert.equal(blocked.status, 429);
-    assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
+    const second = await postJson(`${baseUrl}/agent-router/calls/complete`, {});
+    assert.equal(second.status, 401);
   }, {
     writeRateLimit: { max: 1, windowMs: 60_000 }
   });

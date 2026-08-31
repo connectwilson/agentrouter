@@ -59,6 +59,14 @@ export async function runSocialPostReadCapability(params = {}, options = {}) {
     });
     const row = Array.isArray(result.rows) ? result.rows[0] : null;
     if (result.status === "completed" && row) {
+      if (!rowMatchesRequestedPost(row, parsed)) {
+        attempts[attempts.length - 1] = {
+          ...attempts[attempts.length - 1],
+          status: "identity_mismatch",
+          error: `Provider returned a different post than ${parsed.post_id}.`
+        };
+        continue;
+      }
       return completedResult(parsed, row, provider.id, attempts);
     }
   }
@@ -71,6 +79,17 @@ export function completedSocialPostReadResult(parsed, row, backendId, attempts =
 }
 
 function completedResult(parsed, row, backendId, attempts) {
+  if (!rowMatchesRequestedPost(row, parsed)) {
+    return {
+      ok: false,
+      status: "quality_failure",
+      error: {
+        code: "SOCIAL_POST_IDENTITY_MISMATCH",
+        message: "Provider content could not be tied to the requested post URL."
+      },
+      source: { backend_id: backendId, attempts }
+    };
+  }
   const post = {
     platform: parsed.platform,
     post_id: String(row.id || parsed.post_id),
@@ -103,6 +122,13 @@ function completedResult(parsed, row, backendId, attempts) {
       published_at_present: Boolean(post.published_at)
     }
   };
+}
+
+function rowMatchesRequestedPost(row, parsed) {
+  const rowId = String(row?.id || row?.post_id || row?.tweet_id || "").trim();
+  if (rowId) return rowId === parsed.post_id;
+  const rowUrl = parseSocialPostUrl(row?.url || row?.canonical_url || row?.permalink);
+  return rowUrl?.post_id === parsed.post_id;
 }
 
 function localConnectorRequired(parsed, attempts, consumerContext = {}) {

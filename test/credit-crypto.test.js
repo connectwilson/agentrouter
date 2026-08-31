@@ -85,6 +85,16 @@ test("only a confirmed treasury transfer of an accepted token counts", async () 
     );
     await rejects({ logs: [treasuryTransfer], status: "0x0" }, "DEPOSIT_TX_REVERTED", "a reverted tx credits nothing");
     await rejects({ logs: [treasuryTransfer], receipt: null }, "DEPOSIT_NOT_FOUND", "an unknown tx credits nothing");
+    await rejects(
+      { logs: [treasuryTransfer, { ...treasuryTransfer, topics: [TRANSFER, TREASURY_TOPIC, TREASURY_TOPIC] }] },
+      "DEPOSIT_MIXED_SENDERS",
+      "one claim cannot bind transfers from two wallets to whichever sender appeared first"
+    );
+    await rejects(
+      { logs: [{ ...treasuryTransfer, topics: [TRANSFER, `0x${"0".repeat(64)}`, TREASURY_TOPIC] }] },
+      "DEPOSIT_SENDER_UNCLAIMABLE",
+      "a token mint has no signing wallet to prove ownership"
+    );
     // A reorg can still take a young block, so confirmations are required.
     await rejects(
       { logs: [treasuryTransfer], blockNumber: "0x1000", head: "0x1000" },
@@ -111,6 +121,10 @@ test("a deposit credits one account, once", async () => {
       findAccountByDepositAddress: (address) => findAccountByDepositAddress(store, address),
       bindDepositAddress: (account, address) => bindDepositAddress(store, account, address)
     };
+
+    // This legacy idempotency test exercises an already verified wallet. Fresh
+    // sender ownership and its signed challenge are covered independently.
+    await bindDepositAddress(store, alice, "0xc493e53188679833f56506eed1e3efc094b41a73");
 
     await claimCryptoTopup(store, { account: alice, txHash: TX, ...wiring });
     assert.equal(await getCreditBalance(store, alice.account_id), "58.8904");

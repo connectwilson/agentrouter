@@ -140,19 +140,22 @@ test("OAuth state survives a rolling deploy and remains single-purpose", () => {
   process.env.GITHUB_CLIENT_ID = "client-id";
   process.env.GITHUB_CLIENT_SECRET = "client-secret";
   try {
-    const url = new URL(beginOAuth({
+    const started = beginOAuth({
       providerId: "github",
       store: createMemoryStore(),
       baseUrl: "https://agentrouter.network",
       returnTo: "/account",
       sessionSecret: SESSION_SECRET,
       now: 1_000
-    }));
+    });
+    const url = new URL(started.url);
     const state = url.searchParams.get("state");
+    const browserNonce = decodeURIComponent(started.cookie.split(";", 1)[0].split("=").slice(1).join("="));
     const recovered = consumeOAuthState({
       providerId: "github",
       state,
       store: createMemoryStore(),
+      browserNonce,
       sessionSecret: SESSION_SECRET,
       now: 2_000
     });
@@ -162,6 +165,7 @@ test("OAuth state survives a rolling deploy and remains single-purpose", () => {
       providerId: "other",
       state,
       store: createMemoryStore(),
+      browserNonce,
       sessionSecret: SESSION_SECRET,
       now: 2_000
     }), (error) => error.code === "INVALID_OAUTH_STATE");

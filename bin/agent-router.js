@@ -91,7 +91,7 @@ try {
         baseUrl,
         request,
         budget: {
-          max_amount: request.constraints?.max_price_usdc || request.budget?.max_amount || process.env.AGENT_ROUTER_MAX_PRICE || "0.05",
+          max_amount: request.constraints?.max_price_usdc ?? request.budget?.max_amount ?? process.env.AGENT_ROUTER_MAX_PRICE ?? "0.05",
           currency: request.budget?.currency || "USDC"
         }
       }));
@@ -231,7 +231,7 @@ function parseFetchPayload(values) {
 
 async function fetchWithLocalWalletCli(payload = {}) {
   const requirements = Array.isArray(payload.data_requirements) ? payload.data_requirements : [];
-  const maxPrice = payload.max_price || payload.constraints?.max_price_usdc || payload.budget?.max_amount || process.env.AGENT_ROUTER_MAX_PRICE || "0.05";
+  const maxPrice = payload.max_price ?? payload.constraints?.max_price_usdc ?? payload.budget?.max_amount ?? process.env.AGENT_ROUTER_MAX_PRICE ?? "0.05";
   const currency = payload.currency || payload.budget?.currency || "USDC";
 
   if (!requirements.length) {
@@ -319,12 +319,12 @@ function requirementToCapabilityRequest(requirement = {}, payload = {}, { maxPri
     constraints: {
       ...(payload.constraints || {}),
       ...(constraints || {}),
-      max_price_usdc: constraints?.max_price_usdc || payload.constraints?.max_price_usdc || maxPrice
+      max_price_usdc: constraints?.max_price_usdc ?? payload.constraints?.max_price_usdc ?? maxPrice
     },
     budget: {
       ...(payload.budget || {}),
       ...(budget || {}),
-      max_amount: budget?.max_amount || payload.budget?.max_amount || maxPrice,
+      max_amount: budget?.max_amount ?? payload.budget?.max_amount ?? maxPrice,
       currency: budget?.currency || payload.budget?.currency || currency
     },
     consumer_context: {

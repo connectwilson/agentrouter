@@ -1,5 +1,6 @@
 import { isArcNetwork, isEvmAddress, verifyArcUsdcTransfer } from "./arc-payment.js";
 import { createPaymentRequirements, verifyPaymentProof } from "./payment.js";
+import { issueCompletionGrant } from "./completion-grant.js";
 import { settlementChain } from "./chains.js";
 import { currentPaymentBackend } from "./payment-adapter.js";
 import { hashJson } from "./evidence.js";
@@ -10,23 +11,27 @@ import { readProviderSecret } from "./provider-secrets.js";
 import { isRealX402ProviderEnabled, processProviderX402Payment, sendX402Response, settleProviderX402Payment } from "./real-x402-provider.js";
 import { accountSpendLimit, assertWithinSpendLimit, authenticateCreditRequest, creditPaymentRequired, debitCredits, refundCredits } from "./credits.js";
 import { executeOneDollarAudit } from "./one-dollar-audit.js";
+import { claimSettlementTransaction } from "./settlement-replay.js";
+import { requestProviderHttp } from "./provider-http-transport.js";
 
 const issuedChallenges = new Map();
 const preflightResults = new Map();
-const consumedTxHashes = new Map(); // lowercased tx_hash -> expiry ms; blocks one on-chain tx settling multiple challenges
 
-// ponytail: in-memory, resets on restart like issuedChallenges; challenges also live here so the replay window is one process lifetime
 function sweepExpiredPaymentState(now = Date.now()) {
-  for (const [nonce, challenge] of issuedChallenges) {
-    const expiry = Date.parse(challenge?.expires_at || "");
-    if (expiry && expiry < now) issuedChallenges.delete(nonce);
-  }
-  for (const [nonce, entry] of preflightResults) {
+  sweepExpiredEntries(issuedChallenges, now);
+  sweepExpiredEntries(preflightResults, now);
+}
+
+// An unauthenticated challenge endpoint must not be able to force an unbounded
+// full-map scan on every request. Map insertion order follows challenge issue
+// order, so a bounded oldest-first sweep steadily drains expired entries.
+function sweepExpiredEntries(entries, now, maxScanned = 256) {
+  let scanned = 0;
+  for (const [key, entry] of entries) {
+    if (scanned >= maxScanned) break;
+    scanned += 1;
     const expiry = Date.parse(entry?.expires_at || "");
-    if (expiry && expiry < now) preflightResults.delete(nonce);
-  }
-  for (const [txHash, expiry] of consumedTxHashes) {
-    if (expiry < now) consumedTxHashes.delete(txHash);
+    if (expiry && expiry < now) entries.delete(key);
   }
 }
 
@@ -50,7 +55,8 @@ export async function handleFundFlowProvider(req, res, { store, baseUrl = "" } =
     currency,
     network,
     payTo: providerPayoutAddress(),
-    description: "Base 7D Fund Flow"
+    description: "Base 7D Fund Flow",
+    inputHash: hashJson(input || {})
   });
   if (!payment.ok) return;
 
@@ -77,7 +83,8 @@ export async function handleBtcLiquidationProvider(req, res, { store, baseUrl = 
     currency,
     network,
     payTo: providerPayoutAddress(),
-    description: "BTC liquidation max pain"
+    description: "BTC liquidation max pain",
+    inputHash: hashJson(input || {})
   });
   if (!payment.ok) return;
 
@@ -96,15 +103,7 @@ export async function handleCustomProvider(req, res, serviceId, { store, baseUrl
   const input = await readJson(req);
   const manifest = config.manifest;
   const inputHash = hashJson(input || {});
-  const paymentProof = req.headers["x-payment"];
-  let preflight = null;
-  if (!paymentProof && shouldPreflightProviderConfig(config)) {
-    preflight = await executeProviderConfig(config, input);
-    if (!isSuccessfulProviderResult(preflight)) {
-      sendJson(res, 422, createPrepayValidationFailure({ serviceId, input, preflight }));
-      return;
-    }
-  }
+  const platformTransport = platformOwnedMockTransport(baseUrl);
   const amount = manifest.pricing.amount;
   const currency = manifest.pricing.currency;
   const network = manifest.pricing.network;
@@ -120,7 +119,7 @@ export async function handleCustomProvider(req, res, serviceId, { store, baseUrl
     payTo: providerPayoutAddress(manifest),
     description: manifest.description_for_agent || manifest.title,
     inputHash,
-    preflight
+    preflight: null
   });
   if (!payment.ok) return;
 
@@ -140,10 +139,28 @@ export async function handleCustomProvider(req, res, serviceId, { store, baseUrl
     return;
   }
 
-  const result = reusablePreflight(config)
-    ? payment.preflight?.result || await executeProviderConfig(config, input)
-    : await executeProviderConfig(config, input, { allowPaidUpstream: true });
+  // Issuing an anonymous payment challenge must never consume a Vendor's
+  // credential-backed upstream quota. Upstream I/O starts only after the
+  // credits or settlement proof has been verified.
+  const result = await executeProviderConfig(config, input, {
+    ...platformTransport,
+    allowPaidUpstream: true
+  });
   await sendPaidResult({ res, payment, body: result.body, status: result.status, store });
+}
+
+function platformOwnedMockTransport(baseUrl) {
+  return {
+    transportOptions: {
+      // This is an application-owned integration fixture, not a provider
+      // manifest-controlled private-network exception.
+      trustedOrigins: [{
+        origin: baseUrl,
+        pathPrefixes: ["/mock/upstream/", "/mock/api/"],
+        exactPaths: ["/api/v1/data/header-key"]
+      }]
+    }
+  };
 }
 
 export async function executeProviderConfig(config, input = {}, options = {}) {
@@ -152,7 +169,7 @@ export async function executeProviderConfig(config, input = {}, options = {}) {
     return executeOneDollarAudit(config, input, options);
   }
   if (config.source?.type === "hosted_http") {
-    const upstream = await callHostedHttpSource(config, input);
+    const upstream = await callHostedHttpSource(config, input, options);
     if (upstream?.upstream_error) {
       return { status: 502, body: {
         schema_version: "agent_data_envelope_v1",
@@ -418,6 +435,12 @@ function providerInputError(serviceId, input, code, message, suggestedAction) {
 function issueChallenge({ serviceId, amount, currency, network, payTo, inputHash = null, preflight = null }) {
   sweepExpiredPaymentState();
   const payment = createPaymentRequirements({ serviceId, amount, currency, network, payTo, inputHash });
+  payment.completion_grant = issueCompletionGrant({
+    serviceId,
+    inputHash,
+    challengeNonce: payment.nonce,
+    expiresAt: payment.expires_at
+  });
   issuedChallenges.set(payment.nonce, payment);
   if (preflight) {
     preflightResults.set(payment.nonce, {
@@ -442,10 +465,6 @@ async function verifyPaymentWithChallenge(paymentProof, expected) {
   });
   if (verification.ok) {
     if (currentPaymentBackend() === "circle_arc" || isArcNetwork(challenge.network)) {
-      const txHash = String(decoded.payment.tx_hash || "").toLowerCase();
-      if (consumedTxHashes.has(txHash)) {
-        return { ok: false, error: "ARC_TX_ALREADY_SETTLED" };
-      }
       const arc = await verifyArcUsdcTransfer({
         txHash: decoded.payment.tx_hash,
         expected: {
@@ -455,9 +474,19 @@ async function verifyPaymentWithChallenge(paymentProof, expected) {
         }
       });
       if (!arc.ok) return arc;
+      let claimed;
+      try {
+        claimed = await claimSettlementTransaction({
+          chainId: arc.chain_id || settlementChain().id,
+          txHash: decoded.payment.tx_hash,
+          serviceId: challenge.service_id,
+          payer: decoded.payment.payer
+        });
+      } catch (error) {
+        return { ok: false, error: error.code || "SETTLEMENT_REPLAY_GUARD_UNAVAILABLE" };
+      }
+      if (!claimed) return { ok: false, error: "ARC_TX_ALREADY_SETTLED" };
       verification.payment.arc_verification = arc;
-      // Remember for 1h so the tx cannot settle any other (still-live, 5min TTL) challenge.
-      consumedTxHashes.set(txHash, Date.now() + 3600_000);
     }
     issuedChallenges.delete(challenge.nonce);
     verification.challenge_nonce = challenge.nonce;
@@ -513,62 +542,6 @@ export async function handleMockUpstreamSentiment(req, res) {
   });
 }
 
-function shouldPreflightProviderConfig(config) {
-  // Apify actors must preflight too: a failing or empty actor has to be caught
-  // before the payment challenge, and the cached preflight result is reused for
-  // the paid response so the actor runs exactly once.
-  return config.source?.type === "hosted_http" || config.source?.type === "apify_actor" || config.source?.type === "external_x402_async";
-}
-
-function reusablePreflight(config) {
-  return config.source?.type !== "external_x402_async";
-}
-
-function isSuccessfulProviderResult(result) {
-  return Number(result?.status || 0) >= 200
-    && Number(result?.status || 0) < 300
-    && result?.body?.status === "success"
-    && !result?.body?.error;
-}
-
-function createPrepayValidationFailure({ serviceId, input, preflight }) {
-  const providerError = preflight?.body?.error || {
-    code: "PROVIDER_PREPAY_VALIDATION_FAILED",
-    message: "Provider preflight validation failed before payment."
-  };
-  return {
-    schema_version: "agent_data_envelope_v1",
-    service_id: serviceId,
-    request_id: `prepay_${Date.now()}`,
-    status: "error",
-    payment_required: false,
-    payment_collected: false,
-    billing_status: "not_charged",
-    query: input || {},
-    error: {
-      code: "PREPAY_VALIDATION_FAILED",
-      message: "The provider upstream rejected this request before payment. No payment challenge was issued.",
-      retryable: false,
-      upstream_status: preflight?.body?.error?.upstream_status || preflight?.status || null,
-      provider_error: providerError
-    },
-    metadata: {
-      data_sources: ["provider_config_hosted_http"],
-      generated_at: new Date().toISOString(),
-      freshness_seconds: 0,
-      is_estimated: false,
-      confidence: 0,
-      limitations: ["The request was rejected before payment because the upstream API would not return valid data for this input."]
-    },
-    agent_hints: {
-      good_for: [],
-      warnings: ["No payment was collected for this failed request."],
-      suggested_followups: ["Fix the request parameters or choose a different service."]
-    },
-    summary: "Provider preflight validation failed before payment."
-  };
-}
-
 export async function handleMockUpstreamApplicationError(_req, res) {
   sendJson(res, 200, {
     status: 100,
@@ -596,7 +569,7 @@ export async function handleMockUpstreamHeaderKey(req, res) {
   });
 }
 
-async function callHostedHttpSource(config, input) {
+async function callHostedHttpSource(config, input, options = {}) {
   const secretValue = config.source.auth?.secret_value || await readProviderSecret(config.source.auth?.secret_ref);
   const method = (config.source.upstream_method || "POST").toUpperCase();
   const prepared = prepareHostedHttpRequest({
@@ -609,6 +582,8 @@ async function callHostedHttpSource(config, input) {
     header: config.source.auth?.header,
     secretValue
   });
+  const fetchImpl = options.fetchImpl || requestProviderHttp;
+  const timeoutMs = Number(process.env.ADN_UPSTREAM_TIMEOUT_MS || 15000);
   let lastError = null;
   for (const attempt of authAttempts) {
     const request = {
@@ -619,9 +594,12 @@ async function callHostedHttpSource(config, input) {
       }
     };
     if (prepared.body !== undefined) request.body = prepared.body;
-    const response = await fetch(prepared.url, {
+    const response = await fetchImpl(prepared.url, {
       ...request,
-      signal: AbortSignal.timeout(Number(process.env.ADN_UPSTREAM_TIMEOUT_MS || 15000))
+      signal: AbortSignal.timeout(timeoutMs)
+    }, {
+      ...(options.transportOptions || {}),
+      timeoutMs: options.transportOptions?.timeoutMs ?? timeoutMs
     });
     const payload = await parseUpstreamPayload(response);
     const outcome = classifyUpstreamResponse(response, payload, attempt);

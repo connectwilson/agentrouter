@@ -1049,6 +1049,8 @@ test("GitHub login entrypoint renders and OAuth callback creates a session", asy
       const location = start.headers.get("location");
       assert.match(location, /^https:\/\/github\.com\/login\/oauth\/authorize/);
       const state = new URL(location).searchParams.get("state");
+      const oauthCookie = start.headers.get("set-cookie");
+      assert.match(oauthCookie, /^ar_oauth_state_[A-Za-z0-9_-]{20}=/);
       assert.ok(server.store.oauthStates.has(state));
 
       globalThis.fetch = async (url) => {
@@ -1074,11 +1076,15 @@ test("GitHub login entrypoint renders and OAuth callback creates a session", asy
         throw new Error(`Unexpected fetch ${target}`);
       };
 
-      const callback = await previousFetch(`${baseUrl}/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`, { redirect: "manual" });
+      const callback = await previousFetch(`${baseUrl}/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`, {
+        headers: { cookie: oauthCookie.split(";", 1)[0] },
+        redirect: "manual"
+      });
       assert.equal(callback.status, 302);
       assert.equal(callback.headers.get("location"), "/studio");
       const cookie = callback.headers.get("set-cookie");
       assert.match(cookie, /ar_session=/);
+      assert.match(cookie, /ar_oauth_state_[A-Za-z0-9_-]{20}=;/);
 
       const me = await previousFetch(`${baseUrl}/auth/me`, { headers: { cookie } });
       assert.equal(me.status, 200);
@@ -1549,7 +1555,7 @@ test("AgentRouter capability catalog and structured request route deterministica
 });
 
 test("local wallet paid invocation records evidence trace verification and consumer feedback", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ baseUrl, rawFetch }) => {
     const invocation = await invokePaidServiceWithLocalWallet({
       baseUrl,
       serviceId: "btc_liquidation_max_pain_demo",
@@ -1562,7 +1568,7 @@ test("local wallet paid invocation records evidence trace verification and consu
     assert.equal(invocation.evidence_recording.request_id, invocation.result.request_id);
     assert.equal(invocation.evidence_recording.verification.schema_valid, true);
     assert.equal(invocation.evidence_recording.payment_verification.ok, true);
-    assert.equal(invocation.evidence_recording.payment_verification.status, "verified_arc_usdc_transfer");
+    assert.equal(invocation.evidence_recording.payment_verification.status, "verified_settlement_transfer");
     assert.equal(invocation.evidence_recording.feedback.payment_tx, invocation.local_payment.payment_tx);
     assert.equal(invocation.evidence_recording.feedback.payment_collected, true);
     assert.equal(invocation.evidence_recording.feedback.billing_status, "charged_success");
@@ -1572,6 +1578,7 @@ test("local wallet paid invocation records evidence trace verification and consu
     assert.equal(invocation.evidence_recording.evidence.arc_anchor.status, "anchored");
     assert.equal(invocation.evidence_recording.evidence.arc_anchor.mode, "mock");
     assert.equal(invocation.evidence_recording.consumer_feedback_request.request_id, invocation.result.request_id);
+    assert.match(invocation.evidence_recording.consumer_feedback_request.feedback_token, /^[A-Za-z0-9_-]{32,}$/);
 
     const evidenceResponse = await fetch(`${baseUrl}/agent-router/evidence?request_id=${invocation.result.request_id}`);
     assert.equal(evidenceResponse.status, 200);
@@ -1585,11 +1592,12 @@ test("local wallet paid invocation records evidence trace verification and consu
     assert.equal(feedbackEvents.count, 1);
     assert.equal(feedbackEvents.events[0].verification.schema_valid, true);
 
-    const consumerFeedbackResponse = await fetch(`${baseUrl}/agent-router/feedback`, {
+    const consumerFeedbackResponse = await rawFetch(`${baseUrl}/agent-router/feedback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         request_id: invocation.result.request_id,
+        feedback_token: invocation.evidence_recording.consumer_feedback_request.feedback_token,
         consumer_id: "test_main_agent",
         feedback: {
           intent_fit: "yes",
@@ -1601,8 +1609,8 @@ test("local wallet paid invocation records evidence trace verification and consu
         }
       })
     });
-    assert.equal(consumerFeedbackResponse.status, 200);
     const consumerFeedback = await consumerFeedbackResponse.json();
+    assert.equal(consumerFeedbackResponse.status, 200, JSON.stringify(consumerFeedback));
     assert.equal(consumerFeedback.ok, true);
     assert.equal(consumerFeedback.arc_anchor.status, "not_used");
     assert.equal(consumerFeedback.arc_anchor.superseded_by, "ERC-8004");
@@ -3397,7 +3405,9 @@ test("AgentRouter resolves token symbols before invoking token-address services"
       const mcpEvidence = await mcpEvidenceResponse.json();
       assert.equal(mcpEvidence.count, 1);
       assert.equal(mcpEvidence.events[0].request.capability, "token_smart_money_activity");
-      assert.equal(mcpEvidence.events[0].request.params.token_address, "0x1234567890abcdef1234567890abcdef12345678");
+      assert.equal(mcpEvidence.events[0].request.params, undefined);
+      assert.match(mcpEvidence.events[0].input_hash, /^0x[0-9a-f]{64}$/);
+      assert.equal(JSON.stringify(mcpEvidence.events[0]).includes("0x1234567890abcdef1234567890abcdef12345678"), false);
     } finally {
       client.close();
     }
@@ -3491,7 +3501,9 @@ test("AgentRouter discloses wrapped-token substitutions during token resolution"
 
 test("AgentRouter retries the next token smart-money service when a provider fails before payment", async () => {
   await withServer(async ({ server, baseUrl }) => {
+    let failingProviderRequests = 0;
     const failingUpstream = http.createServer((req, res) => {
+      failingProviderRequests += 1;
       res.writeHead(503, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { code: "UPSTREAM_UNAVAILABLE" } }));
     });
@@ -3565,7 +3577,8 @@ test("AgentRouter retries the next token smart-money service when a provider fai
       assert.equal(payload.ok, true);
       assert.equal(payload.selected_service.service_id, "healthy_hype_flow");
       assert.equal(payload.attempted_services[0].service_id, "failing_hype_flow");
-      assert.equal(payload.attempted_services[0].status, "provider_unavailable_before_payment");
+      assert.equal(payload.attempted_services[0].status, "PROVIDER_HTTP_UNSAFE_TARGET");
+      assert.equal(failingProviderRequests, 0, "the private endpoint must be rejected before provider I/O");
       assert.ok(payload.timing.quote_route_attempt_2_ms >= 0);
     } finally {
       await Promise.all(["retry_token_search_resolver", "failing_hype_flow", "healthy_hype_flow"].map((serviceId) =>
@@ -4814,7 +4827,7 @@ test("Provider runtime reports non-JSON upstream responses clearly", async () =>
   });
 });
 
-test("hosted HTTP provider preflights upstream failures before payment", async () => {
+test("unauthenticated payment challenges never consume hosted upstream quota", async () => {
   await resetWalletForTests();
   await withServer(async ({ baseUrl }) => {
     const studioResponse = await fetch(`${baseUrl}/studio/providers`, {
@@ -4825,7 +4838,7 @@ test("hosted HTTP provider preflights upstream failures before payment", async (
         service_id: "prepay_validation_sentiment_demo",
         provider_id: "provider_studio",
         title: "Prepay Validation Sentiment Demo",
-        description_for_agent: "Use this service to verify upstream validation failures are caught before payment.",
+        description_for_agent: "Use this service to verify payment challenges do not call the credential-backed upstream.",
         capabilities: "sentiment_data,hosted_http,demo_data",
         price: "0.01",
         sample_request: "{\"asset\":\"ETH\",\"window\":\"7d\"}",
@@ -4845,25 +4858,13 @@ test("hosted HTTP provider preflights upstream failures before payment", async (
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ asset: "BAD", window: "7d" })
     });
-    assert.equal(direct.status, 422);
+    assert.equal(direct.status, 402);
     const directPayload = await direct.json();
-    assert.equal(directPayload.error.code, "PREPAY_VALIDATION_FAILED");
-    assert.equal(directPayload.payment_required, false);
-    assert.equal(directPayload.payment_collected, false);
-    assert.equal(directPayload.billing_status, "not_charged");
+    assert.notEqual(directPayload.error?.code || directPayload.error, "PREPAY_VALIDATION_FAILED");
+    assert.equal(directPayload.payment?.service_id, "prepay_validation_sentiment_demo");
+    assert.match(directPayload.payment?.nonce || "", /^nonce_/);
 
     const beforeLog = await readPaymentLog();
-    await assert.rejects(
-      () => invokePaidServiceWithLocalWallet({
-        baseUrl,
-        serviceId: "prepay_validation_sentiment_demo",
-        input: { asset: "BAD", window: "7d" },
-        budget: { max_amount: "0.05", currency: "USDC" }
-      }),
-      (error) => error.code === "provider_prepay_validation_failed"
-        && error.payload?.payment_collected === false
-        && error.payload?.billing_status === "not_charged"
-    );
     const afterLog = await readPaymentLog();
     assert.equal(afterLog.length, beforeLog.length);
   });

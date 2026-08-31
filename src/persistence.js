@@ -39,12 +39,784 @@ export async function claimPersistentBrowserHandoff(handoffId, expiresAt) {
   return result.rowCount === 1;
 }
 
+export async function createPersistentDeviceAuthorization(record) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query("delete from adn_device_authorizations where expires_at_ms < $1", [Date.now()]);
+  const result = await pool.query(
+    `insert into adn_device_authorizations (
+       device_code_hash, user_code_hash, client_name, status,
+       account_id, owner_key, created_at_ms, expires_at_ms,
+       approved_at_ms, consumed_at_ms, last_poll_at_ms, poll_interval_ms
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     on conflict do nothing
+     returning *`,
+    deviceAuthorizationValues(record)
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function readPersistentDeviceAuthorizationByDeviceHash(deviceCodeHash) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "select * from adn_device_authorizations where device_code_hash = $1",
+    [String(deviceCodeHash || "")]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function readPersistentDeviceAuthorizationByUserHash(userCodeHash) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "select * from adn_device_authorizations where user_code_hash = $1",
+    [String(userCodeHash || "")]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function approvePersistentDeviceAuthorization(userCodeHash, { accountId, ownerKey, now }) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_device_authorizations
+     set status = case when status = 'pending' then 'approved' else status end,
+         account_id = case when status = 'pending' then $2 else account_id end,
+         owner_key = case when status = 'pending' then $3 else owner_key end,
+         approved_at_ms = case when status = 'pending' then $4 else approved_at_ms end
+     where user_code_hash = $1
+       and expires_at_ms > $4
+       and status in ('pending', 'approved')
+     returning *`,
+    [String(userCodeHash || ""), String(accountId || ""), String(ownerKey || ""), Number(now)]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function updatePersistentDeviceAuthorizationPoll(deviceCodeHash, { lastPollAt, pollIntervalMs }) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_device_authorizations
+     set last_poll_at_ms = $2, poll_interval_ms = $3
+     where device_code_hash = $1 and status in ('pending', 'approved', 'issuing')
+     returning *`,
+    [String(deviceCodeHash || ""), Number(lastPollAt), Number(pollIntervalMs)]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function claimPersistentDeviceAuthorization(deviceCodeHash, now) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_device_authorizations
+     set status = 'issuing'
+     where device_code_hash = $1 and status = 'approved' and expires_at_ms > $2
+     returning *`,
+    [String(deviceCodeHash || ""), Number(now)]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function completePersistentDeviceAuthorization(deviceCodeHash, now) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_device_authorizations
+     set status = 'consumed', consumed_at_ms = $2
+     where device_code_hash = $1 and status = 'issuing'
+     returning *`,
+    [String(deviceCodeHash || ""), Number(now)]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function releasePersistentDeviceAuthorization(deviceCodeHash) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_device_authorizations
+     set status = 'approved'
+     where device_code_hash = $1 and status = 'issuing'
+     returning *`,
+    [String(deviceCodeHash || "")]
+  );
+  return normalizeDeviceAuthorizationRow(result.rows[0]);
+}
+
+export async function readPersistentRemoteMcpSession(sessionIdHash) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "select session_id_hash, state_opaque, expires_at_ms from adn_remote_mcp_sessions where session_id_hash = $1",
+    [String(sessionIdHash || "")]
+  );
+  const row = result.rows[0];
+  return row ? {
+    session_id_hash: row.session_id_hash,
+    state_opaque: row.state_opaque,
+    expires_at: Number(row.expires_at_ms)
+  } : null;
+}
+
+export async function writePersistentRemoteMcpSession(record) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  await pool.query("delete from adn_remote_mcp_sessions where expires_at_ms < $1", [Date.now()]);
+  const result = await pool.query(
+    `insert into adn_remote_mcp_sessions (session_id_hash, state_opaque, expires_at_ms, updated_at)
+     values ($1, $2::jsonb, $3, now())
+     on conflict (session_id_hash)
+     do update set state_opaque = excluded.state_opaque,
+                   expires_at_ms = excluded.expires_at_ms,
+                   updated_at = now()
+     returning session_id_hash, state_opaque, expires_at_ms`,
+    [String(record.session_id_hash || ""), JSON.stringify(record.state_opaque || {}), Number(record.expires_at)]
+  );
+  const row = result.rows[0];
+  return row ? {
+    session_id_hash: row.session_id_hash,
+    state_opaque: row.state_opaque,
+    expires_at: Number(row.expires_at_ms)
+  } : null;
+}
+
+export async function deletePersistentRemoteMcpSession(sessionIdHash) {
+  if (!persistenceEnabled()) return false;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "delete from adn_remote_mcp_sessions where session_id_hash = $1",
+    [String(sessionIdHash || "")]
+  );
+  return result.rowCount > 0;
+}
+
+// Settlement transactions are permanent value transfers, so their replay
+// claims deliberately do not expire. The composite key preserves chain
+// separation while the INSERT ... ON CONFLICT boundary makes the claim atomic
+// across every server process sharing the database.
+export async function claimPersistentSettlementTransaction({ chainId, txHash, serviceId = null, payer = null } = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `insert into adn_settlement_tx_claims (chain_id, tx_hash, service_id, payer, consumed_at)
+     values ($1, $2, $3, $4, now())
+     on conflict (chain_id, tx_hash) do nothing
+     returning tx_hash`,
+    [String(chainId || ""), String(txHash || "").toLowerCase(), serviceId, payer]
+  );
+  return result.rowCount === 1;
+}
+
+// Direct ERC-8004 hires can call an external Agent with side effects that
+// AgentRouter cannot roll back. Claiming the caller-scoped idempotency key in
+// Postgres before the network call therefore favors at-most-once execution:
+// after an ambiguous crash, another instance reports the unresolved claim
+// instead of silently calling the Agent again.
+export async function claimPersistentErc8004Hire({
+  claim_key: claimKey,
+  request_hash: requestHash,
+  request_id: requestId,
+  service_id: serviceId
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const inserted = await pool.query(
+    `insert into adn_erc8004_hire_requests
+       (claim_key, request_hash, request_id, service_id, status, created_at, updated_at)
+     values ($1, $2, $3, $4, 'in_progress', now(), now())
+     on conflict (claim_key) do nothing
+     returning *`,
+    [String(claimKey || ""), String(requestHash || ""), String(requestId || ""), String(serviceId || "")]
+  );
+  if (inserted.rowCount === 1) {
+    return { claimed: true, record: normalizePersistentErc8004Hire(inserted.rows[0]) };
+  }
+  const existing = await pool.query(
+    "select * from adn_erc8004_hire_requests where claim_key = $1",
+    [String(claimKey || "")]
+  );
+  const record = await reconcilePersistentErc8004HireCompletion(pool, existing.rows[0]);
+  return { claimed: false, record: normalizePersistentErc8004Hire(record) };
+}
+
+async function reconcilePersistentErc8004HireCompletion(pool, row) {
+  if (!row || row.status === "completed") return row;
+  const completion = await pool.query(
+    `select event
+     from adn_service_events
+     where event_type = 'erc8004_hire_completion'
+       and service_id = $1
+       and request_id = $2
+       and event->>'claim_key' = $3
+       and event->>'request_hash' = $4
+     order by created_at desc
+     limit 1`,
+    [row.service_id, row.request_id, row.claim_key, row.request_hash]
+  );
+  const response = completion.rows[0]?.event?.response_bundle;
+  if (!response || typeof response !== "object") return row;
+  const reconciled = await pool.query(
+    `update adn_erc8004_hire_requests
+     set status = 'completed', response = $3::jsonb, error = null, updated_at = now()
+     where claim_key = $1 and request_hash = $2 and status <> 'completed'
+     returning *`,
+    [row.claim_key, row.request_hash, JSON.stringify(response)]
+  );
+  return reconciled.rows[0] || row;
+}
+
+export async function completePersistentErc8004Hire({
+  claim_key: claimKey,
+  request_hash: requestHash,
+  response
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_erc8004_hire_requests
+     set status = 'completed', response = $3::jsonb, error = null, updated_at = now()
+     where claim_key = $1 and request_hash = $2 and status = 'in_progress'
+     returning *`,
+    [String(claimKey || ""), String(requestHash || ""), JSON.stringify(response || {})]
+  );
+  return normalizePersistentErc8004Hire(result.rows[0]);
+}
+
+export async function failPersistentErc8004Hire({
+  claim_key: claimKey,
+  request_hash: requestHash,
+  error
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_erc8004_hire_requests
+     set status = 'failed', error = $3, updated_at = now()
+     where claim_key = $1 and request_hash = $2 and status = 'in_progress'
+     returning *`,
+    [String(claimKey || ""), String(requestHash || ""), String(error || "").slice(0, 2000)]
+  );
+  return normalizePersistentErc8004Hire(result.rows[0]);
+}
+
+function normalizePersistentErc8004Hire(row) {
+  if (!row) return null;
+  return {
+    claim_key: row.claim_key,
+    request_hash: row.request_hash,
+    request_id: row.request_id,
+    service_id: row.service_id,
+    status: row.status,
+    response: row.response || null,
+    error: row.error || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+// Evidence anchoring uses one platform EOA from every web instance. The
+// outbox makes the evidence durable before that EOA signs anything, while the
+// nonce state allocates one nonce atomically across all instances. Only call
+// data hashes and transaction metadata are stored here: never a private key,
+// signature, or raw signed transaction.
+export async function enqueuePersistentAnchorJob(job = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `insert into adn_anchor_outbox
+       (job_id, chain_id, anchor_address, contract_address, function_name,
+        request_id, call_args, status, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb, 'pending', now(), now())
+     on conflict (job_id) do update set job_id = excluded.job_id
+     returning *`,
+    [
+      String(job.job_id || ""),
+      String(job.chain_id || ""),
+      String(job.anchor_address || "").toLowerCase(),
+      String(job.contract_address || "").toLowerCase(),
+      String(job.function_name || ""),
+      job.request_id ? String(job.request_id) : null,
+      JSON.stringify(job.call_args || [])
+    ]
+  );
+  return normalizePersistentAnchorJob(result.rows[0]);
+}
+
+export async function readPersistentAnchorJob(jobId) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query("select * from adn_anchor_outbox where job_id = $1", [String(jobId || "")]);
+  return normalizePersistentAnchorJob(result.rows[0]);
+}
+
+export async function claimPersistentAnchorJob({ jobId, workerId, leaseMs = 30_000 } = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const leaseSeconds = Math.max(5, Math.min(300, Math.ceil(Number(leaseMs || 30_000) / 1000)));
+  const result = await pool.query(
+    `update adn_anchor_outbox
+     set status = 'processing', lease_owner = $2,
+         lease_expires_at = now() + ($3::text || ' seconds')::interval,
+         attempts = attempts + 1, updated_at = now()
+     where job_id = $1
+       and status in ('pending', 'processing', 'submitted')
+       and next_attempt_at <= now()
+       and (lease_expires_at is null or lease_expires_at <= now())
+     returning *`,
+    [String(jobId || ""), String(workerId || ""), String(leaseSeconds)]
+  );
+  return normalizePersistentAnchorJob(result.rows[0]);
+}
+
+export async function reservePersistentAnchorJobNonce({
+  jobId,
+  workerId,
+  chainId,
+  anchorAddress,
+  pendingNonce
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const locked = await client.query(
+      "select * from adn_anchor_outbox where job_id = $1 for update",
+      [String(jobId || "")]
+    );
+    const job = locked.rows[0];
+    if (!job || job.lease_owner !== String(workerId || "")) {
+      const error = new Error("Evidence anchor outbox lease was lost before nonce reservation.");
+      error.code = "ANCHOR_OUTBOX_LEASE_LOST";
+      throw error;
+    }
+    if (job.reserved_nonce !== null && job.reserved_nonce !== undefined) {
+      await client.query("commit");
+      return normalizePersistentAnchorJob(job);
+    }
+    const allocation = await client.query(
+      `insert into adn_anchor_nonce_state (chain_id, anchor_address, next_nonce, updated_at)
+       values ($1, $2, $3::numeric + 1, now())
+       on conflict (chain_id, anchor_address)
+       do update set
+         next_nonce = greatest(adn_anchor_nonce_state.next_nonce, $3::numeric) + 1,
+         updated_at = now()
+       returning next_nonce - 1 as allocated_nonce`,
+      [String(chainId || ""), String(anchorAddress || "").toLowerCase(), String(pendingNonce ?? "")]
+    );
+    const reservedNonce = String(allocation.rows[0].allocated_nonce);
+    const updated = await client.query(
+      `update adn_anchor_outbox
+       set reserved_nonce = $2::numeric, updated_at = now()
+       where job_id = $1
+       returning *`,
+      [String(jobId || ""), reservedNonce]
+    );
+    await client.query("commit");
+    return normalizePersistentAnchorJob(updated.rows[0]);
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function markPersistentAnchorSubmitted({ jobId, workerId, txHash } = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_anchor_outbox
+     set status = 'submitted', tx_hash = $3, last_error = null, updated_at = now()
+     where job_id = $1 and lease_owner = $2
+     returning *`,
+    [String(jobId || ""), String(workerId || ""), String(txHash || "").toLowerCase()]
+  );
+  return normalizePersistentAnchorJob(result.rows[0]);
+}
+
+export async function markPersistentAnchorAnchored({ jobId, workerId, blockNumber } = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_anchor_outbox
+     set status = 'anchored', block_number = $3::numeric, last_error = null,
+         lease_owner = null, lease_expires_at = null, updated_at = now()
+     where job_id = $1 and lease_owner = $2
+     returning *`,
+    [String(jobId || ""), String(workerId || ""), String(blockNumber ?? "0")]
+  );
+  return normalizePersistentAnchorJob(result.rows[0]);
+}
+
+export async function markPersistentAnchorRetry({ jobId, workerId, error, txHash = null, retryAt = new Date().toISOString() } = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `update adn_anchor_outbox
+     set status = 'pending', last_error = $3, next_attempt_at = $4::timestamptz,
+         tx_hash = coalesce(tx_hash, $5),
+         lease_owner = null, lease_expires_at = null, updated_at = now()
+     where job_id = $1 and lease_owner = $2
+     returning *`,
+    [
+      String(jobId || ""),
+      String(workerId || ""),
+      String(error || "").slice(0, 2000),
+      String(retryAt),
+      txHash ? String(txHash).toLowerCase() : null
+    ]
+  );
+  return normalizePersistentAnchorJob(result.rows[0]);
+}
+
+function normalizePersistentAnchorJob(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    chain_id: String(row.chain_id),
+    reserved_nonce: row.reserved_nonce === null || row.reserved_nonce === undefined ? null : String(row.reserved_nonce),
+    block_number: row.block_number === null || row.block_number === undefined ? null : String(row.block_number),
+    attempts: Number(row.attempts || 0)
+  };
+}
+
 export function persistentRegistryRequired() {
   return process.env.ADN_REQUIRE_PERSISTENT_REGISTRY === "true" || Boolean(process.env.RENDER);
 }
 
 export function providerSecretPassphraseConfigured() {
   return Boolean(process.env.ADN_PROVIDER_SECRET_PASSPHRASE);
+}
+
+export async function claimPersistentProviderId({ providerId, ownerKey }) {
+  if (!persistenceEnabled()) return null;
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedOwnerKey = String(ownerKey || "").trim();
+  if (!normalizedProviderId || !normalizedOwnerKey) {
+    const error = new Error("providerId and ownerKey are required to claim a provider ID.");
+    error.statusCode = 422;
+    error.code = "INVALID_PROVIDER_CLAIM";
+    throw error;
+  }
+
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const inserted = await pool.query(
+    `insert into adn_provider_claims (provider_id, owner_key, claimed_at)
+     values ($1, $2, now())
+     on conflict (provider_id) do nothing
+     returning provider_id, owner_key, claimed_at`,
+    [normalizedProviderId, normalizedOwnerKey]
+  );
+  if (inserted.rows[0]) return normalizePersistentProviderClaim(inserted.rows[0], "claimed");
+
+  // Run this as a second statement. When INSERT waited on a concurrent winner,
+  // the new statement receives a fresh READ COMMITTED snapshot and can see it.
+  const existing = await pool.query(
+    "select provider_id, owner_key, claimed_at from adn_provider_claims where provider_id = $1",
+    [normalizedProviderId]
+  );
+  if (!existing.rows[0]) {
+    const error = new Error("The durable provider claim could not be confirmed.");
+    error.code = "PROVIDER_CLAIM_NOT_CONFIRMED";
+    throw error;
+  }
+  return normalizePersistentProviderClaim(
+    existing.rows[0],
+    existing.rows[0].owner_key === normalizedOwnerKey ? "owned" : "conflict"
+  );
+}
+
+export async function claimPersistentServiceRegistration({
+  serviceId,
+  providerId,
+  ownerKey,
+  leaseMs = 5 * 60 * 1000
+}) {
+  if (!persistenceEnabled()) return null;
+  const normalizedServiceId = String(serviceId || "").trim();
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedOwnerKey = String(ownerKey || "").trim();
+  if (!normalizedServiceId || !normalizedProviderId || !normalizedOwnerKey) {
+    const error = new Error("serviceId, providerId, and ownerKey are required to claim a service registration.");
+    error.statusCode = 422;
+    error.code = "INVALID_SERVICE_REGISTRATION_CLAIM";
+    throw error;
+  }
+
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  const claimToken = crypto.randomBytes(32).toString("base64url");
+  const claimTokenHash = hashOpaqueValue(claimToken);
+  const normalizedLeaseMs = Math.max(5_000, Math.min(15 * 60 * 1000, Number(leaseMs) || 5 * 60 * 1000));
+  try {
+    await client.query("begin");
+    // Pending reservations are leases, not permanent namespace ownership. A
+    // crashed publisher therefore cannot squat service/provider IDs forever.
+    await client.query(
+      "delete from adn_service_claims where claim_state = 'pending' and lease_expires_at <= now()"
+    );
+    await client.query(
+      `delete from adn_provider_claims p
+       where p.claim_state = 'pending'
+         and not exists (select 1 from adn_service_claims s where s.provider_id = p.provider_id)`
+    );
+    const insertedProvider = await client.query(
+      `insert into adn_provider_claims (provider_id, owner_key, claim_state, claimed_at)
+       values ($1, $2, 'pending', now())
+       on conflict (provider_id) do nothing
+       returning provider_id, owner_key, claim_state, claimed_at`,
+      [normalizedProviderId, normalizedOwnerKey]
+    );
+    const providerRow = insertedProvider.rows[0] || (await client.query(
+      "select provider_id, owner_key, claim_state, claimed_at from adn_provider_claims where provider_id = $1",
+      [normalizedProviderId]
+    )).rows[0];
+    if (!providerRow) {
+      const error = new Error("The provider ownership claim could not be confirmed.");
+      error.code = "PROVIDER_CLAIM_NOT_CONFIRMED";
+      throw error;
+    }
+    if (String(providerRow.owner_key) !== normalizedOwnerKey) {
+      await client.query("rollback");
+      return {
+        status: "provider_conflict",
+        provider_id: normalizedProviderId,
+        service_id: normalizedServiceId
+      };
+    }
+
+    const insertedService = await client.query(
+      `insert into adn_service_claims (
+         service_id, provider_id, owner_key, claim_state,
+         claim_token_hash, lease_expires_at, claimed_at
+       )
+       values ($1, $2, $3, 'pending', $4, now() + ($5::text || ' milliseconds')::interval, now())
+       on conflict (service_id) do nothing
+       returning service_id, provider_id, owner_key, claim_state, lease_expires_at, claimed_at`,
+      [normalizedServiceId, normalizedProviderId, normalizedOwnerKey, claimTokenHash, String(normalizedLeaseMs)]
+    );
+    let serviceRow = insertedService.rows[0];
+    if (!serviceRow) {
+      const existing = (await client.query(
+        `select service_id, provider_id, owner_key, claim_state, lease_expires_at, claimed_at
+         from adn_service_claims where service_id = $1 for update`,
+        [normalizedServiceId]
+      )).rows[0];
+      const sameRegistration = existing
+        && String(existing.provider_id) === normalizedProviderId
+        && String(existing.owner_key) === normalizedOwnerKey;
+      if (sameRegistration && existing.claim_state === "pending") {
+        serviceRow = (await client.query(
+          `update adn_service_claims
+           set claim_token_hash = $2,
+               lease_expires_at = now() + ($3::text || ' milliseconds')::interval
+           where service_id = $1 and claim_state = 'pending'
+           returning service_id, provider_id, owner_key, claim_state, lease_expires_at, claimed_at`,
+          [normalizedServiceId, claimTokenHash, String(normalizedLeaseMs)]
+        )).rows[0];
+      } else {
+        serviceRow = existing;
+      }
+    }
+    if (!serviceRow) {
+      const error = new Error("The durable service registration claim could not be confirmed.");
+      error.code = "SERVICE_CLAIM_NOT_CONFIRMED";
+      throw error;
+    }
+    const sameRegistration = String(serviceRow.provider_id) === normalizedProviderId
+      && String(serviceRow.owner_key) === normalizedOwnerKey;
+    if (!sameRegistration) {
+      await client.query("rollback");
+      return {
+        status: "service_conflict",
+        service_id: normalizedServiceId,
+        provider_id: normalizedProviderId
+      };
+    }
+
+    await client.query("commit");
+    const normalized = normalizePersistentServiceClaim(
+      serviceRow,
+      serviceRow.claim_state === "active" ? "owned" : insertedService.rows[0] ? "claimed" : "pending",
+      Boolean(insertedProvider.rows[0])
+    );
+    return serviceRow.claim_state === "pending" ? { ...normalized, claim_token: claimToken } : normalized;
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function finalizePersistentServiceRegistration({
+  serviceId,
+  providerId,
+  ownerKey,
+  claimToken,
+  config = null,
+  manifest = null
+}) {
+  if (!persistenceEnabled()) return null;
+  const normalizedServiceId = String(serviceId || "").trim();
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedOwnerKey = String(ownerKey || "").trim();
+  if (!normalizedServiceId || !normalizedProviderId || !normalizedOwnerKey || !claimToken) {
+    const error = new Error("A complete pending registration claim is required before finalization.");
+    error.statusCode = 422;
+    error.code = "INVALID_SERVICE_REGISTRATION_FINALIZE";
+    throw error;
+  }
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const claimed = await client.query(
+      `update adn_service_claims
+       set claim_state = 'active', claim_token_hash = null, lease_expires_at = null
+       where service_id = $1 and provider_id = $2 and owner_key = $3
+         and claim_state = 'pending' and claim_token_hash = $4 and lease_expires_at > now()
+       returning service_id, provider_id, owner_key, claim_state, claimed_at`,
+      [normalizedServiceId, normalizedProviderId, normalizedOwnerKey, hashOpaqueValue(claimToken)]
+    );
+    const serviceRow = claimed.rows[0];
+    if (!serviceRow) {
+      const error = new Error("The pending registration lease expired or was replaced before finalization.");
+      error.statusCode = 409;
+      error.code = "REGISTRATION_LEASE_LOST";
+      throw error;
+    }
+    await client.query(
+      `update adn_provider_claims set claim_state = 'active'
+       where provider_id = $1 and owner_key = $2`,
+      [normalizedProviderId, normalizedOwnerKey]
+    );
+    if (config) {
+      const safeConfig = minimalPersistentRegistrationDocument(config);
+      await client.query(
+        `insert into adn_provider_configs (service_id, config, updated_at)
+         values ($1, $2::jsonb, now())
+         on conflict (service_id)
+         do update set config = excluded.config, updated_at = now()`,
+        [normalizedServiceId, JSON.stringify(safeConfig)]
+      );
+    }
+    if (manifest) {
+      const safeManifest = minimalPersistentRegistrationDocument(manifest);
+      await client.query(
+        `insert into adn_registered_services (service_id, manifest, updated_at)
+         values ($1, $2::jsonb, now())
+         on conflict (service_id)
+         do update set manifest = excluded.manifest, updated_at = now()`,
+        [normalizedServiceId, JSON.stringify(safeManifest)]
+      );
+    }
+    await client.query("commit");
+    return normalizePersistentServiceClaim(serviceRow, "published", false);
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function releasePersistentServiceRegistration({ serviceId, providerId, ownerKey, claimToken }) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const released = await client.query(
+      `delete from adn_service_claims
+       where service_id = $1 and provider_id = $2 and owner_key = $3
+         and claim_state = 'pending' and claim_token_hash = $4
+       returning service_id, provider_id, owner_key`,
+      [String(serviceId || ""), String(providerId || ""), String(ownerKey || ""), hashOpaqueValue(claimToken)]
+    );
+    if (released.rowCount) {
+      await client.query(
+        `delete from adn_provider_claims p
+         where p.provider_id = $1 and p.owner_key = $2 and p.claim_state = 'pending'
+           and not exists (select 1 from adn_service_claims s where s.provider_id = p.provider_id)`,
+        [String(providerId || ""), String(ownerKey || "")]
+      );
+    }
+    await client.query("commit");
+    return { status: released.rowCount ? "released" : "not_released", service_id: String(serviceId || "") };
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listPersistentProviderClaims() {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    "select provider_id, owner_key, claim_state, claimed_at from adn_provider_claims where claim_state = 'active' order by claimed_at asc, provider_id asc"
+  );
+  return result.rows.map((row) => normalizePersistentProviderClaim(row, "owned"));
+}
+
+export async function listPersistentServiceRegistrationClaims() {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select service_id, provider_id, owner_key, claimed_at
+     from adn_service_claims
+     where claim_state = 'active'
+     order by claimed_at asc, service_id asc`
+  );
+  return result.rows.map((row) => normalizePersistentServiceClaim(row, "owned", false));
+}
+
+export async function listPersistentRegisteredServices() {
+  if (!persistenceEnabled()) return [];
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query(
+    `select r.manifest
+     from adn_registered_services r
+     join adn_service_claims s on s.service_id = r.service_id
+     where s.claim_state = 'active'
+     order by s.claimed_at asc, r.service_id asc`
+  );
+  return result.rows.map((row) => minimalPersistentRegistrationDocument(row.manifest || {}));
 }
 
 export function assertPersistentProviderStorageReady({ requiresSecret = false } = {}) {
@@ -111,8 +883,12 @@ export async function writePersistentServiceEvent({ eventType, serviceId, reques
   await ensureSchema(pool);
   const idempotencyKey = serviceEventIdempotencyKey({ eventType, serviceId, requestId, event });
   await pool.query(
-    `insert into adn_service_events (event_type, service_id, request_id, event, idempotency_key, created_at)
-     values ($1, $2, $3, $4::jsonb, $5, coalesce(($4::jsonb->>'created_at')::timestamptz, now()))
+    `with write_lock as materialized (
+       select pg_advisory_xact_lock(674312915)
+     )
+     insert into adn_service_events (event_type, service_id, request_id, event, idempotency_key, created_at)
+     select $1, $2, $3, $4::jsonb, $5, coalesce(($4::jsonb->>'created_at')::timestamptz, now())
+     from write_lock
      on conflict (idempotency_key) where idempotency_key is not null do nothing`,
     [eventType, serviceId || null, requestId || null, JSON.stringify(event), idempotencyKey]
   );
@@ -125,6 +901,9 @@ export function serviceEventIdempotencyKey({ eventType, serviceId, requestId, ev
     "consumer_feedback_anchor",
     "consumer_feedback_erc8004_client",
     "feedback_grant",
+    "invocation_feedback_grant",
+    "erc8004_hire_invocation",
+    "erc8004_hire_completion",
     "issued_quote",
     "quote_feedback",
     "erc8004_platform_identity",
@@ -142,23 +921,86 @@ export function serviceEventIdempotencyKey({ eventType, serviceId, requestId, ev
   ])).digest("hex");
 }
 
-export async function listPersistentServiceEvents({ limit = 10000 } = {}) {
-  if (!persistenceEnabled()) return [];
-  const pool = await getPool();
-  await ensureSchema(pool);
-  const result = await pool.query(
-    `select event_type, service_id, request_id, event, created_at
-     from adn_service_events
-     order by created_at asc, event_id asc
-     limit $1`,
-    [Math.max(1, Math.min(100000, Number(limit) || 10000))]
-  );
-  return result.rows.map((row) => ({
+export async function listPersistentServiceEvents({
+  limit = 1000,
+  maxEvents = 1_000_000,
+  afterCreatedAt = null,
+  afterEventId = null,
+  query = null
+} = {}) {
+  const injectedQuery = typeof query === "function";
+  if (!injectedQuery && !persistenceEnabled()) return [];
+
+  let runQuery = query;
+  if (!injectedQuery) {
+    const pool = await getPool();
+    await ensureSchema(pool);
+    runQuery = pool.query.bind(pool);
+  }
+
+  const pageSize = Math.max(1, Math.min(5000, Number(limit) || 1000));
+  const eventLimit = Math.max(1, Math.min(5_000_000, Number(maxEvents) || 1_000_000));
+  const rows = [];
+  const seenCursors = new Set();
+  const incrementalByEventId = afterEventId !== null && String(afterEventId).trim() !== "";
+  let cursorCreatedAt = afterCreatedAt || null;
+  let cursorEventId = afterEventId || null;
+
+  for (let page = 0; page <= Math.ceil(eventLimit / pageSize); page += 1) {
+    const requestedPageSize = Math.min(pageSize, eventLimit - rows.length + 1);
+    const result = incrementalByEventId
+      ? await runQuery(
+        `select event_id, event_type, service_id, request_id, event, created_at,
+                created_at::text as created_at_cursor
+         from adn_service_events
+         where event_id > $1::bigint
+         order by event_id asc
+         limit $2`,
+        [String(cursorEventId), requestedPageSize]
+      )
+      : await runQuery(
+        `select event_id, event_type, service_id, request_id, event, created_at,
+                created_at::text as created_at_cursor
+         from adn_service_events
+         where ($1::timestamptz is null
+            or created_at > $1::timestamptz
+            or (created_at = $1::timestamptz and event_id > $2::bigint))
+         order by created_at asc, event_id asc
+         limit $3`,
+        [cursorCreatedAt, cursorEventId, requestedPageSize]
+      );
+    const pageRows = Array.isArray(result?.rows) ? result.rows : [];
+    if (pageRows.length === 0) break;
+    if (rows.length + pageRows.length > eventLimit) {
+      const error = new Error(`Persistent service-event hydration exceeded the safe ${eventLimit}-event limit.`);
+      error.code = "PERSISTENT_EVENT_HYDRATION_LIMIT_EXCEEDED";
+      throw error;
+    }
+
+    const last = pageRows.at(-1);
+    const nextCreatedAt = String(last?.created_at_cursor || last?.created_at || "");
+    const nextEventId = String(last?.event_id || "");
+    const cursorKey = incrementalByEventId ? nextEventId : `${nextCreatedAt}\u0000${nextEventId}`;
+    if ((!incrementalByEventId && !nextCreatedAt) || !nextEventId || seenCursors.has(cursorKey)) {
+      const error = new Error("Persistent service-event hydration cursor made no progress and was stalled.");
+      error.code = "PERSISTENT_EVENT_HYDRATION_CURSOR_STALLED";
+      throw error;
+    }
+    seenCursors.add(cursorKey);
+    rows.push(...pageRows);
+    cursorCreatedAt = nextCreatedAt;
+    cursorEventId = nextEventId;
+    if (pageRows.length < requestedPageSize) break;
+  }
+
+  return rows.map((row) => ({
+    event_id: String(row.event_id),
     event_type: row.event_type,
     service_id: row.service_id,
     request_id: row.request_id,
     event: row.event,
-    created_at: row.created_at
+    created_at: row.created_at,
+    created_at_cursor: String(row.created_at_cursor || row.created_at || "")
   }));
 }
 
@@ -242,6 +1084,72 @@ export async function listPersistentPublicApiCandidates() {
     "select candidate from adn_public_api_catalog order by updated_at asc, candidate_id asc"
   );
   return result.rows.map((row) => row.candidate);
+}
+
+export async function claimPersistentPublicApiCandidateLease({
+  candidateId,
+  leaseOwner,
+  leaseMs = 10 * 60 * 1000
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const boundedLeaseMs = Math.max(1000, Math.min(30 * 60 * 1000, Number(leaseMs) || 10 * 60 * 1000));
+  const claimed = await pool.query(
+    `update adn_public_api_catalog
+     set lease_owner = $2,
+         lease_expires_at = now() + ($3::double precision * interval '1 millisecond')
+     where candidate_id = $1
+       and (lease_owner is null or lease_expires_at is null or lease_expires_at <= now())
+       and candidate->>'catalog_presence' is distinct from 'removed'
+       and (
+         candidate->>'status' in ('queued', 'retryable_failure')
+         or (
+           candidate->>'status' = 'validated_ready'
+           and candidate#>>'{promotion,ok}' = 'false'
+         )
+       )
+     returning candidate, lease_owner, lease_expires_at`,
+    [String(candidateId || ""), String(leaseOwner || ""), boundedLeaseMs]
+  );
+  if (claimed.rows[0]) return { claimed: true, ...claimed.rows[0] };
+  const current = await pool.query(
+    `select candidate, lease_owner, lease_expires_at
+     from adn_public_api_catalog
+     where candidate_id = $1`,
+    [String(candidateId || "")]
+  );
+  return { claimed: false, ...(current.rows[0] || { candidate: null, lease_owner: null, lease_expires_at: null }) };
+}
+
+export async function completePersistentPublicApiCandidateLease({
+  candidate,
+  leaseOwner
+} = {}) {
+  if (!persistenceEnabled()) return null;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const candidateId = String(candidate?.candidate_id || "");
+  const completed = await pool.query(
+    `update adn_public_api_catalog
+     set candidate = $3::jsonb,
+         lease_owner = null,
+         lease_expires_at = null,
+         updated_at = now()
+     where candidate_id = $1
+       and lease_owner = $2
+       and lease_expires_at > now()
+     returning candidate, lease_owner, lease_expires_at`,
+    [candidateId, String(leaseOwner || ""), JSON.stringify(candidate || {})]
+  );
+  if (completed.rows[0]) return { completed: true, ...completed.rows[0] };
+  const current = await pool.query(
+    `select candidate, lease_owner, lease_expires_at
+     from adn_public_api_catalog
+     where candidate_id = $1`,
+    [candidateId]
+  );
+  return { completed: false, ...(current.rows[0] || { candidate: null, lease_owner: null, lease_expires_at: null }) };
 }
 
 export async function writePersistentPublicApiPipelineRun(run) {
@@ -490,12 +1398,140 @@ async function getPool() {
   return poolPromise;
 }
 
+// Call only after request processing has quiesced (for example during
+// graceful shutdown or isolated integration-test teardown). Resetting both
+// handles lets a later process lifecycle establish a fresh schema/pool.
+export async function closePersistence() {
+  const pendingPool = poolPromise;
+  poolPromise = null;
+  schemaReady = false;
+  if (!pendingPool) return false;
+  const pool = await pendingPool;
+  await pool.end();
+  return true;
+}
+
+function normalizePersistentProviderClaim(row, status) {
+  if (!row) return null;
+  const claimedAt = row.claimed_at instanceof Date
+    ? row.claimed_at.toISOString()
+    : String(row.claimed_at || new Date().toISOString());
+  return {
+    status,
+    provider_id: String(row.provider_id || ""),
+    owner_key: String(row.owner_key || ""),
+    claim_state: String(row.claim_state || "active"),
+    claimed_at: claimedAt
+  };
+}
+
+function normalizePersistentServiceClaim(row, status, providerClaimed) {
+  if (!row) return null;
+  const claimedAt = row.claimed_at instanceof Date
+    ? row.claimed_at.toISOString()
+    : String(row.claimed_at || new Date().toISOString());
+  return {
+    status,
+    service_id: String(row.service_id || ""),
+    provider_id: String(row.provider_id || ""),
+    owner_key: String(row.owner_key || ""),
+    claim_state: String(row.claim_state || "active"),
+    provider_claimed: Boolean(providerClaimed),
+    lease_expires_at: row.lease_expires_at instanceof Date
+      ? row.lease_expires_at.toISOString()
+      : row.lease_expires_at ? String(row.lease_expires_at) : null,
+    claimed_at: claimedAt
+  };
+}
+
+function hashOpaqueValue(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function minimalPersistentRegistrationDocument(document = {}) {
+  const next = structuredClone(document || {});
+  const manifest = next.manifest && typeof next.manifest === "object" ? next.manifest : next;
+  const ownerKey = String(manifest?.registration?.owner?.user_key || "").trim();
+  if (manifest?.registration?.owner) {
+    manifest.registration.owner = ownerKey ? { user_key: ownerKey } : undefined;
+    if (!ownerKey) delete manifest.registration.owner;
+  }
+  return next;
+}
+
+function deviceAuthorizationValues(record = {}) {
+  return [
+    String(record.device_code_hash || ""),
+    String(record.user_code_hash || ""),
+    String(record.client_name || "AI agent"),
+    String(record.status || "pending"),
+    record.account_id ? String(record.account_id) : null,
+    record.owner_key ? String(record.owner_key) : null,
+    Number(record.created_at || 0),
+    Number(record.expires_at || 0),
+    record.approved_at == null ? null : Number(record.approved_at),
+    record.consumed_at == null ? null : Number(record.consumed_at),
+    Number(record.last_poll_at || 0),
+    Number(record.poll_interval_ms || 0)
+  ];
+}
+
+function normalizeDeviceAuthorizationRow(row) {
+  if (!row) return null;
+  return {
+    device_code_hash: row.device_code_hash,
+    user_code_hash: row.user_code_hash,
+    client_name: row.client_name,
+    status: row.status,
+    account_id: row.account_id || null,
+    owner_key: row.owner_key || null,
+    created_at: Number(row.created_at_ms),
+    expires_at: Number(row.expires_at_ms),
+    approved_at: row.approved_at_ms == null ? null : Number(row.approved_at_ms),
+    consumed_at: row.consumed_at_ms == null ? null : Number(row.consumed_at_ms),
+    last_poll_at: Number(row.last_poll_at_ms || 0),
+    poll_interval_ms: Number(row.poll_interval_ms || 0)
+  };
+}
+
 async function ensureSchema(pool) {
   if (schemaReady) return;
   await pool.query(`
     create table if not exists adn_provider_configs (
       service_id text primary key,
       config jsonb not null,
+      updated_at timestamptz not null default now()
+    );
+    create table if not exists adn_provider_claims (
+      provider_id text primary key,
+      owner_key text not null,
+      claim_state text not null default 'active',
+      claimed_at timestamptz not null default now()
+    );
+    alter table adn_provider_claims add column if not exists claim_state text not null default 'active';
+    create unique index if not exists adn_provider_claims_owner_idx
+      on adn_provider_claims(provider_id, owner_key);
+    create table if not exists adn_service_claims (
+      service_id text primary key,
+      provider_id text not null,
+      owner_key text not null,
+      claim_state text not null default 'active',
+      claim_token_hash text,
+      lease_expires_at timestamptz,
+      claimed_at timestamptz not null default now(),
+      foreign key (provider_id, owner_key)
+        references adn_provider_claims(provider_id, owner_key)
+    );
+    alter table adn_service_claims add column if not exists claim_state text not null default 'active';
+    alter table adn_service_claims add column if not exists claim_token_hash text;
+    alter table adn_service_claims add column if not exists lease_expires_at timestamptz;
+    create index if not exists adn_service_claims_provider_idx
+      on adn_service_claims(provider_id, claimed_at asc);
+    create index if not exists adn_service_claims_pending_lease_idx
+      on adn_service_claims(lease_expires_at) where claim_state = 'pending';
+    create table if not exists adn_registered_services (
+      service_id text primary key references adn_service_claims(service_id) on delete cascade,
+      manifest jsonb not null,
       updated_at timestamptz not null default now()
     );
     create table if not exists adn_provider_secrets (
@@ -525,12 +1561,85 @@ async function ensureSchema(pool) {
     create index if not exists adn_service_events_service_idx on adn_service_events(service_id);
     create index if not exists adn_service_events_type_idx on adn_service_events(event_type);
     create index if not exists adn_service_events_request_idx on adn_service_events(request_id);
+    create index if not exists adn_service_events_hydration_idx on adn_service_events(created_at, event_id);
     create table if not exists adn_browser_handoff_claims (
       handoff_id text primary key,
       expires_at timestamptz not null,
       consumed_at timestamptz not null default now()
     );
     create index if not exists adn_browser_handoff_claims_expiry_idx on adn_browser_handoff_claims(expires_at);
+    create table if not exists adn_device_authorizations (
+      device_code_hash text primary key,
+      user_code_hash text not null unique,
+      client_name text not null,
+      status text not null,
+      account_id text,
+      owner_key text,
+      created_at_ms bigint not null,
+      expires_at_ms bigint not null,
+      approved_at_ms bigint,
+      consumed_at_ms bigint,
+      last_poll_at_ms bigint not null default 0,
+      poll_interval_ms bigint not null
+    );
+    create index if not exists adn_device_authorizations_expiry_idx on adn_device_authorizations(expires_at_ms);
+    create table if not exists adn_remote_mcp_sessions (
+      session_id_hash text primary key,
+      state_opaque jsonb not null,
+      expires_at_ms bigint not null,
+      updated_at timestamptz not null default now()
+    );
+    create index if not exists adn_remote_mcp_sessions_expiry_idx on adn_remote_mcp_sessions(expires_at_ms);
+    create table if not exists adn_settlement_tx_claims (
+      chain_id text not null,
+      tx_hash text not null,
+      service_id text,
+      payer text,
+      consumed_at timestamptz not null default now(),
+      primary key (chain_id, tx_hash)
+    );
+    create index if not exists adn_settlement_tx_claims_consumed_idx on adn_settlement_tx_claims(consumed_at desc);
+    create table if not exists adn_erc8004_hire_requests (
+      claim_key text primary key,
+      request_hash text not null,
+      request_id text not null,
+      service_id text not null,
+      status text not null,
+      response jsonb,
+      error text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create index if not exists adn_erc8004_hire_requests_status_idx on adn_erc8004_hire_requests(status, updated_at desc);
+    create table if not exists adn_anchor_nonce_state (
+      chain_id text not null,
+      anchor_address text not null,
+      next_nonce numeric(78, 0) not null,
+      updated_at timestamptz not null default now(),
+      primary key (chain_id, anchor_address)
+    );
+    create table if not exists adn_anchor_outbox (
+      job_id text primary key,
+      chain_id text not null,
+      anchor_address text not null,
+      contract_address text not null,
+      function_name text not null,
+      request_id text,
+      call_args jsonb not null,
+      status text not null default 'pending',
+      reserved_nonce numeric(78, 0),
+      tx_hash text,
+      block_number numeric(78, 0),
+      attempts integer not null default 0,
+      last_error text,
+      next_attempt_at timestamptz not null default now(),
+      lease_owner text,
+      lease_expires_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+    create index if not exists adn_anchor_outbox_pending_idx
+      on adn_anchor_outbox(status, next_attempt_at, lease_expires_at);
     create table if not exists adn_credit_accounts (
       account_id text primary key,
       owner_key text not null unique,
@@ -575,9 +1684,14 @@ async function ensureSchema(pool) {
     create table if not exists adn_public_api_catalog (
       candidate_id text primary key,
       candidate jsonb not null,
+      lease_owner text,
+      lease_expires_at timestamptz,
       updated_at timestamptz not null default now()
     );
+    alter table adn_public_api_catalog add column if not exists lease_owner text;
+    alter table adn_public_api_catalog add column if not exists lease_expires_at timestamptz;
     create index if not exists adn_public_api_catalog_status_idx on adn_public_api_catalog((candidate->>'status'));
+    create index if not exists adn_public_api_catalog_lease_idx on adn_public_api_catalog(lease_expires_at) where lease_owner is not null;
     create table if not exists adn_public_api_pipeline_runs (
       run_id text primary key,
       run jsonb not null,

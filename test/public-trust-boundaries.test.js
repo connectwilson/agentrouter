@@ -5,6 +5,7 @@ import { baseFundFlowManifest } from "../src/fixtures.js";
 import { createServer } from "../src/server.js";
 
 const OWNER_COOKIE = "ar_session=public-trust-owner-session";
+const STRANGER_COOKIE = "ar_session=public-trust-stranger-session";
 const PRIVATE_OWNER_EMAIL = "private-owner-email-sentinel@example.test";
 const RAW_REQUEST_SENTINEL = "raw-request-sentinel-do-not-publish";
 const RAW_INPUT_SENTINEL = "raw-input-sentinel-do-not-publish";
@@ -18,10 +19,22 @@ const owner = {
   email: PRIVATE_OWNER_EMAIL
 };
 
+const stranger = {
+  provider: "github",
+  id: "public-trust-stranger",
+  name: "Public Trust Stranger",
+  handle: "public-trust-stranger"
+};
+
 async function withTrustServer(run) {
   const server = createServer();
   server.store.authSessions.set("public-trust-owner-session", {
     user: owner,
+    created_at: Date.now(),
+    expires_at: Date.now() + 60_000
+  });
+  server.store.authSessions.set("public-trust-stranger-session", {
+    user: stranger,
     created_at: Date.now(),
     expires_at: Date.now() + 60_000
   });
@@ -171,7 +184,7 @@ test("anonymous ERC-8004 attachment cannot consume a pending feedback state", as
     record.feedback_events.push(event);
     server.store.feedbackEvents.push(event);
 
-    const response = await postJson(`${baseUrl}/agent-router/feedback/erc8004`, {
+    const body = {
       service_id: serviceId,
       request_id: requestId,
       erc8004: {
@@ -179,14 +192,18 @@ test("anonymous ERC-8004 attachment cannot consume a pending feedback state", as
         status: "sponsorship_failed",
         error: "anonymous attacker consumed the pending state"
       }
-    });
+    };
+    const anonymousResponse = await postJson(`${baseUrl}/agent-router/feedback/erc8004`, body);
+    const strangerResponse = await postJson(`${baseUrl}/agent-router/feedback/erc8004`, body, STRANGER_COOKIE);
 
     assert.deepEqual({
-      http_status: response.status,
+      anonymous_http_status: anonymousResponse.status,
+      stranger_http_status: strangerResponse.status,
       erc8004_status: event.consumer_feedback_erc8004.status,
       trust_state: event.consumer_feedback_trust_anchor.state
     }, {
-      http_status: 401,
+      anonymous_http_status: 401,
+      stranger_http_status: 403,
       erc8004_status: "consumer_submission_required",
       trust_state: "onchain_pending"
     });
@@ -267,7 +284,8 @@ test("public feedback responses never expose invocation actors or raw call input
 test("public manifest projections omit private registration owner metadata", async () => {
   await withTrustServer(async ({ server, baseUrl }) => {
     const serviceId = "public_manifest_owner_boundary";
-    await registerOwnedService(server, baseUrl, serviceId);
+    const record = await registerOwnedService(server, baseUrl, serviceId);
+    record.verification_status = "verified";
 
     const httpResponse = await fetch(`${baseUrl}/services/${serviceId}/manifest`);
     const connectorResponse = await postJson(`${baseUrl}/connector/get_manifest`, { service_id: serviceId });
@@ -283,6 +301,11 @@ test("public manifest projections omit private registration owner metadata", asy
       http_owner: undefined,
       connector_owner: undefined
     });
+    assert.equal(
+      record.manifest.registration.owner.email,
+      PRIVATE_OWNER_EMAIL,
+      "public projection must not mutate the stored manifest"
+    );
     assertNoPrivateSentinels(JSON.stringify([httpManifest, connectorManifest]), "public manifest projection");
   });
 });

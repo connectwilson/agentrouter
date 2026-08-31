@@ -1,10 +1,20 @@
 import { currentPaymentBackend } from "./payment-adapter.js";
+import { requestProviderHttp } from "./provider-http-transport.js";
 
 export function isRealX402Enabled() {
   return currentPaymentBackend() === "x402";
 }
 
-export async function invokeWithRealX402({ url, method = "POST", headers = {}, body, wallet, fetchImpl = globalThis.fetch, paymentPolicy = null }) {
+export async function invokeWithRealX402({
+  url,
+  method = "POST",
+  headers = {},
+  body,
+  wallet,
+  fetchImpl = null,
+  transportOptions = {},
+  paymentPolicy = null
+}) {
   const { wrapFetchWithPayment, x402Client, x402HTTPClient } = await import("@x402/fetch");
   const { ExactEvmScheme } = await import("@x402/evm/exact/client");
   const { privateKeyToAccount } = await import("viem/accounts");
@@ -19,7 +29,8 @@ export async function invokeWithRealX402({ url, method = "POST", headers = {}, b
   if (paymentPolicy) client.registerPolicy(paymentPolicy);
 
   const httpClient = new x402HTTPClient(client);
-  const fetchWithPayment = wrapFetchWithPayment(fetchImpl, client);
+  const safeFetch = createSafeX402Fetch({ fetchImpl, transportOptions });
+  const fetchWithPayment = wrapFetchWithPayment(safeFetch, client);
   const response = await fetchWithPayment(url, {
     method,
     headers: {
@@ -44,6 +55,46 @@ export async function invokeWithRealX402({ url, method = "POST", headers = {}, b
     settlement,
     payment_tx: settlement?.transaction || settlement?.txHash || null
   };
+}
+
+function createSafeX402Fetch({ fetchImpl, transportOptions }) {
+  return async (input, init = {}) => {
+    const normalized = await normalizeX402Request(input, init);
+    return requestProviderHttp(normalized.url, normalized.init, {
+      ...(transportOptions || {}),
+      ...(fetchImpl ? { requestHop: fetchRequestHop(fetchImpl) } : {})
+    });
+  };
+}
+
+async function normalizeX402Request(input, init) {
+  if (typeof Request === "function" && input instanceof Request) {
+    const request = new Request(input, init);
+    const method = String(request.method || "GET").toUpperCase();
+    const body = ["GET", "HEAD"].includes(method)
+      ? undefined
+      : Buffer.from(await request.arrayBuffer());
+    return {
+      url: request.url,
+      init: {
+        method,
+        headers: request.headers,
+        body,
+        signal: request.signal
+      }
+    };
+  }
+  return { url: input, init };
+}
+
+function fetchRequestHop(fetchImpl) {
+  return ({ url, method, headers, body, signal }) => fetchImpl(url, {
+    method,
+    headers: Object.fromEntries(headers.entries()),
+    body: body?.length ? body : undefined,
+    signal,
+    redirect: "manual"
+  });
 }
 
 async function readJsonOrText(response) {

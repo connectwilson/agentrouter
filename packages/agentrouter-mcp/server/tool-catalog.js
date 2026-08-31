@@ -39,7 +39,7 @@ export const remoteMcpTools = [
         },
         constraints: { type: "object" },
         budget: { type: "object" },
-        max_price: { type: "string", default: "0.05" },
+        max_price: { type: ["string", "number"], description: "Numeric 0 means free-only.", default: "0.05" },
         currency: { type: "string", default: "USDC" },
         consumer_context: localBrowserContextSchema
       }
@@ -128,7 +128,7 @@ export const remoteMcpTools = [
       required: ["task"],
       properties: {
         task: { type: "string" },
-        max_price: { type: "string", default: "0.05" },
+        max_price: { type: ["string", "number"], description: "Numeric 0 means free-only.", default: "0.05" },
         currency: { type: "string", default: "USDC" }
       }
     }

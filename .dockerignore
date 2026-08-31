@@ -1,5 +1,8 @@
 .adn
 .git
+.env*
+*.pem
+*.key
 node_modules
 providers
 agentrouter-skill-export/.git

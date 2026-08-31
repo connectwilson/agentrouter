@@ -11,8 +11,13 @@ export function verifyServiceResult({ result, manifest, intent = {}, constraints
   if (result?.sample_type) issues.push({ code: "SAMPLE_RETURNED", message: "Provider returned a sample response instead of paid live data." });
 
   const freshnessSeconds = Number(result?.metadata?.freshness_seconds);
-  const freshnessLimit = Number(constraints.freshness_seconds || manifest.freshness?.max_data_lag_seconds || 0);
-  const freshnessValid = Number.isFinite(freshnessSeconds) && (!freshnessLimit || freshnessSeconds <= freshnessLimit);
+  const freshnessLimit = Number(constraints.freshness_seconds ?? manifest.freshness?.max_data_lag_seconds ?? 0);
+  const freshness = verifyFreshness({
+    generatedAt: result?.metadata?.generated_at,
+    claimedLagSeconds: freshnessSeconds,
+    freshnessLimit
+  });
+  const freshnessValid = freshness.ok;
   if (!freshnessValid) {
     issues.push({
       code: "FRESHNESS_NOT_VERIFIABLE",
@@ -255,7 +260,35 @@ function assetCovered(asset, text) {
     DOGE: ["doge", "dogecoin"]
   };
   return (aliases[normalized] || [String(asset || "").toLowerCase()])
-    .some((alias) => text.includes(alias));
+    .some((alias) => assetAliasCovered(alias, text));
+}
+
+function assetAliasCovered(alias, text) {
+  const normalizedAlias = String(alias || "").toLowerCase().trim();
+  if (!normalizedAlias) return false;
+  const escaped = normalizedAlias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  const boundary = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+  if (boundary.test(text)) return true;
+  if (!/^[a-z0-9]{2,6}$/.test(normalizedAlias)) return false;
+  return new RegExp(`(^|[^a-z0-9])${escaped}(?:usd|usdt|usdc|busd|btc|eth|perp)([^a-z0-9]|$)`, "i").test(text);
+}
+
+function verifyFreshness({ generatedAt, claimedLagSeconds, freshnessLimit, now = Date.now() }) {
+  const generatedAtMs = Date.parse(String(generatedAt || ""));
+  if (!Number.isFinite(generatedAtMs) || !Number.isFinite(claimedLagSeconds) || claimedLagSeconds < 0) {
+    return { ok: false, effective_lag_seconds: null };
+  }
+  const observedLagSeconds = (now - generatedAtMs) / 1000;
+  const maxFutureClockSkewSeconds = 300;
+  if (observedLagSeconds < -maxFutureClockSkewSeconds) {
+    return { ok: false, effective_lag_seconds: observedLagSeconds };
+  }
+  const effectiveLagSeconds = Math.max(claimedLagSeconds, Math.max(0, observedLagSeconds));
+  const limit = Number(freshnessLimit);
+  return {
+    ok: Number.isFinite(limit) && limit >= 0 && (!limit || effectiveLagSeconds <= limit),
+    effective_lag_seconds: effectiveLagSeconds
+  };
 }
 
 function computeAgentFriendlyScore(result, issues) {

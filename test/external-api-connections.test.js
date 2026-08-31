@@ -184,6 +184,9 @@ test("agentrouter_fetch dispatches connected Exa for natural and structured requ
         assert.equal(options.headers["x-api-key"], "exa-owner-secret");
         const body = JSON.parse(options.body);
         receivedQueries.push(body.query);
+        if (body.query === "NO_RESULTS") {
+          return { ok: true, status: 200, json: async () => ({ results: [] }) };
+        }
         return { ok: true, status: 200, json: async () => ({ results: [{ title: "Agent research", url: "https://example.com/research", text: "Evidence" }] }) };
       }
     }
@@ -213,13 +216,21 @@ test("agentrouter_fetch dispatches connected Exa for natural and structured requ
     assert.equal(structured.status, "data_returned");
     assert.equal(structured.results[0].result.count, 1);
 
+    const empty = await fetchViaMcp({
+      task: "Search Exa for an absent result",
+      data_requirements: [{ capability: "external_api_query", params: { source: "exa", operation: "search", query: "NO_RESULTS", limit: 1 } }]
+    });
+    assert.equal(empty.status, "no_data_returned");
+    assert.equal(empty.data_returned_count, 0);
+    assert.equal(empty.results[0].status, "no_results");
+
     const empiricalResearch = await fetchViaMcp({ task: "研究同类量化策略过去一年的实证表现。" });
     assert.equal(empiricalResearch.status, "data_returned");
     assert.equal(empiricalResearch.research_plans[0].strategy, "web_evidence_then_specialist_data");
     assert.equal(empiricalResearch.research_plans[0].supplemental_requirements[0].capability, "service_discovery");
     assert.equal(empiricalResearch.results[0].source.source, "exa");
     assert.equal(empiricalResearch.results[0].request.params.research_plan, undefined);
-    assert.deepEqual(receivedQueries, ["AgentRouter", "AgentRouter", "同类量化策略过去一年的实证表现。"]);
+    assert.deepEqual(receivedQueries, ["AgentRouter", "AgentRouter", "NO_RESULTS", "同类量化策略过去一年的实证表现。"]);
 
     const connectionRequired = await fetchViaMcp(
       { task: "Use my connected Exa source to search for AgentRouter" },
@@ -230,6 +241,19 @@ test("agentrouter_fetch dispatches connected Exa for natural and structured requ
     assert.equal(connectionRequired.next_required_action.preferred_tool, "agentrouter_connect");
     assert.equal(connectionRequired.next_required_action.api_key_fallback.for_headless_clients_only, true);
     assert.doesNotMatch(JSON.stringify(connectionRequired), /provide a valid agentrouter api key/i);
+
+    const sourceAuthorization = await fetchViaMcp({
+      task: "Use OpenAlex to find agent-routing papers",
+      data_requirements: [{
+        capability: "external_api_query",
+        params: { source: "openalex", operation: "search", query: "agent routing", limit: 5 }
+      }]
+    });
+    assert.equal(sourceAuthorization.status, "source_credentials_required");
+    assert.equal(sourceAuthorization.connection_action.preferred_tool, "agentrouter_connect_source");
+    assert.equal(sourceAuthorization.connection_action.authorization_kind, "api_credentials");
+    assert.deepEqual(sourceAuthorization.connection_action.tool_arguments, { source: "openalex" });
+    assert.equal(sourceAuthorization.data_returned_count, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -657,7 +681,8 @@ test("provider-specific validation and empty results return actionable diagnosti
   assert.equal(invalid.status, "invalid_request");
   assert.deepEqual(invalid.error.missing_fields, ["origin", "destination", "departure_date"]);
 
-  const noResults = await runExternalApiQuery(createMemoryStore(), "", {
+  const noResultsStore = createMemoryStore();
+  const noResults = await runExternalApiQuery(noResultsStore, "", {
     source: "open_meteo",
     operation: "forecast",
     query: "not-a-real-place"
@@ -668,6 +693,7 @@ test("provider-specific validation and empty results return actionable diagnosti
   assert.equal(noResults.status, "no_results");
   assert.equal(noResults.result.count, 0);
   assert.equal(noResults.diagnostics.code, "PROVIDER_RETURNED_NO_RESULTS");
+  assert.equal(noResultsStore.feedbackEvents[0].status, "no_results");
 
   const wrongOperation = await runExternalApiQuery(createMemoryStore(), "", {
     source: "open_meteo",

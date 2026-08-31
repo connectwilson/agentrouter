@@ -4,6 +4,8 @@ import { serviceMatchesCapabilityPack } from "./capability-packs.js";
 export function createMemoryStore() {
   return {
     providers: new Map(),
+    providerClaims: new Map(),
+    serviceClaims: new Map(),
     services: new Map(),
     validationRuns: [],
     invocationLogs: [],
@@ -25,7 +27,8 @@ export function createMemoryStore() {
     publicApiPipelineRuns: [],
     erc8004PlatformIdentities: new Map(),
     erc8004VendorIdentities: new Map(),
-    erc8004Imports: new Map()
+    erc8004Imports: new Map(),
+    erc8004HireRequests: new Map()
   };
 }
 

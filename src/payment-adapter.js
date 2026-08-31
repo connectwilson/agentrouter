@@ -30,11 +30,13 @@ export function describePaymentBackend() {
 }
 
 export function createPaymentQuote({ manifest, constraints = {}, selectedService, paymentExecutorAvailable = false }) {
-  const maxPrice = constraints.max_price_usdc || constraints.max_price || constraints.max_amount;
+  const maxPrice = constraints.max_price_usdc ?? constraints.max_price ?? constraints.max_amount;
   const pricing = effectivePricing(manifest);
   const price = Number(pricing.amount);
   const max = maxPrice == null || maxPrice === "" ? null : Number(maxPrice);
-  const allowed = max == null || price <= max;
+  const validPrice = Number.isFinite(price) && price >= 0;
+  const validBudget = maxPrice == null || (maxPrice !== "" && Number.isFinite(max) && max >= 0);
+  const allowed = validPrice && validBudget && (max == null || price <= max);
   const verified = selectedService?.selection_badges?.includes("verified_live_endpoint") || selectedService?.verification_status === "verified";
   const healthy = !selectedService?.health_status || ["healthy", "unknown"].includes(selectedService.health_status);
   const hasBudget = maxPrice != null && maxPrice !== "";
@@ -62,10 +64,10 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
     amount: pricing.amount,
     price: pricing.amount,
     budget: {
-      max_price_usdc: maxPrice || null,
+      max_price_usdc: maxPrice ?? null,
       allowed
     },
-    guard_result: allowed ? "pass" : "budget_too_low",
+    guard_result: allowed ? "pass" : !validBudget ? "invalid_budget" : !validPrice ? "invalid_price" : "budget_too_low",
     would_pay: allowed,
     agent_decision: {
       decision_version: "agentrouter_quote_decision_v1",
@@ -79,7 +81,7 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
       user_budget_policy: {
         policy_version: "agentrouter_budget_policy_v1",
         source: hasBudget ? "caller_configured_max_price" : "missing_explicit_budget",
-        per_call_max_usdc: maxPrice || null,
+        per_call_max_usdc: maxPrice ?? null,
         currency: pricing.currency || "USDC"
       },
       expected_data: expectedDataForManifest(manifest),
@@ -93,7 +95,11 @@ export function createPaymentQuote({ manifest, constraints = {}, selectedService
             : "ask_user_to_confirm_paid_call_or_configure_budget_policy",
       do_not_use_provider_direct_fallback: true
     },
-    reason: allowed
+    reason: !validBudget
+      ? "The caller budget must be a finite, non-negative amount."
+      : !validPrice
+        ? "The service price is invalid."
+        : allowed
       ? `Service price ${pricing.amount} ${pricing.currency} is within budget.`
       : `Service price ${pricing.amount} ${pricing.currency} exceeds budget ${maxPrice} USDC.`
   };

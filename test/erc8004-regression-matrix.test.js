@@ -334,17 +334,27 @@ test("default HTTP probe retries GET when HEAD is unsupported", async () => {
   assert.deepEqual(methods, ["HEAD", "GET"]);
 });
 
-test("default MCP probe uses GET and advertises event-stream support", async () => {
+test("default MCP probe sends initialize and validates its JSON-RPC result", async () => {
   const calls = [];
   const result = await verifyErc8004Agent(scanAgent({ metadata: { services: [{ name: "MCP", endpoint: "https://1.1.1.1/mcp" }] } }), {
     fetchImpl: async (_url, options) => {
       calls.push(options);
-      return { status: 200, headers: new Headers({ "content-type": "text/event-stream" }) };
+      const request = JSON.parse(options.body);
+      return Response.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          serverInfo: { name: "Regression MCP", version: "1.0.0" }
+        }
+      });
     }
   });
   assert.equal(result.preferred_adapter, "mcp");
-  assert.equal(calls[0].method, "GET");
-  assert.match(calls[0].headers.accept, /text\/event-stream/);
+  assert.equal(calls[0].method, "POST");
+  assert.equal(JSON.parse(calls[0].body).method, "initialize");
+  assert.match(calls[0].headers.accept, /application\/json/);
   assert.equal(calls[0].redirect, "manual");
 });
 
@@ -356,10 +366,19 @@ test("an HTML page at a declared MCP endpoint is reachable but not protocol-veri
   assert.equal(result.protocols.mcp.status, "unreachable");
 });
 
-test("default A2A verification requires a JSON response", async () => {
+test("default A2A verification requires an agent-card JSON response", async () => {
   const metadata = { services: [{ name: "A2A", endpoint: "https://1.1.1.1/a2a" }] };
   const valid = await verifyErc8004Agent(scanAgent({ metadata }), {
-    fetchImpl: async () => ({ status: 200, headers: new Headers({ "content-type": "application/agent-card+json" }) })
+    fetchImpl: async () => Response.json({
+      name: "Regression A2A",
+      description: "Regression fixture",
+      url: "https://1.1.1.1/a2a",
+      version: "1.0.0",
+      capabilities: {},
+      skills: [],
+      defaultInputModes: ["text"],
+      defaultOutputModes: ["text"]
+    }, { headers: { "content-type": "application/agent-card+json" } })
   });
   const invalid = await verifyErc8004Agent(scanAgent({ metadata }), {
     fetchImpl: async () => ({ status: 200, headers: new Headers({ "content-type": "text/plain" }) })
@@ -705,7 +724,13 @@ test("hire API accepts only object-shaped input", async () => {
 
 test("hire API directly executes an explicitly requested verified free HTTP agent", async () => {
   const { store, headers } = signedInStore();
-  store.erc8004Imports.set("56:42", verifiedImport());
+  store.erc8004Imports.set("56:42", verifiedImport({
+    execution_policy: {
+      policy_version: "agent_router_erc8004_execution_policy_v1",
+      access: "read_only",
+      allowed_capabilities: ["account_health"]
+    }
+  }));
   const calls = [];
   const executor = async (request) => {
     calls.push(request);
@@ -714,8 +739,8 @@ test("hire API directly executes an explicitly requested verified free HTTP agen
   await withServer({ store, erc8004Executor: executor }, async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/agent-router/erc8004/hire`, {
       method: "POST",
-      headers,
-      body: JSON.stringify({ agent_id: "42", execute: true, input: { account: "0xabc" } })
+      headers: { ...headers, "idempotency-key": "regression-direct-hire" },
+      body: JSON.stringify({ agent_id: "42", execute: true, capability: "account_health", input: { account: "0xabc" } })
     });
     const payload = await response.json();
 

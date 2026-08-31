@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { deleteProviderSecret, readProviderSecret, writeProviderSecret } from "./provider-secrets.js";
 import { deletePersistentSocialConnection, listPersistentSocialConnections, writePersistentSocialConnection } from "./persistence.js";
+import { readBoundedSocialResponse, socialProviderTransportFailure } from "./social-transport.js";
 
 const PROVIDER_MATRIX = {
   x: new Set(["local_browser", "x_api"]),
@@ -119,21 +120,25 @@ export async function socialProvidersForUser(store, ownerKey, options = {}) {
   if (!ownerKey) return {};
   const readSecret = options.readSecret || readProviderSecret;
   const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const transport = {
+    timeoutMs: options.fetchTimeoutMs,
+    maxBytes: options.fetchMaxResponseBytes
+  };
   const providers = {};
   for (const record of (store.socialConnections || new Map()).values()) {
     if (record.owner_key !== ownerKey || record.provider_type === "local_browser") continue;
     const secret = await readSecret(record.secret_ref);
     const provider = record.provider_type === "x_api"
-      ? createXApiProvider(record, secret, fetchImpl)
+      ? createXApiProvider(record, secret, fetchImpl, transport)
       : record.provider_type === "reddit_api"
-        ? createRedditApiProvider(record, secret, fetchImpl)
+        ? createRedditApiProvider(record, secret, fetchImpl, transport)
         : null;
     if (provider) (providers[record.platform] ||= []).push(provider);
   }
   return providers;
 }
 
-function createXApiProvider(record, bearerToken, fetchImpl) {
+function createXApiProvider(record, bearerToken, fetchImpl, transport) {
   return {
     id: `x-api:${record.connection_id}`,
     async readPost(target) {
@@ -141,8 +146,11 @@ function createXApiProvider(record, bearerToken, fetchImpl) {
       if (!postId) return { status: "provider_error", error: "A valid X status URL is required.", rows: [] };
       const url = new URL(`https://api.x.com/2/tweets/${postId}`);
       addXResponseFields(url);
-      const response = await fetchImpl(url, { headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json" } });
-      const payload = await response.json().catch(() => ({}));
+      const fetched = await providerJson(fetchImpl, url, {
+        headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json" }
+      }, transport, "x_read_post");
+      if (!fetched.ok) return fetched.failure;
+      const { response, payload } = fetched;
       if (!response.ok) return providerFailure(response.status, payload);
       const users = new Map((payload.includes?.users || []).map((user) => [user.id, user]));
       return {
@@ -156,13 +164,17 @@ function createXApiProvider(record, bearerToken, fetchImpl) {
       url.searchParams.set("query", query);
       url.searchParams.set("max_results", String(Math.max(10, Math.min(100, Number(limit) || 10))));
       addXResponseFields(url);
-      const response = await fetchImpl(url, { headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json" } });
-      const payload = await response.json().catch(() => ({}));
+      const fetched = await providerJson(fetchImpl, url, {
+        headers: { authorization: `Bearer ${bearerToken}`, accept: "application/json" }
+      }, transport, "x_search");
+      if (!fetched.ok) return fetched.failure;
+      const { response, payload } = fetched;
       if (!response.ok) return providerFailure(response.status, payload);
       const users = new Map((payload.includes?.users || []).map((user) => [user.id, user]));
+      const rows = (payload.data || []).map((tweet) => normalizeXTweet(tweet, users));
       return {
-        status: "completed",
-        rows: (payload.data || []).map((tweet) => normalizeXTweet(tweet, users))
+        status: rows.length ? "completed" : "no_results",
+        rows
       };
     }
   };
@@ -202,7 +214,7 @@ function xPostId(value) {
   }
 }
 
-function createRedditApiProvider(record, accessToken, fetchImpl) {
+function createRedditApiProvider(record, accessToken, fetchImpl, transport) {
   return {
     id: `reddit-api:${record.connection_id}`,
     async search(query, limit) {
@@ -211,31 +223,59 @@ function createRedditApiProvider(record, accessToken, fetchImpl) {
       url.searchParams.set("limit", String(Math.max(1, Math.min(100, Number(limit) || 10))));
       url.searchParams.set("sort", "relevance");
       url.searchParams.set("raw_json", "1");
-      const response = await fetchImpl(url, { headers: { authorization: `Bearer ${accessToken}`, "user-agent": "AgentRouter/0.1 social research", accept: "application/json" } });
-      const payload = await response.json().catch(() => ({}));
+      const fetched = await providerJson(fetchImpl, url, {
+        headers: { authorization: `Bearer ${accessToken}`, "user-agent": "AgentRouter/0.1 social research", accept: "application/json" }
+      }, transport, "reddit_search");
+      if (!fetched.ok) return fetched.failure;
+      const { response, payload } = fetched;
       if (!response.ok) return providerFailure(response.status, payload);
+      const rows = (payload.data?.children || []).map((child) => child.data || {}).map((post) => ({
+        id: post.id,
+        title: post.title,
+        text: post.selftext,
+        author: post.author,
+        published_at: post.created_utc,
+        url: post.permalink ? `https://www.reddit.com${post.permalink}` : post.url,
+        engagement: { likes: post.score, comments: post.num_comments }
+      }));
       return {
-        status: "completed",
-        rows: (payload.data?.children || []).map((child) => child.data || {}).map((post) => ({
-          id: post.id,
-          title: post.title,
-          text: post.selftext,
-          author: post.author,
-          published_at: post.created_utc,
-          url: post.permalink ? `https://www.reddit.com${post.permalink}` : post.url,
-          engagement: { likes: post.score, comments: post.num_comments }
-        }))
+        status: rows.length ? "completed" : "no_results",
+        rows
       };
     }
   };
 }
 
 function providerFailure(status, payload) {
+  const errorCode = status === 401 || status === 403 ? "SOCIAL_PROVIDER_AUTH_REQUIRED"
+    : status === 429 ? "SOCIAL_PROVIDER_RATE_LIMITED" : "SOCIAL_PROVIDER_HTTP_ERROR";
   return {
     status: status === 401 || status === 403 ? "auth_required" : status === 429 ? "rate_limited" : "provider_error",
+    error_code: errorCode,
     error: clean(payload?.detail || payload?.title || payload?.error || `Provider returned HTTP ${status}`, 300),
+    diagnostics: {
+      code: errorCode,
+      category: status === 429 ? "rate_limit" : status >= 500 ? "upstream_server" : "upstream_client",
+      stage: "social_provider_http",
+      retryable: status === 429 || status >= 500,
+      http_status: Number(status) || null
+    },
     rows: []
   };
+}
+
+async function providerJson(fetchImpl, url, options, transport, stage) {
+  try {
+    const fetched = await readBoundedSocialResponse(fetchImpl, url, options, {
+      mode: "json",
+      stage,
+      timeoutMs: transport?.timeoutMs,
+      maxBytes: transport?.maxBytes
+    });
+    return { ok: true, ...fetched };
+  } catch (error) {
+    return { ok: false, failure: socialProviderTransportFailure(error, { stage }) };
+  }
 }
 
 function publicConnection(record) {

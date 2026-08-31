@@ -1,7 +1,7 @@
 import { normalizeEndpoint } from "./http-utils.js";
 import { normalizeId, suggestCapabilities } from "./id-utils.js";
-import { createHostedHttpProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
-import { findDuplicateService, registerService, unregisterService, validateService } from "./registry.js";
+import { createHostedHttpProviderConfig, deleteProviderConfig, prepareProviderConfigForPersistence, writePreparedProviderConfigFile } from "./provider-config.js";
+import { abortServiceRegistration, finalizeServiceRegistration, findDuplicateService, registerServiceDurably, unregisterService, validateService } from "./registry.js";
 import { publicServiceRecord } from "./store.js";
 
 const OPENAPI_CANDIDATES = [
@@ -518,7 +518,11 @@ function resolveOpenApiServerUrl(doc, sourceUrl, requestedUrl) {
   return requestedUrl.replace(/\/$/, "");
 }
 
-export async function publishApiDrafts(body, store, baseUrl, { user = null, ownerKey = "" } = {}) {
+export async function publishApiDrafts(body, store, baseUrl, {
+  user = null,
+  ownerKey = "",
+  registrationPersistence = {}
+} = {}) {
   const drafts = Array.isArray(body.drafts) ? body.drafts : [];
   if (!drafts.length) {
     const error = new Error("drafts must include at least one service draft");
@@ -542,7 +546,11 @@ export async function publishApiDrafts(body, store, baseUrl, { user = null, owne
   if (shouldPublishToRemote({ body, baseUrl, remoteUrl })) {
     result = await publishApiDraftsToRemote({ body: publishBody, remoteUrl });
   } else {
-    result = await publishApiDraftsLocal(publishBody, store, baseUrl, { user, ownerKey });
+    result = await publishApiDraftsLocal(publishBody, store, baseUrl, {
+      user,
+      ownerKey,
+      registrationPersistence
+    });
   }
   if (!blockedFailures.length) return result;
   return {
@@ -552,7 +560,11 @@ export async function publishApiDrafts(body, store, baseUrl, { user = null, owne
   };
 }
 
-async function publishApiDraftsLocal(body, store, baseUrl, { user = null, ownerKey = "" } = {}) {
+async function publishApiDraftsLocal(body, store, baseUrl, {
+  user = null,
+  ownerKey = "",
+  registrationPersistence = {}
+} = {}) {
   const drafts = Array.isArray(body.drafts) ? body.drafts : [];
   const published = [];
   const failed = [];
@@ -579,6 +591,13 @@ async function publishApiDraftsLocal(body, store, baseUrl, { user = null, ownerK
       applyOwnerMetadata(config.manifest, { user, ownerKey });
       const duplicate = store.services.get(config.manifest.service_id) || findDuplicateService(store, config.manifest);
       if (duplicate) {
+        const duplicateOwnerKey = String(duplicate.manifest?.registration?.owner?.user_key || "");
+        if (ownerKey && duplicateOwnerKey && duplicateOwnerKey !== ownerKey) {
+          const error = new Error(`Service ${duplicate.manifest.service_id} is already registered by another account.`);
+          error.statusCode = 409;
+          error.code = "SERVICE_ALREADY_REGISTERED";
+          throw error;
+        }
         const validation = duplicate.validation_runs?.at(-1) || { ok: duplicate.verification_status === "verified" };
         if (validation.ok !== true) {
           await removeUnverifiedServiceForRetry(store, duplicate.manifest.service_id);
@@ -596,12 +615,26 @@ async function publishApiDraftsLocal(body, store, baseUrl, { user = null, ownerK
           continue;
         }
       }
-      const configPath = await writeProviderConfig(config);
-      const record = registerService(store, config.manifest, baseUrl);
-      const validation = await validateService(store, config.manifest.service_id);
+      const record = await registerServiceDurably(store, config.manifest, baseUrl, registrationPersistence);
+      let configPath;
+      let validation;
+      try {
+        validation = await validateService(store, config.manifest.service_id, {
+          providerConfig: config,
+          // Only the platform's own mock upstream is reachable on a private test
+          // origin; imported provider manifests cannot extend this allowlist.
+          trustedOrigins: [{
+            origin: baseUrl,
+            pathPrefixes: ["/mock/upstream/", "/mock/api/"],
+            exactPaths: ["/api/v1/data/header-key"]
+          }]
+        });
+      } catch (error) {
+        await abortServiceRegistration(store, record);
+        throw error;
+      }
       if (!validation.ok) {
-        unregisterService(store, config.manifest.service_id);
-        await deleteProviderConfig(config.manifest.service_id);
+        await abortServiceRegistration(store, record);
         failed.push({
           service_id: config.manifest.service_id,
           error: "VALIDATION_FAILED",
@@ -609,6 +642,24 @@ async function publishApiDraftsLocal(body, store, baseUrl, { user = null, ownerK
           validation
         });
         continue;
+      }
+      config.manifest.registration = {
+        ...(config.manifest.registration || {}),
+        publish_state: "published"
+      };
+      try {
+        const prepared = await prepareProviderConfigForPersistence(config);
+        const durable = Boolean(typeof registrationPersistence.enabled === "function"
+          ? registrationPersistence.enabled()
+          : registrationPersistence.enabled);
+        if (!durable) configPath = await writePreparedProviderConfigFile(prepared);
+        await finalizeServiceRegistration(store, record, { config: prepared });
+        if (durable) configPath = await writePreparedProviderConfigFile(prepared).catch(() => null);
+        Object.assign(config, prepared);
+      } catch (error) {
+        await abortServiceRegistration(store, record);
+        if (configPath) await deleteProviderConfig(config.manifest.service_id).catch(() => {});
+        throw error;
       }
       published.push({
         ok: true,

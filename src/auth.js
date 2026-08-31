@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 const SESSION_COOKIE = "ar_session";
+const OAUTH_STATE_COOKIE_PREFIX = "ar_oauth_state_";
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const SESSION_TOKEN_PREFIX = "ars1";
@@ -105,9 +106,13 @@ export function currentUser(req, store, {
 export function authUserKey(user) {
   if (!user) return "";
   if (user.provider && user.id) return `${user.provider}:${user.id}`;
-  if (user.email) return `email:${String(user.email).toLowerCase()}`;
-  if (user.handle) return `handle:${String(user.handle).toLowerCase()}`;
+  if (user.email) return `identity:${hashIdentityFallback(`email:${String(user.email).toLowerCase()}`)}`;
+  if (user.handle) return `identity:${hashIdentityFallback(`handle:${String(user.handle).toLowerCase()}`)}`;
   return "";
+}
+
+function hashIdentityFallback(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
 export function beginOAuth({
@@ -119,43 +124,69 @@ export function beginOAuth({
   now = Date.now()
 }) {
   const provider = configuredProvider(providerId);
-  sweepExpiredOAuthStates(store);
+  sweepExpiredOAuthStates(store, now);
   const redirectUri = callbackUrl(baseUrl, provider.id);
+  const browserNonce = randomToken();
   const stateRecord = {
     provider: provider.id,
     redirect_uri: redirectUri,
     return_to: safeReturnTo(returnTo),
     created_at: now,
     expires_at: now + OAUTH_STATE_TTL_MS,
-    nonce: randomToken()
+    nonce: randomToken(),
+    browser_nonce_hash: hashOAuthBrowserNonce(browserNonce)
   };
   const sealedState = sealPayload(OAUTH_STATE_TOKEN_PREFIX, stateRecord, sessionSecret);
   const state = sealedState || randomToken();
   if (!sealedState) store.oauthStates.set(state, stateRecord);
+  const stateCookieName = oauthStateCookieName(state);
   const url = new URL(provider.authUrl);
   url.searchParams.set("client_id", process.env[provider.clientIdEnv]);
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("scope", provider.scope);
   url.searchParams.set("state", state);
   url.searchParams.set("response_type", "code");
-  return url.toString();
+  return {
+    url: url.toString(),
+    state,
+    cookie: serializeCookie(stateCookieName, browserNonce, {
+      maxAge: Math.floor(OAUTH_STATE_TTL_MS / 1000),
+      secure: isHttps(baseUrl),
+      path: oauthCallbackPath(provider.id)
+    })
+  };
 }
 
 export function consumeOAuthState({
   providerId,
   state,
   store,
+  browserNonce = "",
   sessionSecret = configuredSessionSecret(),
   now = Date.now()
 }) {
+  const stateValue = String(state || "");
+  if (!stateValue || stateValue.length > 4096) throw invalidOAuthStateError();
+  sweepExpiredOAuthStates(store, now);
   const signedState = String(state || "").startsWith(`${OAUTH_STATE_TOKEN_PREFIX}.`)
     ? openPayload(OAUTH_STATE_TOKEN_PREFIX, state, sessionSecret)
     : null;
   const savedState = signedState || store.oauthStates.get(state);
-  if (!signedState) store.oauthStates.delete(state);
   if (!savedState || savedState.provider !== providerId || Number(savedState.expires_at || 0) < now || Number(savedState.created_at || 0) > now) {
+    if (!signedState && savedState) store.oauthStates.delete(state);
     throw invalidOAuthStateError();
   }
+  if (!oauthBrowserNonceMatches(savedState.browser_nonce_hash, browserNonce)) {
+    throw invalidOAuthStateError();
+  }
+  const replayKey = oauthStateReplayKey(stateValue);
+  if (store.oauthStates.has(replayKey)) throw invalidOAuthStateError();
+  if (!signedState) store.oauthStates.delete(state);
+  store.oauthStates.set(replayKey, {
+    consumed: true,
+    created_at: now,
+    expires_at: savedState.expires_at
+  });
   return savedState;
 }
 
@@ -165,10 +196,31 @@ export async function completeOAuth({
   state,
   store,
   baseUrl,
+  cookieHeader = "",
+  stateClaim = null,
   sessionSecret = configuredSessionSecret()
 }) {
   const provider = configuredProvider(providerId);
-  const savedState = consumeOAuthState({ providerId: provider.id, state, store, sessionSecret });
+  const browserNonce = parseCookies(cookieHeader)[oauthStateCookieName(state)] || "";
+  const savedState = consumeOAuthState({
+    providerId: provider.id,
+    state,
+    store,
+    browserNonce,
+    sessionSecret
+  });
+  if (stateClaim) {
+    let claimed = false;
+    try {
+      claimed = await stateClaim(
+        oauthStateClaimId(state),
+        new Date(Number(savedState.expires_at)).toISOString()
+      );
+    } catch {
+      throw oauthStateStoreUnavailableError();
+    }
+    if (!claimed) throw invalidOAuthStateError();
+  }
   if (!code) {
     const error = new Error("OAuth provider did not return an authorization code.");
     error.statusCode = 400;
@@ -182,12 +234,21 @@ export async function completeOAuth({
   return {
     user,
     returnTo: savedState.return_to || "/",
-    cookie: session.cookie
+    cookie: session.cookie,
+    oauthCookie: clearOAuthStateCookie(baseUrl, provider.id, state)
   };
 }
 
 export function clearSessionCookie(baseUrl) {
   return serializeCookie(SESSION_COOKIE, "", { maxAge: 0, secure: isHttps(baseUrl) });
+}
+
+export function clearOAuthStateCookie(baseUrl, providerId = "github", state = "") {
+  return serializeCookie(oauthStateCookieName(state), "", {
+    maxAge: 0,
+    secure: isHttps(baseUrl),
+    path: oauthCallbackPath(providerId)
+  });
 }
 
 export function logout(req, store, baseUrl) {
@@ -196,8 +257,7 @@ export function logout(req, store, baseUrl) {
   return clearSessionCookie(baseUrl);
 }
 
-function sweepExpiredOAuthStates(store) {
-  const now = Date.now();
+function sweepExpiredOAuthStates(store, now = Date.now()) {
   for (const [state, entry] of store.oauthStates) {
     if (Number(entry?.expires_at || 0) < now) store.oauthStates.delete(state);
   }
@@ -306,7 +366,37 @@ function throwOAuthProfileError(payload) {
 }
 
 function callbackUrl(baseUrl, providerId) {
-  return new URL(`/auth/${providerId}/callback`, baseUrl).toString();
+  return new URL(oauthCallbackPath(providerId), baseUrl).toString();
+}
+
+function oauthCallbackPath(providerId) {
+  return `/auth/${encodeURIComponent(providerId)}/callback`;
+}
+
+function hashOAuthBrowserNonce(nonce) {
+  return crypto.createHash("sha256").update(String(nonce || "")).digest("base64url");
+}
+
+function oauthBrowserNonceMatches(expectedHash, browserNonce) {
+  if (!expectedHash || !browserNonce || String(browserNonce).length > 256) return false;
+  const expected = Buffer.from(String(expectedHash));
+  const actual = Buffer.from(hashOAuthBrowserNonce(browserNonce));
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function oauthStateReplayKey(state) {
+  const digest = crypto.createHash("sha256").update(String(state || "")).digest("base64url");
+  return `consumed:${digest}`;
+}
+
+function oauthStateClaimId(state) {
+  const digest = crypto.createHash("sha256").update(String(state || "")).digest("base64url");
+  return `oauth-state:${digest}`;
+}
+
+function oauthStateCookieName(state) {
+  const digest = crypto.createHash("sha256").update(String(state || "")).digest("base64url").slice(0, 20);
+  return `${OAUTH_STATE_COOKIE_PREFIX}${digest}`;
 }
 
 function safeReturnTo(value) {
@@ -371,6 +461,13 @@ function invalidOAuthStateError() {
   return error;
 }
 
+function oauthStateStoreUnavailableError() {
+  const error = new Error("OAuth login could not be verified right now. Please try logging in again.");
+  error.statusCode = 503;
+  error.code = "OAUTH_STATE_STORE_UNAVAILABLE";
+  return error;
+}
+
 function parseCookies(header) {
   return Object.fromEntries(String(header || "").split(";").map((part) => {
     const [key, ...value] = part.trim().split("=");
@@ -378,10 +475,10 @@ function parseCookies(header) {
   }).filter(([key]) => key));
 }
 
-function serializeCookie(name, value, { maxAge, secure = false } = {}) {
+function serializeCookie(name, value, { maxAge, secure = false, path = "/" } = {}) {
   return [
     `${name}=${encodeURIComponent(value)}`,
-    "Path=/",
+    `Path=${path}`,
     "HttpOnly",
     "SameSite=Lax",
     typeof maxAge === "number" ? `Max-Age=${maxAge}` : "",

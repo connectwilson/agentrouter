@@ -4,7 +4,7 @@ import { agentHtml, homeHtml, serviceDetailHtml } from "../src/home.js";
 import { researchHtml } from "../src/research.js";
 import { studioHtml } from "../src/studio.js";
 
-test("first-party application pages share the Naive design shell and client-side router", () => {
+test("first-party application pages share the Naive design shell and native navigation helper", () => {
   const pages = [
     homeHtml({}),
     researchHtml({}),
@@ -18,17 +18,19 @@ test("first-party application pages share the Naive design shell and client-side
     assert.match(page, /--ar-button-small:32px/);
     assert.match(page, /--ar-button-large:48px/);
     assert.match(page, /data-agentrouter-spa/);
-    assert.match(page, /history\.pushState/);
+    assert.match(page, /window\.location\.assign/);
+    assert.doesNotMatch(page, /new Function/);
   }
 });
 
-test("client-side router preserves normal navigation boundaries", () => {
+test("navigation helper delegates every route to the browser document lifecycle", () => {
   const page = homeHtml({});
 
-  assert.match(page, /same-origin/);
-  assert.match(page, /target === "_blank"/);
-  assert.match(page, /\/auth\//);
-  assert.match(page, /popstate/);
+  assert.match(page, /router\.navigate = \(href\)/);
+  assert.match(page, /window\.location\.assign\(requested\.href\)/);
+  assert.doesNotMatch(page, /document\.addEventListener\("click"/);
+  assert.doesNotMatch(page, /popstate/);
+  assert.doesNotMatch(page, /executePageScripts/);
 });
 
 test("homepage emits only the Naive black-and-white visual system", () => {

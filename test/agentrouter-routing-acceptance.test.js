@@ -85,6 +85,24 @@ test("social-provider market research does not become a Reddit post search", () 
   assert.equal(request, null);
 });
 
+test("an isolated X placeholder or ticker never masquerades as the X social source", () => {
+  for (const prompt of [
+    "Research Company X pricing and competitors",
+    "Find x if x=2",
+    "Compare product X and product Y",
+    "Research ticker X and XLM market opportunities"
+  ]) {
+    assert.notEqual(sourceFor(prompt, "specialized")?.params?.source, "x", prompt);
+  }
+  for (const prompt of [
+    "在 X 上搜索 AgentRouter 的用户讨论",
+    "Search Twitter for AgentRouter posts",
+    "Find recent posts on X about agent payments"
+  ]) {
+    assert.equal(sourceFor(prompt, "specialized")?.params?.source, "x", prompt);
+  }
+});
+
 test("an explicitly named social vendor bypasses local platform interception and preserves every requested platform", async () => {
   const cases = [
     {

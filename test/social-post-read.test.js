@@ -89,6 +89,32 @@ test("social_post_read uses a connected X API provider and normalizes provenance
   assert.equal(JSON.stringify(result).includes("cookie"), false);
 });
 
+test("social_post_read rejects a provider row whose post id does not match the requested URL", async () => {
+  const result = await runSocialPostReadCapability({ url: xUrl }, {
+    providers: {
+      x: [
+        {
+          id: "stale-provider",
+          readPost: async () => ({ status: "completed", rows: [{ id: "999", text: "Wrong post" }] })
+        },
+        {
+          id: "exact-provider",
+          readPost: async () => ({
+            status: "completed",
+            rows: [{ id: "2081890388298874880", url: xUrl, text: "Exact post" }]
+          })
+        }
+      ]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.result.post.post_id, "2081890388298874880");
+  assert.equal(result.result.post.text, "Exact post");
+  assert.equal(result.source.backend_id, "exact-provider");
+  assert.equal(result.source.attempts[0].status, "identity_mismatch");
+});
+
 test("hosted fetch recognizes an X URL and requests local execution instead of no_service_found", async () => {
   const server = createServer({ store: createMemoryStore() });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

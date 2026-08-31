@@ -7,7 +7,19 @@ import { suggestCapabilities } from "./id-utils.js";
 import { createSettlementReceipt, currentPaymentBackend } from "./payment-adapter.js";
 import { hashJson } from "./evidence.js";
 import { normalizeConsumerFeedback, verifyServiceResult } from "./verifier.js";
-import { listPersistentServiceEvents, writePersistentServiceEvent } from "./persistence.js";
+import {
+  claimPersistentProviderId,
+  claimPersistentServiceRegistration,
+  finalizePersistentServiceRegistration,
+  listPersistentProviderClaims,
+  listPersistentRegisteredServices,
+  listPersistentServiceRegistrationClaims,
+  listPersistentServiceEvents,
+  persistenceEnabled,
+  persistentRegistryRequired,
+  releasePersistentServiceRegistration,
+  writePersistentServiceEvent
+} from "./persistence.js";
 import { finalizeManifest, readProviderConfig, writeProviderConfig } from "./provider-config.js";
 import { assertArcUsdcBalance, sendArcUsdcTransfer, isEvmAddress } from "./arc-payment.js";
 import { assertPolicyAllows, readWallet, recordPayment } from "./wallet.js";
@@ -15,8 +27,203 @@ import { registerErc8004AgentIdentity } from "./erc8004.js";
 import { executeProviderConfig } from "./provider-runtime.js";
 import { settlementChain } from "./chains.js";
 import { agentRouterConnectionRequired } from "./agentrouter-connection.js";
+import { requestProviderHttp } from "./provider-http-transport.js";
+import { validateBudgetAmount } from "./budget-normalization.js";
+import { internalProviderValidationHeaders } from "./provider-validation-auth.js";
+
+export { validateBudgetAmount } from "./budget-normalization.js";
+
+const providerRegistrationQueues = new WeakMap();
+const serviceRegistrationLifecycles = new WeakMap();
+const serviceEventRefreshes = new WeakMap();
 
 export function registerService(store, manifest, baseUrl) {
+  const normalized = prepareServiceRegistration(store, manifest, baseUrl);
+  const providerClaim = claimProviderOwnership(store, normalized);
+  if (providerClaim) materializeServiceRegistrationClaim(store, {
+    service_id: normalized.service_id,
+    provider_id: normalized.provider.provider_id,
+    owner_key: providerClaim.owner_key,
+    claimed_at: providerClaim.claimed_at
+  });
+  return commitPreparedServiceRegistration(store, normalized);
+}
+
+// Only bootstrap/migration code may bypass durable registration claims. User,
+// provider, imported, and admin-created services must use registerServiceDurably.
+export function registerTrustedService(store, manifest, baseUrl) {
+  return registerService(store, manifest, baseUrl);
+}
+
+export async function registerServiceDurably(store, manifest, baseUrl, persistence = {}) {
+  const registrationPersistence = {
+    enabled: persistenceEnabled,
+    required: persistentRegistryRequired,
+    claimRegistration: claimPersistentServiceRegistration,
+    finalizeRegistration: finalizePersistentServiceRegistration,
+    releaseRegistration: releasePersistentServiceRegistration,
+    ...persistence
+  };
+  return withProviderRegistrationLock(store, async () => {
+    const normalized = prepareServiceRegistration(store, manifest, baseUrl);
+    const releaseReservation = reserveServiceRegistration(store, normalized.service_id);
+    let registrationClaim = null;
+    let record = null;
+    try {
+      record = createServiceRecord(store, normalized);
+      registrationClaim = await claimProviderOwnershipDurably(store, normalized, registrationPersistence);
+      const committed = commitPreparedServiceRegistration(store, normalized, record);
+      if (registrationClaim) {
+        serviceRegistrationLifecycles.set(committed, { claim: registrationClaim, persistence: registrationPersistence });
+      }
+      return committed;
+    } catch (error) {
+      if (registrationClaim?.claim_state === "pending") {
+        await releaseRegistrationClaim(registrationClaim, registrationPersistence).catch(() => {});
+        cleanupPendingRegistrationClaim(store, registrationClaim);
+      }
+      throw error;
+    } finally {
+      releaseReservation();
+    }
+  });
+}
+
+export async function finalizeServiceRegistration(store, record, { config = null, manifest = null } = {}) {
+  const lifecycle = serviceRegistrationLifecycles.get(record);
+  if (!lifecycle) return null;
+  const { claim, persistence } = lifecycle;
+  if (claim.claim_state !== "pending") {
+    serviceRegistrationLifecycles.delete(record);
+    return claim;
+  }
+  const finalize = persistence?.finalizeRegistration || finalizePersistentServiceRegistration;
+  const enabled = Boolean(typeof persistence?.enabled === "function" ? persistence.enabled() : persistence?.enabled);
+  let finalized;
+  if (enabled) {
+    if (typeof finalize !== "function") throw providerClaimPersistenceUnavailable();
+    try {
+      finalized = await finalize({
+        serviceId: claim.service_id,
+        providerId: claim.provider_id,
+        ownerKey: claim.owner_key,
+        claimToken: claim.claim_token,
+        config: config ? minimalRegistrationPersistenceDocument(config) : null,
+        manifest: manifest ? minimalRegistrationPersistenceDocument(manifest) : null
+      });
+    } catch (error) {
+      if (error?.code === "REGISTRATION_LEASE_LOST") throw error;
+      throw providerClaimPersistenceUnavailable(error);
+    }
+    if (!finalized || String(finalized.claim_state || "active") !== "active") {
+      throw providerClaimPersistenceUnavailable();
+    }
+  } else {
+    finalized = { ...claim, status: "published", claim_state: "active", lease_expires_at: null };
+  }
+  materializeServiceRegistrationClaim(store, finalized);
+  const providerClaim = store.providerClaims?.get(claim.provider_id);
+  if (providerClaim) providerClaim.claim_state = "active";
+  serviceRegistrationLifecycles.delete(record);
+  return finalized;
+}
+
+function minimalRegistrationPersistenceDocument(document = {}) {
+  const next = structuredClone(document || {});
+  const manifest = next.manifest && typeof next.manifest === "object" ? next.manifest : next;
+  const ownerKey = String(manifest?.registration?.owner?.user_key || "").trim();
+  if (manifest?.registration?.owner) {
+    if (ownerKey) manifest.registration.owner = { user_key: ownerKey };
+    else delete manifest.registration.owner;
+  }
+  if (next.source?.auth) delete next.source.auth.secret_value;
+  return next;
+}
+
+export async function abortServiceRegistration(store, record) {
+  if (!record) return false;
+  const lifecycle = serviceRegistrationLifecycles.get(record);
+  if (lifecycle?.claim?.claim_state === "pending") {
+    await releaseRegistrationClaim(lifecycle.claim, lifecycle.persistence).catch(() => {});
+    cleanupPendingRegistrationClaim(store, lifecycle.claim);
+  }
+  serviceRegistrationLifecycles.delete(record);
+  return unregisterService(store, record.manifest?.service_id);
+}
+
+async function releaseRegistrationClaim(claim, persistence = {}) {
+  const enabled = Boolean(typeof persistence.enabled === "function" ? persistence.enabled() : persistence.enabled);
+  if (!enabled) return { status: "released" };
+  const release = persistence.releaseRegistration || releasePersistentServiceRegistration;
+  if (typeof release !== "function") return null;
+  return release({
+    serviceId: claim.service_id,
+    providerId: claim.provider_id,
+    ownerKey: claim.owner_key,
+    claimToken: claim.claim_token
+  });
+}
+
+function cleanupPendingRegistrationClaim(store, claim) {
+  const localService = store.serviceClaims?.get(claim.service_id);
+  if (localService?.claim_state === "pending" && localService.owner_key === claim.owner_key) {
+    store.serviceClaims.delete(claim.service_id);
+  }
+  const providerStillUsed = [...(store.serviceClaims?.values?.() || [])]
+    .some((item) => item.provider_id === claim.provider_id);
+  const providerClaim = store.providerClaims?.get(claim.provider_id);
+  if (!providerStillUsed && providerClaim?.claim_state === "pending" && providerClaim.owner_key === claim.owner_key) {
+    store.providerClaims.delete(claim.provider_id);
+  }
+}
+
+function createServiceRecord(store, normalized) {
+  const record = {
+    manifest: normalized,
+    verification_status: "pending",
+    validation_runs: [],
+    feedback_events: [],
+    quality_events: [],
+    health_checks: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+  const vendorIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(normalized.provider.provider_id));
+  if (vendorIdentity) applyErc8004RegistrationToManifest(record.manifest, vendorIdentity);
+  return record;
+}
+
+function commitPreparedServiceRegistration(store, normalized, record = createServiceRecord(store, normalized)) {
+  store.providers.set(normalized.provider.provider_id, normalized.provider);
+  store.services.set(normalized.service_id, record);
+  return record;
+}
+
+function reserveServiceRegistration(store, serviceId) {
+  store.providerRegistrationReservations ||= new Set();
+  if (store.services.has(serviceId) || store.providerRegistrationReservations.has(serviceId)) {
+    throw serviceAlreadyRegisteredError(serviceId);
+  }
+  store.providerRegistrationReservations.add(serviceId);
+  return () => store.providerRegistrationReservations.delete(serviceId);
+}
+
+async function withProviderRegistrationLock(store, action) {
+  const previous = providerRegistrationQueues.get(store) || Promise.resolve();
+  let release;
+  const turn = new Promise((resolve) => { release = resolve; });
+  const tail = previous.then(() => turn, () => turn);
+  providerRegistrationQueues.set(store, tail);
+  await previous.catch(() => {});
+  try {
+    return await action();
+  } finally {
+    release();
+    if (providerRegistrationQueues.get(store) === tail) providerRegistrationQueues.delete(store);
+  }
+}
+
+export function prepareServiceRegistration(store, manifest, baseUrl) {
   const manifestErrors = validateManifest(manifest);
   if (manifestErrors.length) {
     const error = new Error(`Invalid manifest: ${manifestErrors.join(", ")}`);
@@ -24,10 +231,10 @@ export function registerService(store, manifest, baseUrl) {
     throw error;
   }
   if (store.services.has(manifest.service_id)) {
-    const error = new Error(`Service ${manifest.service_id} is already registered.`);
-    error.statusCode = 409;
-    error.code = "SERVICE_ALREADY_REGISTERED";
-    throw error;
+    throw serviceAlreadyRegisteredError(manifest.service_id);
+  }
+  if (store.providerRegistrationReservations?.has(manifest.service_id)) {
+    throw serviceAlreadyRegisteredError(manifest.service_id);
   }
 
   const normalized = finalizeManifest({
@@ -46,22 +253,254 @@ export function registerService(store, manifest, baseUrl) {
     error.existingServiceId = duplicate.manifest.service_id;
     throw error;
   }
+  return normalized;
+}
 
-  const record = {
-    manifest: normalized,
-    verification_status: "pending",
-    validation_runs: [],
-    feedback_events: [],
-    quality_events: [],
-    health_checks: [],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+function serviceAlreadyRegisteredError(serviceId) {
+  const error = new Error(`Service ${serviceId} is already registered.`);
+  error.statusCode = 409;
+  error.code = "SERVICE_ALREADY_REGISTERED";
+  return error;
+}
+
+export async function claimProviderOwnershipDurably(store, manifest, {
+  enabled = persistenceEnabled,
+  required = persistentRegistryRequired,
+  claimRegistration = claimPersistentServiceRegistration,
+  leaseMs = 5 * 60 * 1000
+} = {}) {
+  const serviceId = String(manifest?.service_id || "").trim();
+  const providerId = String(manifest?.provider?.provider_id || "").trim();
+  const ownerKey = String(manifest?.registration?.owner?.user_key || "").trim();
+  if (!serviceId || !providerId || !ownerKey) return null;
+
+  // Never let a stale/empty durable table overwrite an ownership claim already
+  // established by the services and events hydrated into this process.
+  store.providerClaims ||= new Map();
+  let localClaim = store.providerClaims.get(providerId) || null;
+  if (!localClaim) {
+    localClaim = providerClaimFromExistingServices(store, providerId);
+    if (localClaim) materializeProviderClaim(store, localClaim);
+  }
+  if (localClaim && localClaim.owner_key !== ownerKey) throw providerAlreadyClaimedError(providerId);
+
+  let persistenceIsEnabled;
+  let persistenceIsRequired;
+  try {
+    persistenceIsEnabled = Boolean(typeof enabled === "function" ? enabled() : enabled);
+    persistenceIsRequired = Boolean(typeof required === "function" ? required() : required);
+  } catch (error) {
+    throw providerClaimPersistenceUnavailable(error);
+  }
+  if (!persistenceIsEnabled) {
+    if (persistenceIsRequired) throw persistentRegistryRequiredError();
+    const pending = {
+      status: "claimed",
+      claim_state: "pending",
+      service_id: serviceId,
+      provider_id: providerId,
+      owner_key: ownerKey,
+      claim_token: crypto.randomBytes(32).toString("base64url"),
+      lease_expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      claimed_at: new Date().toISOString()
+    };
+    materializeServiceRegistrationClaim(store, pending);
+    return pending;
+  }
+
+  let durableRegistration;
+  try {
+    durableRegistration = await claimRegistration({ serviceId, providerId, ownerKey, leaseMs });
+  } catch (error) {
+    throw providerClaimPersistenceUnavailable(error);
+  }
+  if (!durableRegistration) throw providerClaimPersistenceUnavailable();
+  if (durableRegistration.status === "provider_conflict") {
+    throw providerAlreadyClaimedError(providerId);
+  }
+  if (durableRegistration.status === "service_conflict") throw serviceAlreadyRegisteredError(serviceId);
+  if (
+    String(durableRegistration.service_id || "") !== serviceId
+    || String(durableRegistration.provider_id || "") !== providerId
+    || String(durableRegistration.owner_key || "") !== ownerKey
+  ) {
+    throw providerClaimPersistenceUnavailable();
+  }
+
+  materializeServiceRegistrationClaim(store, durableRegistration);
+  return durableRegistration;
+}
+
+export function claimProviderOwnership(store, manifest, { persist = true } = {}) {
+  const providerId = String(manifest?.provider?.provider_id || "").trim();
+  const owner = manifest?.registration?.owner;
+  const ownerKey = String(owner?.user_key || "").trim();
+  if (!providerId || !ownerKey) return null;
+
+  store.providerClaims ||= new Map();
+  let existing = store.providerClaims.get(providerId) || null;
+  if (!existing) {
+    existing = providerClaimFromExistingServices(store, providerId);
+    if (existing) materializeProviderClaim(store, existing, { persist });
+  }
+  if (existing) {
+    if (existing.owner_key !== ownerKey) throw providerAlreadyClaimedError(providerId);
+    return existing;
+  }
+
+  const claim = {
+    event_version: "agent_router_provider_claim_v1",
+    provider_id: providerId,
+    owner_key: ownerKey,
+    owner: {
+      user_key: ownerKey,
+      provider: String(owner.provider || ""),
+      user_id: String(owner.user_id || ""),
+      handle: String(owner.handle || ""),
+      email: String(owner.email || ""),
+      name: String(owner.name || "")
+    },
+    claimed_at: new Date().toISOString()
   };
-  store.providers.set(normalized.provider.provider_id, normalized.provider);
-  store.services.set(normalized.service_id, record);
-  const vendorIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(normalized.provider.provider_id));
-  if (vendorIdentity) applyErc8004RegistrationToManifest(record.manifest, vendorIdentity);
-  return record;
+  return materializeProviderClaim(store, claim, { persist });
+}
+
+function providerClaimFromExistingServices(store, providerId) {
+  const owners = new Map();
+  for (const record of store.services.values()) {
+    if (record.manifest?.provider?.provider_id !== providerId) continue;
+    const owner = record.manifest?.registration?.owner;
+    const ownerKey = String(owner?.user_key || "").trim();
+    if (ownerKey) owners.set(ownerKey, owner);
+  }
+  if (!owners.size) return null;
+  if (owners.size > 1) throw providerAlreadyClaimedError(providerId);
+  const [ownerKey, owner] = owners.entries().next().value;
+  return {
+    event_version: "agent_router_provider_claim_v1",
+    provider_id: providerId,
+    owner_key: ownerKey,
+    owner: {
+      user_key: ownerKey,
+      provider: String(owner.provider || ""),
+      user_id: String(owner.user_id || ""),
+      handle: String(owner.handle || ""),
+      email: String(owner.email || ""),
+      name: String(owner.name || "")
+    },
+    claimed_at: String(owner.created_at || new Date().toISOString())
+  };
+}
+
+function materializeProviderClaim(store, claim, { persist = false } = {}) {
+  const providerId = String(claim?.provider_id || "").trim();
+  const ownerKey = String(claim?.owner_key || claim?.owner?.user_key || "").trim();
+  if (!providerId || !ownerKey) return null;
+  store.providerClaims ||= new Map();
+  const existing = store.providerClaims.get(providerId);
+  if (existing) {
+    if (existing.owner_key !== ownerKey) throw providerAlreadyClaimedError(providerId);
+    if (claim.claim_state === "active") existing.claim_state = "active";
+    return existing;
+  }
+  const normalized = {
+    ...claim,
+    event_version: "agent_router_provider_claim_v1",
+    provider_id: providerId,
+    owner_key: ownerKey,
+    owner: {
+      ...(claim.owner || {}),
+      user_key: ownerKey
+    },
+    claimed_at: claim.claimed_at || claim.created_at || new Date().toISOString()
+  };
+  store.providerClaims.set(providerId, normalized);
+  if (persist) persistProviderClaim(normalized);
+  return normalized;
+}
+
+function materializeServiceRegistrationClaim(store, claim) {
+  const serviceId = String(claim?.service_id || "").trim();
+  const providerId = String(claim?.provider_id || "").trim();
+  const ownerKey = String(claim?.owner_key || "").trim();
+  if (!serviceId || !providerId || !ownerKey) return null;
+  store.serviceClaims ||= new Map();
+  const existing = store.serviceClaims.get(serviceId);
+  if (existing) {
+    if (existing.provider_id !== providerId || existing.owner_key !== ownerKey) {
+      throw serviceAlreadyRegisteredError(serviceId);
+    }
+    existing.claim_state = claim.claim_state || existing.claim_state || "active";
+    existing.lease_expires_at = claim.lease_expires_at || null;
+    return existing;
+  }
+  const record = store.services?.get(serviceId);
+  if (record) {
+    const recordProviderId = String(record.manifest?.provider?.provider_id || "").trim();
+    const recordOwnerKey = String(record.manifest?.registration?.owner?.user_key || "").trim();
+    if (recordProviderId && recordProviderId !== providerId) throw serviceAlreadyRegisteredError(serviceId);
+    if (recordOwnerKey && recordOwnerKey !== ownerKey) throw serviceAlreadyRegisteredError(serviceId);
+  }
+  materializeProviderClaim(store, {
+    event_version: "agent_router_provider_claim_v1",
+    provider_id: providerId,
+    owner_key: ownerKey,
+    claim_state: claim.claim_state || "active",
+    claimed_at: claim.claimed_at || new Date().toISOString()
+  });
+  const normalized = {
+    service_id: serviceId,
+    provider_id: providerId,
+    owner_key: ownerKey,
+    claim_state: claim.claim_state || "active",
+    lease_expires_at: claim.lease_expires_at || null,
+    claimed_at: claim.claimed_at || new Date().toISOString()
+  };
+  store.serviceClaims.set(serviceId, normalized);
+  return normalized;
+}
+
+function persistProviderClaim(claim) {
+  const durableEvent = {
+    event_version: "agent_router_provider_claim_v1",
+    provider_id: claim.provider_id,
+    owner_key: claim.owner_key,
+    claimed_at: claim.claimed_at || new Date().toISOString()
+  };
+  void writePersistentServiceEvent({
+    eventType: "provider_claim",
+    serviceId: `provider:${claim.provider_id}`,
+    requestId: claim.provider_id,
+    event: durableEvent
+  }).catch((error) => {
+    console.error("[provider-claim] persistence failed", JSON.stringify({
+      provider_id: claim.provider_id,
+      code: error.code || "PERSISTENCE_FAILED",
+      message: error.message
+    }));
+  });
+}
+
+function providerAlreadyClaimedError(providerId) {
+  const error = new Error(`Provider ID ${providerId} is already claimed by another account.`);
+  error.statusCode = 409;
+  error.code = "PROVIDER_ID_ALREADY_CLAIMED";
+  return error;
+}
+
+function providerClaimPersistenceUnavailable(cause) {
+  const error = new Error("The durable provider ownership registry is temporarily unavailable.");
+  error.statusCode = 503;
+  error.code = "PROVIDER_CLAIM_PERSISTENCE_UNAVAILABLE";
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function persistentRegistryRequiredError() {
+  const error = new Error("Persistent registry storage is required before provider services can be registered on this deployment.");
+  error.statusCode = 503;
+  error.code = "PERSISTENT_REGISTRY_REQUIRED";
+  return error;
 }
 
 export function findDuplicateService(store, manifest) {
@@ -80,6 +519,7 @@ export function unregisterService(store, serviceId) {
   const record = store.services.get(serviceId);
   if (!record) return false;
   store.services.delete(serviceId);
+  store.serviceClaims?.delete(serviceId);
   const providerId = record.manifest?.provider?.provider_id;
   if (providerId) {
     const providerStillUsed = [...store.services.values()].some((item) => item.manifest?.provider?.provider_id === providerId);
@@ -129,7 +569,11 @@ export async function updateServicePayoutWallet(store, serviceId, payoutAddress)
   };
 }
 
-export async function registerServiceErc8004Identity(store, serviceId, { baseUrl = "", metadataUri = "" } = {}) {
+export async function registerServiceErc8004Identity(store, serviceId, {
+  baseUrl = "",
+  metadataUri = "",
+  writeEvent = writePersistentServiceEvent
+} = {}) {
   const record = store.services.get(serviceId);
   if (!record) {
     const error = new Error(`Service ${serviceId} was not found.`);
@@ -166,7 +610,20 @@ export async function registerServiceErc8004Identity(store, serviceId, { baseUrl
     throw error;
   }
 
-  applyErc8004VendorIdentity(store, providerId, registration);
+  const identityEvent = {
+    event_version: "agent_router_erc8004_vendor_identity_v1",
+    provider_id: providerId,
+    ...registration,
+    created_at: new Date().toISOString()
+  };
+  await writeEvent({
+    eventType: "erc8004_vendor_identity",
+    serviceId: `vendor:${providerId}`,
+    requestId: registration.tx_hash || registration.agent_id || null,
+    event: identityEvent
+  });
+
+  applyErc8004VendorIdentity(store, providerId, identityEvent);
   record.updated_at = new Date().toISOString();
   if (record.manifest.provider?.provider_id) {
     store.providers.set(record.manifest.provider.provider_id, record.manifest.provider);
@@ -181,18 +638,6 @@ export async function registerServiceErc8004Identity(store, serviceId, { baseUrl
   } catch (error) {
     if (error?.code && error.code !== "ENOENT") throw error;
   }
-
-  await writePersistentServiceEvent({
-    eventType: "erc8004_vendor_identity",
-    serviceId: `vendor:${providerId}`,
-    requestId: registration.tx_hash || registration.agent_id || null,
-    event: {
-      event_version: "agent_router_erc8004_vendor_identity_v1",
-      provider_id: providerId,
-      ...registration,
-      created_at: new Date().toISOString()
-    }
-  });
 
   return {
     ok: true,
@@ -270,54 +715,94 @@ function normalizeManifestCapabilities(manifest) {
   return [...new Set([...declared, ...inferred])];
 }
 
-export async function validateService(store, serviceId) {
+export async function validateService(store, serviceId, transportOptions = {}) {
   const record = store.services.get(serviceId);
   if (!record) return { ok: false, error: "SERVICE_NOT_FOUND" };
 
   const manifest = record.manifest;
   const requestBody = manifest.sample_request || {};
-  const config = await readProviderConfig(serviceId).catch(() => null);
-  if (config) {
-    const result = await executeProviderConfig(config, requestBody);
-    const originBinding = await verifyOriginBinding(manifest);
-    return storeProviderValidationResult({ record, serviceId, status: result.status, responseBody: result.body, originBinding });
-  }
+  const config = transportOptions.providerConfig
+    || await readProviderConfig(serviceId).catch(() => null);
+  try {
+    if (config) {
+      const result = await executeProviderConfig(config, requestBody, {
+        fetchImpl: requestProviderHttp,
+        transportOptions
+      });
+      const originBinding = await verifyOriginBinding(manifest, transportOptions);
+      return storeProviderValidationResult({ record, serviceId, status: result.status, responseBody: result.body, originBinding });
+    }
 
-  const firstResponse = await fetch(manifest.endpoint.url, {
-    method: manifest.endpoint.method || "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(requestBody)
-  });
+    const validationHeaders = providerValidationHeaders(manifest.endpoint.url, transportOptions);
+    const firstResponse = await requestProviderHttp(manifest.endpoint.url, {
+      method: manifest.endpoint.method || "POST",
+      headers: { "content-type": "application/json", ...validationHeaders },
+      body: JSON.stringify(requestBody)
+    }, transportOptions);
 
-  if (firstResponse.status !== 402) {
+    if (firstResponse.status !== 402) {
+      return storeValidation(record, {
+        ok: false,
+        service_id: serviceId,
+        error: "EXPECTED_402_PAYMENT_REQUIRED",
+        status: firstResponse.status,
+        created_at: new Date().toISOString()
+      });
+    }
+
+    const paymentChallenge = await firstResponse.json();
+    const proof = await createArcProofForProviderChallenge({
+      serviceId,
+      manifest,
+      payment: paymentChallenge.payment,
+      consumerId: "validator"
+    });
+
+    const paidResponse = await requestProviderHttp(manifest.endpoint.url, {
+      method: manifest.endpoint.method || "POST",
+      headers: {
+        "content-type": "application/json",
+        ...validationHeaders,
+        "x-payment": proof
+      },
+      body: JSON.stringify(requestBody)
+    }, transportOptions);
+    const responseBody = await paidResponse.json();
+    const originBinding = await verifyOriginBinding(manifest, transportOptions);
+    return storeProviderValidationResult({ record, serviceId, status: paidResponse.status, responseBody, originBinding });
+  } catch (error) {
+    if (!String(error?.code || "").startsWith("PROVIDER_HTTP_")) throw error;
     return storeValidation(record, {
       ok: false,
       service_id: serviceId,
-      error: "EXPECTED_402_PAYMENT_REQUIRED",
-      status: firstResponse.status,
+      error: error.code,
+      message: error.message,
+      status: error.statusCode || 502,
+      retryable: Boolean(error.retryable),
       created_at: new Date().toISOString()
     });
   }
+}
 
-  const paymentChallenge = await firstResponse.json();
-  const proof = await createArcProofForProviderChallenge({
-    serviceId,
-    manifest,
-    payment: paymentChallenge.payment,
-    consumerId: "validator"
+function providerValidationHeaders(value, transportOptions = {}) {
+  let endpoint;
+  try {
+    endpoint = new URL(String(value || ""));
+  } catch {
+    return {};
+  }
+  const trusted = (transportOptions.trustedOrigins || []).some((entry) => {
+    let origin;
+    try {
+      origin = new URL(String(entry?.origin || entry)).origin;
+    } catch {
+      return false;
+    }
+    if (origin !== endpoint.origin) return false;
+    const prefixes = Array.isArray(entry?.pathPrefixes) ? entry.pathPrefixes : [];
+    return prefixes.some((prefix) => endpoint.pathname.startsWith(String(prefix || "")));
   });
-
-  const paidResponse = await fetch(manifest.endpoint.url, {
-    method: manifest.endpoint.method || "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-payment": proof
-    },
-    body: JSON.stringify(requestBody)
-  });
-  const responseBody = await paidResponse.json();
-  const originBinding = await verifyOriginBinding(manifest);
-  return storeProviderValidationResult({ record, serviceId, status: paidResponse.status, responseBody, originBinding });
+  return trusted ? internalProviderValidationHeaders() : {};
 }
 
 function storeProviderValidationResult({ record, serviceId, status, responseBody, originBinding = null }) {
@@ -341,7 +826,7 @@ function storeProviderValidationResult({ record, serviceId, status, responseBody
   });
 }
 
-async function verifyOriginBinding(manifest) {
+async function verifyOriginBinding(manifest, transportOptions = {}) {
   const binding = manifest?.origin_binding;
   if (!binding?.well_known_url) return null;
   const result = {
@@ -353,10 +838,16 @@ async function verifyOriginBinding(manifest) {
     ok: false,
     checked_at: new Date().toISOString()
   };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
   try {
-    const response = await fetch(binding.well_known_url, { signal: controller.signal });
+    const response = await requestProviderHttp(binding.well_known_url, {
+      method: "GET",
+      headers: { accept: "application/json" }
+    }, {
+      ...transportOptions,
+      trustedOrigins: [],
+      timeoutMs: Math.min(Number(transportOptions.timeoutMs) || 1500, 1500),
+      maxResponseBytes: Math.min(Number(transportOptions.maxResponseBytes) || 64 * 1024, 64 * 1024)
+    });
     result.http_status = response.status;
     if (response.status === 404) return result;
     if (!response.ok) {
@@ -378,11 +869,14 @@ async function verifyOriginBinding(manifest) {
     result.ok = directMatch || serviceMatch;
     return result;
   } catch (error) {
-    result.status = error?.name === "AbortError" ? "timeout" : "unavailable";
+    result.status = error?.code === "PROVIDER_HTTP_TIMEOUT"
+      ? "timeout"
+      : error?.code === "PROVIDER_HTTP_UNSAFE_TARGET"
+        ? "blocked"
+        : "unavailable";
+    result.error_code = error?.code || "ORIGIN_BINDING_UNAVAILABLE";
     result.error = error.message;
     return result;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -392,7 +886,9 @@ function hashPayload(payload) {
 
 export function searchServices(store, { query = "", capabilities = [], maxPrice, verifiedOnly = false } = {}) {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const max = maxPrice == null || maxPrice === "" ? null : Number(maxPrice);
+  const maxValidation = validateBudgetAmount(maxPrice, { field: "max_price" });
+  if (!maxValidation.ok) return [];
+  const max = maxValidation.present ? maxValidation.amount : null;
   const results = [];
 
   for (const record of store.services.values()) {
@@ -438,8 +934,37 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
   const record = store.services.get(serviceId);
   if (!record) return { statusCode: 404, body: { error: { code: "SERVICE_NOT_FOUND" } } };
 
+  if (record.verification_status !== "verified") {
+    return {
+      statusCode: 409,
+      body: {
+        error: {
+          code: "SERVICE_NOT_VERIFIED",
+          message: "Only a service with a currently verified endpoint can be invoked.",
+          verification_status: record.verification_status || "unknown",
+          retryable: false
+        }
+      }
+    };
+  }
+
   const manifest = record.manifest;
-  if (budget.max_amount != null && Number(manifest.pricing.amount) > Number(budget.max_amount)) {
+  const rawMaxAmount = budget.max_amount ?? budget.max_price_usdc ?? budget.max_price;
+  const budgetValidation = validateBudgetAmount(rawMaxAmount, { field: "budget.max_amount" });
+  if (!budgetValidation.ok) {
+    return {
+      statusCode: 422,
+      body: {
+        error: {
+          code: budgetValidation.code,
+          message: budgetValidation.message,
+          field: budgetValidation.field,
+          retryable: false
+        }
+      }
+    };
+  }
+  if (budgetValidation.present && Number(manifest.pricing.amount) > budgetValidation.amount) {
     return {
       statusCode: 402,
       body: {
@@ -456,21 +981,87 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
   let body;
   let paymentTx = null;
   let settlementReceipt;
-  if (currentPaymentBackend() === "credits") {
+  const paymentBackend = currentPaymentBackend();
+  if (paymentBackend === "credits") {
     if (!options.consumerApiKey) {
       return {
         statusCode: 401,
         body: agentRouterConnectionRequired()
       };
     }
-    paidResponse = await fetch(manifest.endpoint.url, {
-      method: manifest.endpoint.method || "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-agentrouter-api-key": options.consumerApiKey
-      },
-      body: JSON.stringify(input)
-    });
+    if (!isPlatformManagedCreditsEndpoint(manifest.endpoint.url)) {
+      return {
+        statusCode: 409,
+        body: {
+          error: {
+            code: "CREDITS_ENDPOINT_NOT_PLATFORM_MANAGED",
+            message: "Platform credits can only be presented to an AgentRouter-managed provider runtime endpoint.",
+            retryable: false
+          }
+        }
+      };
+    }
+    try {
+      paidResponse = await requestProviderHttp(manifest.endpoint.url, {
+        method: manifest.endpoint.method || "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agentrouter-api-key": options.consumerApiKey
+        },
+        body: JSON.stringify(input),
+      }, creditsProviderTransportOptions(manifest.endpoint.url, options.providerTransportOptions));
+    } catch (error) {
+      if (error?.code === "PROVIDER_HTTP_REDIRECT_LIMIT" || error?.code === "PROVIDER_HTTP_INVALID_REDIRECT") {
+        return {
+          statusCode: 502,
+          body: {
+            error: {
+              code: "CREDITS_PROVIDER_REDIRECT_BLOCKED",
+              message: "The AgentRouter-managed provider runtime redirected the paid call; credentials were not sent to the redirect target.",
+              retryable: false,
+              cause_code: error.code
+            }
+          }
+        };
+      }
+      if (error?.code === "PROVIDER_HTTP_RESPONSE_TOO_LARGE") {
+        return {
+          statusCode: 502,
+          body: {
+            error: {
+              code: "CREDITS_PROVIDER_RESPONSE_TOO_LARGE",
+              message: "The AgentRouter-managed provider runtime returned a response larger than the safe limit.",
+              retryable: false,
+              cause_code: error.code
+            }
+          }
+        };
+      }
+      return {
+        statusCode: 503,
+        body: {
+          error: {
+            code: "CREDITS_PROVIDER_UNAVAILABLE",
+            message: "The AgentRouter-managed provider runtime is unavailable before payment.",
+            retryable: true,
+            cause: error.message,
+            cause_code: error?.code || "PROVIDER_HTTP_NETWORK_ERROR"
+          }
+        }
+      };
+    }
+    if (paidResponse.status >= 300 && paidResponse.status < 400) {
+      return {
+        statusCode: 502,
+        body: {
+          error: {
+            code: "CREDITS_PROVIDER_REDIRECT_BLOCKED",
+            message: "The AgentRouter-managed provider runtime redirected the paid call; credentials were not sent to the redirect target.",
+            retryable: false
+          }
+        }
+      };
+    }
     body = await paidResponse.json().catch(() => ({}));
     const billing = body?.metadata?.billing || {};
     paymentTx = billing.ledger_entry_id ? `credits:${billing.ledger_entry_id}` : null;
@@ -489,11 +1080,36 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
       created_at: new Date().toISOString()
     };
   } else {
-    const firstResponse = await fetch(manifest.endpoint.url, {
-      method: manifest.endpoint.method || "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input)
-    });
+    const transportOptions = paidProviderTransportOptions(manifest.endpoint.url);
+    let firstResponse;
+    try {
+      firstResponse = await requestProviderHttp(manifest.endpoint.url, {
+        method: manifest.endpoint.method || "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      }, transportOptions);
+    } catch (error) {
+      const feedback = await recordOperationalFailure(store, record, {
+        input,
+        statusCode: error.statusCode || 502,
+        error: {
+          code: error.code || "PROVIDER_UNAVAILABLE_BEFORE_PAYMENT",
+          message: error.message
+        },
+        started
+      });
+      return {
+        statusCode: error.statusCode === 422 ? 422 : 503,
+        body: {
+          error: {
+            code: error.code || "PROVIDER_UNAVAILABLE_BEFORE_PAYMENT",
+            message: "Provider endpoint failed the safe network boundary before payment.",
+            retryable: Boolean(error.retryable)
+          },
+          feedback
+        }
+      };
+    }
     if (firstResponse.status !== 402) {
       let providerPayload = null;
       try {
@@ -537,14 +1153,28 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
       payment: challenge.payment,
       consumerId: "agentrouter_consumer"
     });
-    paidResponse = await fetch(manifest.endpoint.url, {
-      method: manifest.endpoint.method || "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-payment": proof
-      },
-      body: JSON.stringify(input)
-    });
+    try {
+      paidResponse = await requestProviderHttp(manifest.endpoint.url, {
+        method: manifest.endpoint.method || "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-payment": proof
+        },
+        body: JSON.stringify(input)
+      }, transportOptions);
+    } catch (error) {
+      return {
+        statusCode: 502,
+        body: {
+          error: {
+            code: error.code || "PROVIDER_DELIVERY_FAILED_AFTER_PAYMENT",
+            message: "The paid provider response failed the safe network boundary.",
+            retryable: Boolean(error.retryable),
+            payment_may_have_settled: true
+          }
+        }
+      };
+    }
     body = await paidResponse.json();
     paymentTx = decodePaymentTx(proof);
     settlementReceipt = createSettlementReceipt({
@@ -568,11 +1198,11 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
         }
       ]
     : resultErrors;
-  const creditBilling = currentPaymentBackend() === "credits" ? body?.metadata?.billing || {} : null;
-  const paymentCollected = currentPaymentBackend() === "credits"
+  const creditBilling = paymentBackend === "credits" ? body?.metadata?.billing || {} : null;
+  const paymentCollected = paymentBackend === "credits"
     ? creditBilling?.billing_status === "charged"
     : true;
-  const billingStatus = currentPaymentBackend() === "credits"
+  const billingStatus = paymentBackend === "credits"
     ? creditBilling?.billing_status || "not_charged"
     : paidResponse.ok && schemaValid && !qualityErrors.length ? "charged_success" : "charged_provider_error";
   const feedback = {
@@ -582,7 +1212,7 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
     provider_id: manifest.provider.provider_id,
     consumer_id: options.ownerKey || "agentrouter_consumer",
     invocation_actor_key: options.ownerKey || undefined,
-    payment_backend: currentPaymentBackend(),
+    payment_backend: paymentBackend,
     payment_tx: paymentTx,
     payment_collected: paymentCollected,
     billing_status: billingStatus,
@@ -637,6 +1267,66 @@ export async function invokePaidService(store, serviceId, input, budget = {}, op
       result: body,
       feedback
     }
+  };
+}
+
+function isPlatformManagedCreditsEndpoint(value) {
+  let endpoint;
+  try {
+    endpoint = new URL(String(value || ""));
+  } catch {
+    return false;
+  }
+  if (!endpoint.pathname.startsWith("/provider/")) return false;
+  const loopback = ["127.0.0.1", "localhost", "::1"].includes(endpoint.hostname.toLowerCase());
+  if (loopback && process.env.NODE_ENV !== "production") return true;
+  if (endpoint.protocol !== "https:") return false;
+
+  const trustedOrigins = new Set(["https://agentrouter.network"]);
+  for (const configured of [process.env.AGENT_ROUTER_PUBLIC_URL, process.env.ADN_PUBLIC_BASE_URL]) {
+    try {
+      if (configured) trustedOrigins.add(new URL(configured).origin);
+    } catch {}
+  }
+  const renderHostname = String(process.env.RENDER_EXTERNAL_HOSTNAME || "").trim();
+  if (renderHostname) trustedOrigins.add(`https://${renderHostname}`);
+  return trustedOrigins.has(endpoint.origin);
+}
+
+function paidProviderTransportOptions(value) {
+  if (!isPlatformManagedCreditsEndpoint(value)) return {};
+  try {
+    const endpoint = new URL(String(value));
+    const loopback = ["127.0.0.1", "localhost", "::1"].includes(endpoint.hostname.toLowerCase());
+    if (!loopback) return {};
+    return {
+      trustedOrigins: [{
+        origin: endpoint.origin,
+        pathPrefixes: ["/provider/"]
+      }]
+    };
+  } catch {
+    return {};
+  }
+}
+
+function creditsProviderTransportOptions(value, overrides = {}) {
+  const injectable = {};
+  for (const key of [
+    "timeoutMs",
+    "maxRequestBytes",
+    "maxResponseBytes",
+    "lookup",
+    "requestHop",
+    "httpRequest",
+    "httpsRequest"
+  ]) {
+    if (overrides?.[key] !== undefined) injectable[key] = overrides[key];
+  }
+  return {
+    ...injectable,
+    ...paidProviderTransportOptions(value),
+    maxRedirects: 0
   };
 }
 
@@ -729,10 +1419,10 @@ async function createArcProofForProviderChallenge({ serviceId, manifest, payment
   return proof;
 }
 
-export async function runServiceHealthCheck(store, serviceId) {
+export async function runServiceHealthCheck(store, serviceId, transportOptions = {}) {
   const record = store.services.get(serviceId);
   if (!record) return { ok: false, error: "SERVICE_NOT_FOUND" };
-  const validation = await validateService(store, serviceId);
+  const validation = await validateService(store, serviceId, transportOptions);
   record.health_checks = record.health_checks || [];
   const healthEvent = {
     event_version: "agent_service_health_check_v1",
@@ -1068,15 +1758,192 @@ function assertFeedbackActor(event, actorKey) {
   throw error;
 }
 
-export async function hydratePersistentServiceEvents(store) {
-  const events = await listPersistentServiceEvents();
-  return hydrateServiceEventRows(store, events);
+export async function hydratePersistentServiceEvents(store, {
+  enabled = persistenceEnabled,
+  listClaims = listPersistentProviderClaims,
+  listRegistrations = listPersistentRegisteredServices,
+  listServiceClaims = listPersistentServiceRegistrationClaims,
+  listEvents = listPersistentServiceEvents,
+  claim = claimPersistentProviderId,
+  claimRegistration = claimPersistentServiceRegistration
+} = {}) {
+  const durableRegistrations = await listRegistrations();
+  for (const manifest of durableRegistrations) {
+    if (!manifest?.service_id || store.services.has(manifest.service_id)) continue;
+    registerTrustedService(store, manifest, "");
+  }
+  materializeProviderClaimsFromServices(store);
+  const durableClaims = await listClaims();
+  for (const claim of durableClaims) materializeProviderClaim(store, claim);
+  const durableServiceClaims = await listServiceClaims();
+  for (const serviceClaim of durableServiceClaims) materializeServiceRegistrationClaim(store, serviceClaim);
+  const events = await listEvents();
+  const result = await hydrateServiceEventRows(store, events);
+  const cursor = serviceEventHighWaterCursor(events);
+  if (cursor) store.serviceEventCursor = cursor;
+  store.serviceEventSync = {
+    ok: true,
+    status: "fresh",
+    stale: false,
+    loaded: events.length,
+    cursor: store.serviceEventCursor || null,
+    last_success_at: new Date().toISOString()
+  };
+
+  // One-time compatibility migration for installations that already have
+  // provider_claim audit events/configs but predate the authoritative table.
+  const persistenceIsEnabled = Boolean(typeof enabled === "function" ? enabled() : enabled);
+  if (persistenceIsEnabled) {
+    const providersWithServices = new Set();
+    for (const record of store.services?.values?.() || []) {
+      const serviceId = String(record.manifest?.service_id || "").trim();
+      const providerId = String(record.manifest?.provider?.provider_id || "").trim();
+      const ownerKey = String(record.manifest?.registration?.owner?.user_key || "").trim();
+      if (!serviceId || !providerId || !ownerKey) continue;
+      const durable = await claimRegistration({ serviceId, providerId, ownerKey });
+      if (!durable || durable.status === "provider_conflict") throw providerAlreadyClaimedError(providerId);
+      if (durable.status === "service_conflict") throw serviceAlreadyRegisteredError(serviceId);
+      materializeServiceRegistrationClaim(store, durable);
+      providersWithServices.add(providerId);
+    }
+    for (const localClaim of store.providerClaims?.values?.() || []) {
+      if (providersWithServices.has(localClaim.provider_id)) continue;
+      const durable = await claim({
+        providerId: localClaim.provider_id,
+        ownerKey: localClaim.owner_key
+      });
+      if (!durable || durable.status === "conflict" || durable.owner_key !== localClaim.owner_key) {
+        throw providerAlreadyClaimedError(localClaim.provider_id);
+      }
+    }
+  }
+  return {
+    ...result,
+    registered_services: durableRegistrations.length,
+    provider_claims: store.providerClaims?.size || 0,
+    service_claims: store.serviceClaims?.size || 0
+  };
+}
+
+/**
+ * Incrementally reduce durable events committed since this process's last
+ * (created_at,event_id) cursor. Concurrent requests in one process share a
+ * single refresh, while separate instances independently converge on the same
+ * ordered event stream.
+ */
+export async function refreshPersistentServiceEvents(store, {
+  enabled = persistenceEnabled,
+  listEvents = listPersistentServiceEvents
+} = {}) {
+  const persistenceIsEnabled = Boolean(typeof enabled === "function" ? enabled() : enabled);
+  if (!persistenceIsEnabled) {
+    const disabled = {
+      ok: true,
+      status: "disabled",
+      stale: false,
+      loaded: 0,
+      cursor: store.serviceEventCursor || null
+    };
+    store.serviceEventSync = disabled;
+    return disabled;
+  }
+
+  const pending = serviceEventRefreshes.get(store);
+  if (pending) return pending;
+
+  const refresh = (async () => {
+    const previousCursor = store.serviceEventCursor || null;
+    try {
+      const events = await listEvents({
+        afterEventId: previousCursor?.event_id || null
+      });
+      if (!Array.isArray(events)) {
+        const error = new Error("Persistent service-event refresh returned an invalid event page.");
+        error.code = "LIVE_STATE_REFRESH_INVALID_RESULT";
+        throw error;
+      }
+      const nextCursor = serviceEventHighWaterCursor(events);
+      if (events.length > 0 && !nextCursor) {
+        const error = new Error("Persistent service-event refresh did not return a durable keyset cursor.");
+        error.code = "LIVE_STATE_REFRESH_CURSOR_MISSING";
+        throw error;
+      }
+      await hydrateServiceEventRows(store, events);
+      if (nextCursor) store.serviceEventCursor = nextCursor;
+      const success = {
+        ok: true,
+        status: "fresh",
+        stale: false,
+        loaded: events.length,
+        cursor: store.serviceEventCursor || null,
+        last_success_at: new Date().toISOString()
+      };
+      store.serviceEventSync = success;
+      return success;
+    } catch (error) {
+      const degraded = {
+        ok: false,
+        status: "degraded",
+        stale: true,
+        loaded: 0,
+        cursor: previousCursor,
+        last_success_at: store.serviceEventSync?.last_success_at || null,
+        checked_at: new Date().toISOString(),
+        error: {
+          code: error.code || "LIVE_STATE_REFRESH_FAILED",
+          message: error.message || "Persistent live-state refresh failed."
+        }
+      };
+      store.serviceEventSync = degraded;
+      return degraded;
+    }
+  })();
+  serviceEventRefreshes.set(store, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (serviceEventRefreshes.get(store) === refresh) serviceEventRefreshes.delete(store);
+  }
+}
+
+function serviceEventCursorFromRow(row) {
+  const createdAt = String(row?.created_at_cursor || row?.created_at || "").trim();
+  const eventId = String(row?.event_id || "").trim();
+  return createdAt && eventId ? { created_at: createdAt, event_id: eventId } : null;
+}
+
+function serviceEventHighWaterCursor(events = []) {
+  let highWater = null;
+  for (const row of events) {
+    const eventId = String(row?.event_id || "").trim();
+    if (!/^\d+$/.test(eventId)) continue;
+    if (!highWater || BigInt(eventId) > BigInt(highWater.event_id)) highWater = row;
+  }
+  return serviceEventCursorFromRow(highWater);
+}
+
+function materializeProviderClaimsFromServices(store) {
+  const providerIds = new Set();
+  for (const record of store.services?.values?.() || []) {
+    const providerId = String(record.manifest?.provider?.provider_id || "").trim();
+    if (providerId) providerIds.add(providerId);
+  }
+  for (const providerId of providerIds) {
+    const claim = providerClaimFromExistingServices(store, providerId);
+    if (claim) materializeProviderClaim(store, claim);
+  }
 }
 
 export async function hydrateServiceEventRows(store, events = []) {
   for (const row of events) {
     const event = row.event;
-    if (row.event_type === "invocation_feedback_grant") {
+    if (row.event_type === "provider_claim") {
+      if (event?.event_version === "agent_router_provider_claim_v1") {
+        materializeProviderClaim(store, event);
+      }
+      continue;
+    }
+    if (row.event_type === "invocation_feedback_grant" || row.event_type === "invocation_feedback_grant_rotation") {
       store.feedbackGrants ||= new Map();
       store.feedbackGrants.set(row.request_id, event);
       continue;
@@ -1093,6 +1960,17 @@ export async function hydrateServiceEventRows(store, events = []) {
     if (row.event_type === "issued_quote") {
       store.issuedQuotes ||= new Map();
       if (Number(event.expires_at || 0) > Date.now()) store.issuedQuotes.set(event.quote_id, event);
+      continue;
+    }
+    if (row.event_type === "erc8004_hire_invocation") {
+      store.feedbackEvents ||= [];
+      store.invocationLogs ||= [];
+      if (!store.feedbackEvents.some((item) => item.request_id === event.request_id && item.service_id === event.service_id)) {
+        store.feedbackEvents.push(event);
+      }
+      if (!store.invocationLogs.some((item) => item.request_id === event.request_id && item.service_id === event.service_id)) {
+        store.invocationLogs.push(event);
+      }
       continue;
     }
     if (row.event_type === "operational_feedback") {
@@ -1304,18 +2182,41 @@ function createQualityEvent({
   };
 }
 
-export async function loadProviderConfigs(store, baseUrl, { validate = true } = {}) {
+export async function loadProviderConfigs(store, baseUrl, {
+  validate = true,
+  force = false,
+  listConfigs = null
+} = {}) {
   const now = Date.now();
-  if (!validate && store.providerConfigsLoadedAt && now - store.providerConfigsLoadedAt < 30_000) {
+  if (!validate && !force && store.providerConfigsLoadedAt && now - store.providerConfigsLoadedAt < 30_000) {
     return [];
   }
-  const { listProviderConfigs } = await import("./provider-config.js");
-  const configs = await listProviderConfigs();
+  let configs;
+  if (typeof listConfigs === "function") {
+    configs = await listConfigs();
+  } else {
+    const { listProviderConfigs } = await import("./provider-config.js");
+    configs = await listProviderConfigs({
+      force: force || !store.providerConfigsLoadedAt
+    });
+  }
   const loaded = [];
   for (const config of configs) {
     const manifest = withCurrentRuntimeEndpoint(config.manifest, baseUrl);
+    const publishState = String(manifest?.registration?.publish_state || "legacy_published");
+    if (publishState === "validating") {
+      loaded.push({
+        service_id: manifest.service_id,
+        record: null,
+        validation: null,
+        skipped: true,
+        reason: "REGISTRATION_NOT_FINALIZED"
+      });
+      continue;
+    }
     if (store.services.has(manifest.service_id)) {
       const record = store.services.get(manifest.service_id);
+      claimProviderOwnership(store, manifest);
       record.manifest = manifest;
       record.updated_at = record.updated_at || new Date().toISOString();
       store.providers.set(manifest.provider.provider_id, manifest.provider);
@@ -1324,7 +2225,7 @@ export async function loadProviderConfigs(store, baseUrl, { validate = true } = 
     }
     let record;
     try {
-      record = registerService(store, manifest, baseUrl);
+      record = registerTrustedService(store, manifest, baseUrl);
     } catch (error) {
       // A previous successful import can leave an equivalent config behind
       // under a different generated service id. Loading persisted configs must
@@ -1360,7 +2261,7 @@ export async function loadProviderConfigs(store, baseUrl, { validate = true } = 
         });
         unregisterService(store, manifest.service_id);
       }
-    } else {
+    } else if (publishState === "published" || publishState === "legacy_published") {
       validation = {
         ok: true,
         service_id: manifest.service_id,
@@ -1370,8 +2271,23 @@ export async function loadProviderConfigs(store, baseUrl, { validate = true } = 
       };
       record.validation_runs.push(validation);
       record.verification_status = "verified";
+    } else {
+      validation = {
+        ok: false,
+        service_id: manifest.service_id,
+        source: "persisted_registration",
+        message: "The service registration is durable but still requires provider verification.",
+        created_at: new Date().toISOString()
+      };
+      record.validation_runs.push(validation);
+      record.verification_status = "pending";
     }
     loaded.push({ service_id: manifest.service_id, record, validation });
+  }
+  for (const identity of store.erc8004VendorIdentities?.values?.() || []) {
+    if (identity?.provider_id && identity?.network && identity?.agent_id) {
+      applyErc8004VendorIdentity(store, identity.provider_id, identity);
+    }
   }
   if (!validate) store.providerConfigsLoadedAt = now;
   return loaded;

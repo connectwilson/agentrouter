@@ -3,6 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { isEvmAddress } from "./arc-payment.js";
 import { hashJson } from "./evidence.js";
 import { settlementChain } from "./chains.js";
+import { createAnchorOutboxJob, executeAnchorOutboxJob, persistentAnchorOutbox } from "./anchor-outbox.js";
 
 export const AGENT_ROUTER_EVIDENCE_ANCHOR_ABI = [
   {
@@ -134,7 +135,11 @@ export function createUnconfiguredArcAnchor(evidence = {}) {
   };
 }
 
-export async function anchorEvidenceOnArc(evidence = {}) {
+export async function anchorEvidenceOnArc(evidence = {}, {
+  outbox = persistentAnchorOutbox,
+  clientFactory = createAnchorClients,
+  workerId
+} = {}) {
   const config = evidenceAnchorConfig();
   const chain = settlementChain();
   if (config.mode === "mock") {
@@ -159,59 +164,48 @@ export async function anchorEvidenceOnArc(evidence = {}) {
       error: "ADN_EVIDENCE_ANCHOR_CONTRACT must be a valid EVM address."
     };
   }
+  let account;
   try {
-    const account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
-    const client = createWalletClient({
-      account,
-      chain,
-      transport: http(chain.rpcUrl)
-    });
-    const publicClient = createPublicClient({
-      chain,
-      transport: http(chain.rpcUrl)
-    });
-    const txHash = await client.writeContract({
-      address: contractAddress,
-      abi: AGENT_ROUTER_EVIDENCE_ANCHOR_ABI,
-      functionName: "anchorEvidence",
-      args: [
-        String(evidence.request_id || ""),
-        bytes32(evidence.trace_hash),
-        bytes32(evidence.result_hash),
-        bytes32(evidence.verification_hash),
-        feedbackHash(evidence),
-        hashJson(evidence.service_id || ""),
-        hashJson(evidence.provider_id || ""),
-        paymentHash(evidence)
-      ]
-    });
-    const receipt = await publicClient.waitForTransactionReceipt({
-      hash: txHash,
-      confirmations: 1,
-      timeout: config.receiptTimeoutMs
-    });
-    return {
-      ...baseAnchor(evidence),
-      status: "anchored",
-      mode: chain.network,
-      tx_hash: txHash,
-      block_number: receipt.blockNumber?.toString?.(),
-      contract_address: contractAddress,
-      anchor_account: account.address,
-      explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`
-    };
+    account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
   } catch (error) {
-    return {
-      ...baseAnchor(evidence),
-      status: "anchor_failed",
-      mode: chain.network,
-      contract_address: contractAddress,
-      error: error.shortMessage || error.message
-    };
+    return anchorConfigFailure(baseAnchor(evidence), chain, contractAddress, error);
   }
+  const args = [
+    String(evidence.request_id || ""),
+    bytes32(evidence.trace_hash),
+    bytes32(evidence.result_hash),
+    bytes32(evidence.verification_hash),
+    feedbackHash(evidence),
+    hashJson(evidence.service_id || ""),
+    hashJson(evidence.provider_id || ""),
+    paymentHash(evidence)
+  ];
+  const job = createAnchorOutboxJob({
+    chainId: chain.id,
+    anchorAddress: account.address,
+    contractAddress,
+    functionName: "anchorEvidence",
+    requestId: evidence.request_id,
+    callArgs: args
+  });
+  const execution = await executeAnchorOutboxJob({
+    job,
+    outbox,
+    clientFactory,
+    account,
+    chain,
+    abi: AGENT_ROUTER_EVIDENCE_ANCHOR_ABI,
+    receiptTimeoutMs: config.receiptTimeoutMs,
+    workerId
+  });
+  return anchorExecutionResult(baseAnchor(evidence), execution, { chain, contractAddress, account });
 }
 
-export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, providerId, feedback } = {}) {
+export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, providerId, feedback } = {}, {
+  outbox = persistentAnchorOutbox,
+  clientFactory = createAnchorClients,
+  workerId
+} = {}) {
   const config = evidenceAnchorConfig();
   const chain = settlementChain();
   const feedbackHashValue = hashJson(feedback || null);
@@ -255,52 +249,77 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
       error: "ADN_EVIDENCE_ANCHOR_CONTRACT must be a valid EVM address."
     };
   }
+  let account;
   try {
-    const account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
-    const client = createWalletClient({
+    account = privateKeyToAccount(normalizePrivateKey(config.privateKey));
+  } catch (error) {
+    return anchorConfigFailure(base, chain, contractAddress, error);
+  }
+  const args = [
+    String(requestId || ""),
+    feedbackHashValue,
+    hashJson(serviceId || ""),
+    hashJson(providerId || "")
+  ];
+  const job = createAnchorOutboxJob({
+    chainId: chain.id,
+    anchorAddress: account.address,
+    contractAddress,
+    functionName: "anchorFeedback",
+    requestId,
+    callArgs: args
+  });
+  const execution = await executeAnchorOutboxJob({
+    job,
+    outbox,
+    clientFactory,
+    account,
+    chain,
+    abi: AGENT_ROUTER_EVIDENCE_ANCHOR_ABI,
+    receiptTimeoutMs: config.receiptTimeoutMs,
+    workerId
+  });
+  return anchorExecutionResult(base, execution, { chain, contractAddress, account });
+}
+
+function createAnchorClients({ account, chain }) {
+  return {
+    walletClient: createWalletClient({
       account,
       chain,
       transport: http(chain.rpcUrl)
-    });
-    const publicClient = createPublicClient({
+    }),
+    publicClient: createPublicClient({
       chain,
       transport: http(chain.rpcUrl)
-    });
-    const txHash = await client.writeContract({
-      address: contractAddress,
-      abi: AGENT_ROUTER_EVIDENCE_ANCHOR_ABI,
-      functionName: "anchorFeedback",
-      args: [
-        String(requestId || ""),
-        feedbackHashValue,
-        hashJson(serviceId || ""),
-        hashJson(providerId || "")
-      ]
-    });
-    const receipt = await publicClient.waitForTransactionReceipt({
-      hash: txHash,
-      confirmations: 1,
-      timeout: config.receiptTimeoutMs
-    });
-    return {
-      ...base,
-      status: "anchored",
-      mode: chain.network,
-      tx_hash: txHash,
-      block_number: receipt.blockNumber?.toString?.(),
-      contract_address: contractAddress,
-      anchor_account: account.address,
-      explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}`
-    };
-  } catch (error) {
-    return {
-      ...base,
-      status: "anchor_failed",
-      mode: chain.network,
-      contract_address: contractAddress,
-      error: error.shortMessage || error.message
-    };
-  }
+    })
+  };
+}
+
+function anchorExecutionResult(base, execution, { chain, contractAddress, account }) {
+  const txHash = execution.tx_hash || null;
+  return {
+    ...base,
+    ...execution,
+    mode: chain.network,
+    contract_address: contractAddress,
+    anchor_account: account.address,
+    ...(txHash && chain.blockExplorers?.default?.url
+      ? { explorer_url: `${chain.blockExplorers.default.url}/tx/${txHash}` }
+      : {})
+  };
+}
+
+function anchorConfigFailure(base, chain, contractAddress, error) {
+  return {
+    ...base,
+    status: "anchor_degraded",
+    durable: false,
+    retryable: false,
+    mode: chain.network,
+    contract_address: contractAddress,
+    error: error.shortMessage || error.message
+  };
 }
 
 function baseAnchor(evidence) {

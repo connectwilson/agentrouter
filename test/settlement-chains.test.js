@@ -106,8 +106,9 @@ test("payment proofs verify on whatever chain settles, not only Arc", async () =
     for (const network of ["bsc", "eip155:56", "56"]) {
       assert.equal(isArcNetwork(network), true, `${network} must be accepted while settling on BSC`);
     }
-    // Arc aliases stay valid so stored challenges keep verifying after a switch.
-    assert.equal(isArcNetwork("arc-testnet"), true);
+    // A proof from the previously configured chain must never settle after a
+    // deployment switches networks.
+    assert.equal(isArcNetwork("arc-testnet"), false);
     assert.equal(isArcNetwork("base"), false);
     assert.equal(isArcNetwork(""), false);
     assert.equal(normalizeArcNetwork("bsc"), "bsc");

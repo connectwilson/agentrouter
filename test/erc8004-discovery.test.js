@@ -205,7 +205,13 @@ test("8004scan adapter queues uncached query bursts instead of returning a synth
     cache_misses: 2,
     upstream_requests: 2,
     queued_waits: 1,
-    upstream_failures: 0
+    upstream_failures: 0,
+    overload_rejections: 0,
+    pending_requests: 0,
+    queue_depth: 0,
+    query_cache_entries: 2,
+    query_cache_limit: 100,
+    pending_request_limit: 4
   });
 });
 

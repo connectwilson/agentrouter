@@ -62,7 +62,8 @@ test("completed-call payment verification cannot be bypassed with a caller-selec
     pay_to: PAY_TO
   };
   manifest.sample_response.service_id = manifest.service_id;
-  registerService(store, manifest, "http://127.0.0.1");
+  const record = registerService(store, manifest, "http://127.0.0.1");
+  record.verification_status = "verified";
   store.authSessions.set("payment-owner", {
     user: { provider: "github", id: "payment-owner", handle: "payment-owner" },
     created_at: Date.now(),
@@ -142,6 +143,22 @@ test("one settlement transaction cannot buy a second result after a fresh runtim
   }
 });
 
+test("settlement replay claims are atomic under concurrency and separated by chain", async () => {
+  const { claimSettlementTransaction } = await import("../src/settlement-replay.js");
+  const txHash = `0x${"7".repeat(64)}`;
+  const competing = await Promise.all([
+    claimSettlementTransaction({ chainId: 56, txHash, serviceId: "first" }),
+    claimSettlementTransaction({ chainId: 56, txHash, serviceId: "second" })
+  ]);
+
+  assert.deepEqual(competing.sort(), [false, true], "only one concurrent claimant may own a chain transaction");
+  assert.equal(
+    await claimSettlementTransaction({ chainId: 8453, txHash, serviceId: "same_hash_other_chain" }),
+    true,
+    "the same hash on a different chain is a distinct settlement"
+  );
+});
+
 test("official x402 policy filters live terms that raise price or change payTo, chain, or asset before signing", async () => {
   const localInvoke = await import("../src/local-invoke.js");
   assert.equal(
@@ -181,6 +198,18 @@ test("official x402 policy filters live terms that raise price or change payTo, 
   assert.deepEqual(policy(2, [{ ...declared, payTo: "0x2222222222222222222222222222222222222222" }]), [], "a changed recipient must not reach the signer");
   assert.deepEqual(policy(2, [{ ...declared, network: "eip155:1" }]), [], "a changed chain must not reach the signer");
   assert.deepEqual(policy(2, [{ ...declared, asset: "0x3333333333333333333333333333333333333333" }]), [], "a changed asset must not reach the signer");
+
+  const underBudgetPolicy = localInvoke.createManifestBoundX402Policy({
+    manifest,
+    budget: { max_amount: "0.009", currency: "USDC" }
+  });
+  assert.deepEqual(underBudgetPolicy(2, [declared]), [], "the signer must fail closed when the manifest itself exceeds budget");
+
+  const wrongCurrencyPolicy = localInvoke.createManifestBoundX402Policy({
+    manifest,
+    budget: { max_amount: "1", currency: "ETH" }
+  });
+  assert.deepEqual(wrongCurrencyPolicy(2, [declared]), [], "a numerically large budget in another asset is not authorization");
 });
 
 function createTestWallet() {
@@ -228,7 +257,13 @@ async function submitFundFlowPayment(baseUrl, challenge, wallet, txHash) {
 async function startProviderRuntime() {
   const script = [
     'import { createServer } from "./src/server.js";',
-    "const server = createServer();",
+    'import { baseFundFlowManifest } from "./src/fixtures.js";',
+    'import { registerService } from "./src/registry.js";',
+    'import { createMemoryStore } from "./src/store.js";',
+    "const store = createMemoryStore();",
+    'const record = registerService(store, structuredClone(baseFundFlowManifest), "http://127.0.0.1");',
+    'record.verification_status = "verified";',
+    "const server = createServer({ store });",
     'server.listen(0, "127.0.0.1", () => process.stdout.write(JSON.stringify({ port: server.address().port }) + "\\n"));',
     'process.on("SIGTERM", () => server.close(() => process.exit(0)));'
   ].join("\n");

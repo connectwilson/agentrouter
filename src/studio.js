@@ -1,13 +1,17 @@
 import { normalizeEndpoint, parseCapabilities, parseMaybeJson } from "./http-utils.js";
 import { normalizeId, suggestCapabilities } from "./id-utils.js";
 import { createApifyActorProviderConfig,
-  createHostedHttpProviderConfig, createStaticProviderConfig, deleteProviderConfig, writeProviderConfig } from "./provider-config.js";
-import { findDuplicateService, registerService, unregisterService, validateService } from "./registry.js";
+  createHostedHttpProviderConfig, createStaticProviderConfig, deleteProviderConfig, prepareProviderConfigForPersistence, writePreparedProviderConfigFile } from "./provider-config.js";
+import { abortServiceRegistration, finalizeServiceRegistration, findDuplicateService, registerServiceDurably, validateService } from "./registry.js";
 import { publicServiceRecord } from "./store.js";
 import { authModalHtml, authModalStyles } from "./auth-modal.js";
 import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
 
-export async function createProviderFromStudio(body, store, baseUrl, { user = null, ownerKey = "" } = {}) {
+export async function createProviderFromStudio(body, store, baseUrl, {
+  user = null,
+  ownerKey = "",
+  registrationPersistence = {}
+} = {}) {
   const serviceId = normalizeId(body.service_id, body.title, "service");
   const providerId = normalizeId(body.provider_id, body.provider_name || body.title, "provider");
   const normalizedBody = {
@@ -67,16 +71,44 @@ export async function createProviderFromStudio(body, store, baseUrl, { user = nu
     throw error;
   }
 
-  const configPath = await writeProviderConfig(config);
-  const record = registerService(store, config.manifest, baseUrl);
-  const validation = await validateService(store, config.manifest.service_id);
+  const record = await registerServiceDurably(store, config.manifest, baseUrl, registrationPersistence);
+  let configPath;
+  let validation;
+  try {
+    validation = await validateService(store, config.manifest.service_id, {
+      providerConfig: config,
+      // Integration fixtures expose a platform-owned upstream under this exact
+      // path. Provider manifests cannot add to this transport allowlist.
+      trustedOrigins: [{ origin: baseUrl, pathPrefixes: ["/mock/upstream/"] }]
+    });
+  } catch (error) {
+    await abortServiceRegistration(store, record);
+    throw error;
+  }
   if (!validation.ok) {
-    unregisterService(store, config.manifest.service_id);
-    await deleteProviderConfig(config.manifest.service_id);
+    await abortServiceRegistration(store, record);
     const error = new Error("Provider validation failed. The service was not registered because the API endpoint did not return a valid paid AgentRouter response.");
     error.statusCode = 422;
     error.code = "VALIDATION_FAILED";
     error.validation = validation;
+    throw error;
+  }
+  config.manifest.registration = {
+    ...(config.manifest.registration || {}),
+    publish_state: "published"
+  };
+  try {
+    const prepared = await prepareProviderConfigForPersistence(config);
+    const durable = Boolean(typeof registrationPersistence.enabled === "function"
+      ? registrationPersistence.enabled()
+      : registrationPersistence.enabled);
+    if (!durable) configPath = await writePreparedProviderConfigFile(prepared);
+    await finalizeServiceRegistration(store, record, { config: prepared });
+    if (durable) configPath = await writePreparedProviderConfigFile(prepared).catch(() => null);
+    Object.assign(config, prepared);
+  } catch (error) {
+    await abortServiceRegistration(store, record);
+    if (configPath) await deleteProviderConfig(config.manifest.service_id).catch(() => {});
     throw error;
   }
   return {
@@ -983,8 +1015,15 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ drafts, publish_scope: "remote_and_local" })
         });
-        const payload = await response.json();
+        const payload = await response.json().catch(() => ({}));
         result.textContent = JSON.stringify(payload, null, 2);
+        if (!response.ok) {
+          const message = payload.error?.message ||
+            (typeof payload.error === "string" ? payload.error : "") ||
+            payload.message ||
+            "AgentRouter could not publish these services (HTTP " + response.status + ").";
+          throw new Error(message);
+        }
         const publishedCount = payload.published?.length || 0;
         const failedCount = payload.failed?.length || 0;
         status.textContent = failedCount
@@ -1012,6 +1051,9 @@ export function studioHtml({ draft, loadedService, auth = {} } = {}) {
       } catch (error) {
         status.textContent = "Publish error";
         status.classList.add("error");
+        importStatus.textContent = error.message;
+        importStatus.classList.add("error");
+        showNotice(formMessage, error.message, "error");
         result.textContent = error.stack || error.message;
       }
     });
