@@ -1,5 +1,57 @@
 const CAPABILITY_PACKS = Object.freeze([
   {
+    id: "rebalancing",
+    title: "Rebalancing",
+    group: "smart_money_jobs",
+    contract: "defi.rebalance_liquidity",
+    description: "Manage LP ranges and rebalance positions when price, inventory, or risk moves outside policy.",
+    sample_task: "Find and activate a BNB Chain agent that can rebalance a concentrated-liquidity position.",
+    discovery_query: "BNB Chain liquidity rebalancing LP range management agent",
+    signals: [
+      "lp_range_rebalancing", "liquidity_rebalancing", "position_rebalancing",
+      "automated_rebalancing", "lp_range_management", "concentrated_liquidity_management"
+    ]
+  },
+  {
+    id: "grid-trading",
+    title: "Grid Trading",
+    group: "smart_money_jobs",
+    contract: "trading.manage_grid",
+    description: "Create and manage bounded grid strategies with explicit market, price-range, and risk constraints.",
+    sample_task: "Find and activate a BNB Chain agent that can manage a constrained grid-trading strategy.",
+    discovery_query: "BNB Chain grid trading order management agent",
+    signals: [
+      "grid_trading", "grid_strategy", "grid_order_management", "automated_grid_orders",
+      "spot_grid", "futures_grid"
+    ]
+  },
+  {
+    id: "yield-optimization",
+    title: "Yield Optimisation",
+    group: "smart_money_jobs",
+    contract: "defi.optimize_yield",
+    description: "Compare risk-adjusted yields and route liquidity under protocol, asset, and exposure constraints.",
+    sample_task: "Find and activate a BNB Chain agent that can optimize yield without exceeding a risk policy.",
+    discovery_query: "BNB Chain yield optimisation liquidity routing APR agent",
+    signals: [
+      "yield_optimization", "yield_optimisation", "yield_routing", "apr_optimization",
+      "risk_adjusted_yield", "liquidity_yield_management"
+    ]
+  },
+  {
+    id: "health-factor-monitoring",
+    title: "Health Factor Monitoring",
+    group: "smart_money_jobs",
+    contract: "lending.protect_health_factor",
+    description: "Monitor lending positions and trigger bounded protective actions before liquidation risk breaches policy.",
+    sample_task: "Find and activate a BNB Chain agent that monitors lending health factor and liquidation risk.",
+    discovery_query: "BNB Chain lending health factor liquidation protection agent",
+    signals: [
+      "health_factor_monitoring", "liquidation_protection", "lending_position_monitoring",
+      "collateral_risk_monitoring", "health_factor_alert", "lending_risk_guard"
+    ]
+  },
+  {
     id: "research",
     title: "Research",
     contract: "research.find_evidence",
@@ -62,6 +114,10 @@ const CAPABILITY_PACKS = Object.freeze([
 ]);
 
 const PACK_DEFAULT_CAPABILITIES = Object.freeze({
+  rebalancing: ["lp_range_rebalancing", "liquidity_rebalancing", "position_rebalancing"],
+  "grid-trading": ["grid_trading", "grid_order_management", "grid_strategy"],
+  "yield-optimization": ["yield_optimization", "yield_routing", "risk_adjusted_yield"],
+  "health-factor-monitoring": ["health_factor_monitoring", "liquidation_protection", "lending_position_monitoring"],
   research: ["web_search", "search_general", "news_search", "paper_search", "citation_metadata", "academic_search"],
   social: ["social_search", "social_user_voice_research", "social_post_read", "social_sentiment", "creator_research"],
   markets: ["market_price", "stock_quote", "crypto_price", "market_data", "ohlcv", "ticker"],
@@ -70,6 +126,19 @@ const PACK_DEFAULT_CAPABILITIES = Object.freeze({
 });
 
 const PACK_DISPATCH_RULES = Object.freeze({
+  rebalancing: [
+    { pattern: /range|concentrated|lp|流动性区间/i, capabilities: ["lp_range_rebalancing", "lp_range_management", "liquidity_rebalancing"] }
+  ],
+  "grid-trading": [
+    { pattern: /futures?|perp|合约/i, capabilities: ["futures_grid", "grid_trading", "grid_order_management"] },
+    { pattern: /spot|现货/i, capabilities: ["spot_grid", "grid_trading", "grid_order_management"] }
+  ],
+  "yield-optimization": [
+    { pattern: /risk|风险|adjusted/i, capabilities: ["risk_adjusted_yield", "yield_optimization", "yield_routing"] }
+  ],
+  "health-factor-monitoring": [
+    { pattern: /protect|liquidat|保护|清算/i, capabilities: ["liquidation_protection", "health_factor_monitoring", "lending_position_monitoring"] }
+  ],
   research: [
     { pattern: /peer[\s_-]?review|papers?|论文|文献|citation|引用|doi|arxiv|scholarly|academic/i, capabilities: ["paper_search", "academic_search", "citation_metadata"] },
     { pattern: /news|report|current|latest|最近|最新|行业报告/i, capabilities: ["news_search", "web_search", "search_general"] }
@@ -148,9 +217,11 @@ function publicPack(pack, records) {
   return {
     id: pack.id,
     title: pack.title,
+    group: pack.group || "data_acquisition",
     contract: pack.contract,
     description: pack.description,
     sample_task: pack.sample_task,
+    discovery_query: pack.discovery_query || null,
     input_schema: CAPABILITY_PACK_INPUT_SCHEMA,
     service_count: matches.length,
     verified_service_count: matches.filter((record) => record.verification_status === "verified").length,

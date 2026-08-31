@@ -742,8 +742,10 @@ export function agentHtml({ auth = {} } = {}) {
             const query = document.getElementById("service-search").value.trim();
             const serviceResponse = await fetch("/agent-router/services?" + params.toString());
             servicePage = await serviceResponse.json();
-            const discoveryResponse = query.length >= 2 && Number(servicePage.total || 0) === 0
-              ? await fetch("/agent-router/erc8004/discover?q=" + encodeURIComponent(query) + "&limit=6")
+            const selectedPack = capabilityPacks.find((pack) => pack.id === activePack);
+            const discoveryQuery = query || selectedPack?.discovery_query || "";
+            const discoveryResponse = discoveryQuery.length >= 2 && Number(servicePage.total || 0) === 0
+              ? await fetch("/agent-router/erc8004/discover?q=" + encodeURIComponent(discoveryQuery) + "&limit=6")
               : null;
             erc8004Agents = discoveryResponse?.ok ? (await discoveryResponse.json()).agents || [] : [];
           } catch {
