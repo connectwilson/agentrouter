@@ -5,14 +5,34 @@ const SCAN_API = "https://8004scan.io/api/v1/public";
 const CACHE_TTL_MS = 60_000;
 const PROTOCOLS = ["mcp", "a2a", "http", "x402"];
 
-export function createErc8004Discovery({ fetchImpl = fetch, endpointProbe = null, now = () => Date.now() } = {}) {
+export function createErc8004Discovery({ fetchImpl = fetch, endpointProbe = null, now = () => Date.now(), minRequestIntervalMs = 6100 } = {}) {
   const cache = new Map();
+  const agentCache = new Map();
+  let lastRemoteAt = 0;
   const cached = async (key, load) => {
     const hit = cache.get(key);
     if (hit && now() - hit.at < CACHE_TTL_MS) return hit.value;
-    const value = await load();
-    cache.set(key, { at: now(), value });
-    return value;
+    const pending = Promise.resolve().then(load);
+    cache.set(key, { at: now(), value: pending });
+    try {
+      const value = await pending;
+      cache.set(key, { at: now(), value });
+      if (cache.size > 100) cache.delete(cache.keys().next().value);
+      return value;
+    } catch (error) {
+      cache.delete(key);
+      throw error;
+    }
+  };
+  const remote = async (path) => {
+    const elapsed = now() - lastRemoteAt;
+    if (lastRemoteAt && elapsed < minRequestIntervalMs) {
+      const error = requestError("ERC8004_SCAN_RATE_LIMITED", "8004scan discovery is rate limited; retry shortly.", 429);
+      error.retryAfterMs = minRequestIntervalMs - elapsed;
+      throw error;
+    }
+    lastRemoteAt = now();
+    return fetchScanJson(fetchImpl, path);
   };
   return {
     async search({ query = "", limit = 10, chainId = 56 } = {}) {
@@ -21,14 +41,18 @@ export function createErc8004Discovery({ fetchImpl = fetch, endpointProbe = null
         ? `/agents/search?q=${encodeURIComponent(query)}&chainId=${chainId}&limit=${safeLimit}`
         : `/agents?chainId=${chainId}&limit=${safeLimit}`;
       return cached(`search:${path}`, async () => {
-        const payload = await fetchScanJson(fetchImpl, path);
-        return agentRows(payload).map(normalizeErc8004Agent).filter((agent) => agent.agent_id);
+        const payload = await remote(path);
+        const agents = agentRows(payload).map(normalizeErc8004Agent).filter((agent) => agent.agent_id);
+        for (const agent of agents) agentCache.set(`${agent.chain_id}:${agent.agent_id}`, agent);
+        return agents;
       });
     },
     async get({ chainId = 56, agentId }) {
       if (!/^\d+$/.test(String(agentId || ""))) throw requestError("ERC8004_AGENT_ID_INVALID", "agent_id must be a numeric token id.");
+      const indexed = agentCache.get(`${Number(chainId)}:${agentId}`);
+      if (indexed) return indexed;
       return cached(`agent:${chainId}:${agentId}`, async () => normalizeErc8004Agent(
-        await fetchScanJson(fetchImpl, `/agents/${Number(chainId)}/${encodeURIComponent(agentId)}`)
+        await remote(`/agents/${Number(chainId)}/${encodeURIComponent(agentId)}`)
       ));
     },
     async verify(agent) {

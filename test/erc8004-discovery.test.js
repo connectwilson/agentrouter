@@ -85,6 +85,11 @@ test("import verifies advertised protocols before an external agent becomes call
     assert.equal(payload.agent.preferred_adapter, "mcp");
     assert.equal(store.erc8004Imports.get("56:4242").callable, true);
 
+    const importsResponse = await fetch(`${baseUrl}/agent-router/erc8004/imports`);
+    const imports = await importsResponse.json();
+    assert.equal(importsResponse.status, 200);
+    assert.equal(imports.agents[0].imported_by, undefined, "public marketplace output must not expose account keys");
+
     const hire = await fetch(`${baseUrl}/agent-router/erc8004/hire`, {
       method: "POST", headers, body: JSON.stringify({ chain_id: 56, agent_id: "4242", input: { query: "BNB agents" } })
     });
@@ -153,6 +158,21 @@ test("8004scan adapter normalizes API records and caches identical searches", as
   assert.deepEqual(second, first);
   assert.equal(urls.length, 1);
   assert.match(urls[0], /agents\/search\?q=research&chainId=56&limit=3$/);
+});
+
+test("8004scan adapter fails fast on uncached query bursts instead of exhausting the upstream quota", async () => {
+  let time = 10_000;
+  const discovery = createErc8004Discovery({
+    now: () => time,
+    minRequestIntervalMs: 6100,
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ agents: [indexedAgent()] }) })
+  });
+  await discovery.search({ query: "research", chainId: 56 });
+  time += 100;
+  await assert.rejects(
+    discovery.search({ query: "different", chainId: 56 }),
+    (error) => error.code === "ERC8004_SCAN_RATE_LIMITED" && error.statusCode === 429
+  );
 });
 
 test("protocol verification keeps x402 as payment metadata and chooses a reachable transport", async () => {

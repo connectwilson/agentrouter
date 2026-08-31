@@ -740,13 +740,11 @@ export function agentHtml({ auth = {} } = {}) {
           showSkeleton();
           try {
             const query = document.getElementById("service-search").value.trim();
-            const [serviceResponse, discoveryResponse] = await Promise.all([
-              fetch("/agent-router/services?" + params.toString()),
-              query.length >= 2
-                ? fetch("/agent-router/erc8004/discover?q=" + encodeURIComponent(query) + "&limit=6")
-                : Promise.resolve(null)
-            ]);
+            const serviceResponse = await fetch("/agent-router/services?" + params.toString());
             servicePage = await serviceResponse.json();
+            const discoveryResponse = query.length >= 2 && Number(servicePage.total || 0) === 0
+              ? await fetch("/agent-router/erc8004/discover?q=" + encodeURIComponent(query) + "&limit=6")
+              : null;
             erc8004Agents = discoveryResponse?.ok ? (await discoveryResponse.json()).agents || [] : [];
           } catch {
             servicePage = { services: [], total: 0, limit: pageSize, offset: 0, has_more: false };

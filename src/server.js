@@ -298,7 +298,7 @@ async function routeRequest(req, res, store, baseUrl, {
   if (req.method === "GET" && url.pathname === "/agent-router/erc8004/imports") {
     sendJson(res, 200, {
       import_list_version: "agent_router_erc8004_import_list_v1",
-      agents: [...(store.erc8004Imports || new Map()).values()]
+      agents: [...(store.erc8004Imports || new Map()).values()].map(publicImportedErc8004Agent)
     }, { "cache-control": "no-store" });
     return;
   }
@@ -1685,6 +1685,11 @@ async function routeRequest(req, res, store, baseUrl, {
   }
 
   sendNotFound(res, "ROUTE_NOT_FOUND");
+}
+
+function publicImportedErc8004Agent(agent = {}) {
+  const { imported_by: _importedBy, ...publicAgent } = agent;
+  return publicAgent;
 }
 
 export async function agentRouterReadiness({
