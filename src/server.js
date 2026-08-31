@@ -56,7 +56,7 @@ import { agentRouterConnectTool, remoteMcpTools } from "../packages/agentrouter-
 import { completeLocalBrowserHandoff } from "../packages/agentrouter-mcp/server/local-browser-connector.js";
 import { compactAgentFacingResult } from "./compact-result.js";
 import { relaySponsoredErc8004Registration } from "./bsc-registration-paymaster.js";
-import { createErc8004Discovery, normalizeErc8004Agent } from "./erc8004-discovery.js";
+import { createErc8004Discovery, executeErc8004HttpAgent, normalizeErc8004Agent } from "./erc8004-discovery.js";
 
 const mcpPackageMetadata = JSON.parse(await fs.readFile(new URL("../packages/agentrouter-mcp/package.json", import.meta.url), "utf8"));
 
@@ -91,6 +91,7 @@ export function createServer({
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
   registrationPaymasterRelay = relaySponsoredErc8004Registration,
   erc8004Discovery = createErc8004Discovery(),
+  erc8004Executor = executeErc8004HttpAgent,
   erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
   const resolvedPublicApiPipelineOptions = {
@@ -112,6 +113,7 @@ export function createServer({
         erc8004RegistrationVerifier,
         registrationPaymasterRelay,
         erc8004Discovery,
+        erc8004Executor,
         erc8004DiscoveryEnabled
       });
     } catch (error) {
@@ -142,6 +144,7 @@ async function routeRequest(req, res, store, baseUrl, {
   erc8004RegistrationVerifier = verifyErc8004IdentityRegistrationTransaction,
   registrationPaymasterRelay = relaySponsoredErc8004Registration,
   erc8004Discovery = createErc8004Discovery(),
+  erc8004Executor = executeErc8004HttpAgent,
   erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
   const url = new URL(req.url, baseUrl);
@@ -390,6 +393,40 @@ async function routeRequest(req, res, store, baseUrl, {
       });
       return;
     }
+    const input = isPlainRecord(body.input) ? body.input : {};
+    const x402Declared = agent.protocols?.x402?.status && agent.protocols.x402.status !== "not_declared";
+    if (body.execute === true && x402Declared) {
+      sendJson(res, 402, {
+        error: {
+          code: "ERC8004_PAYMENT_REQUIRED",
+          message: "This Agent declares x402 payment. Connect a supported payment adapter before execution."
+        },
+        action: {
+          type: "connect_payment_adapter",
+          protocol: "x402",
+          agent_id: agent.agent_id
+        }
+      });
+      return;
+    }
+    if (body.execute === true && protocol === "http") {
+      const result = await erc8004Executor({ endpoint: protocolEntry.endpoint, input, agent });
+      sendJson(res, 200, {
+        ok: true,
+        status: "completed",
+        request_id: `erc8004_${crypto.randomUUID()}`,
+        agent: { chain_id: agent.chain_id, agent_id: agent.agent_id, name: agent.name },
+        dispatch: {
+          adapter: protocol,
+          endpoint: protocolEntry.endpoint,
+          input,
+          payment: "none_declared",
+          execution: "direct_http"
+        },
+        result
+      });
+      return;
+    }
     sendJson(res, 200, {
       ok: true,
       status: "ready_to_call",
@@ -397,8 +434,8 @@ async function routeRequest(req, res, store, baseUrl, {
       dispatch: {
         adapter: protocol,
         endpoint: protocolEntry.endpoint,
-        input: isPlainRecord(body.input) ? body.input : {},
-        payment: agent.protocols?.x402?.status && agent.protocols.x402.status !== "not_declared" ? "x402" : "provider_declared",
+        input,
+        payment: x402Declared ? "x402" : "provider_declared",
         execution: "handoff_required"
       }
     });

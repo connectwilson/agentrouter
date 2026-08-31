@@ -7,6 +7,8 @@ const CACHE_TTL_MS = 60_000;
 const AGENT_CACHE_LIMIT = 500;
 const MAX_METADATA_BYTES = 1024 * 1024;
 const MAX_METADATA_REDIRECTS = 3;
+const MAX_EXECUTION_INPUT_BYTES = 64 * 1024;
+const MAX_EXECUTION_RESPONSE_BYTES = 1024 * 1024;
 const PROTOCOLS = ["mcp", "a2a", "http", "x402"];
 
 export function createErc8004Discovery({
@@ -196,6 +198,54 @@ export async function verifyErc8004Agent(raw, { fetchImpl = fetch, endpointProbe
   };
 }
 
+export async function executeErc8004HttpAgent({ endpoint, input = {}, fetchImpl = fetch } = {}) {
+  const serialized = JSON.stringify(input && typeof input === "object" && !Array.isArray(input) ? input : {});
+  if (Buffer.byteLength(serialized) > MAX_EXECUTION_INPUT_BYTES) {
+    throw requestError("ERC8004_EXECUTION_INPUT_TOO_LARGE", "Agent input exceeds the 64 KiB execution limit.", 413);
+  }
+
+  let response;
+  try {
+    response = await requestPublicEndpoint(endpoint, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(serialized))
+      },
+      body: serialized,
+      signal: AbortSignal.timeout(10_000)
+    }, fetchImpl, {
+      collectBody: true,
+      maxBytes: MAX_EXECUTION_RESPONSE_BYTES,
+      tooLargeCode: "ERC8004_EXECUTION_RESPONSE_TOO_LARGE",
+      tooLargeMessage: "Agent response exceeds the 1 MiB execution limit."
+    });
+  } catch (error) {
+    if (String(error?.code || "").startsWith("ERC8004_")) throw error;
+    throw requestError("ERC8004_EXECUTION_UNAVAILABLE", `Agent execution failed: ${String(error?.message || "network error")}.`, 502);
+  }
+
+  if (isRedirectStatus(response?.status)) {
+    throw requestError("ERC8004_EXECUTION_REDIRECT_BLOCKED", "Agent execution endpoints cannot redirect.", 422);
+  }
+  if (Number(response?.status) === 402) {
+    throw requestError("ERC8004_PAYMENT_REQUIRED", "This Agent requires a payment adapter before execution.", 402);
+  }
+  if (!response?.ok) {
+    throw requestError("ERC8004_EXECUTION_UPSTREAM_ERROR", `Agent returned HTTP ${response?.status || "unknown"}.`, 502);
+  }
+  const contentType = responseHeader(response, "content-type").toLowerCase();
+  if (!/application\/(?:json|[^;]+\+json)/.test(contentType)) {
+    throw requestError("ERC8004_EXECUTION_INVALID_RESPONSE", "Agent execution did not return JSON.", 502);
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw requestError("ERC8004_EXECUTION_INVALID_RESPONSE", "Agent execution returned malformed JSON.", 502);
+  }
+}
+
 async function fetchScanJson(fetchImpl, path) {
   let response;
   try {
@@ -300,15 +350,21 @@ async function resolvePublicHttpsUrl(value) {
   return { url, addresses };
 }
 
-async function requestPublicEndpoint(value, init, fetchImpl, { collectBody = false } = {}) {
+async function requestPublicEndpoint(value, init, fetchImpl, bodyOptions = {}) {
   const resolved = await resolvePublicHttpsUrl(value);
   if (fetchImpl !== globalThis.fetch) {
     return fetchImpl(resolved.url.toString(), { ...init, redirect: "manual" });
   }
-  return pinnedHttpsRequest(resolved, init, { collectBody });
+  return pinnedHttpsRequest(resolved, init, bodyOptions);
 }
 
-export function pinnedHttpsRequest({ url, addresses }, init = {}, { collectBody = false, requestImpl = https.request } = {}) {
+export function pinnedHttpsRequest({ url, addresses }, init = {}, {
+  collectBody = false,
+  maxBytes = MAX_METADATA_BYTES,
+  tooLargeCode = "ERC8004_METADATA_TOO_LARGE",
+  tooLargeMessage = "Agent metadata exceeds the maximum allowed size.",
+  requestImpl = https.request
+} = {}) {
   return new Promise((resolve, reject) => {
     const selected = addresses[0]?.address;
     const family = net.isIP(selected);
@@ -326,8 +382,8 @@ export function pinnedHttpsRequest({ url, addresses }, init = {}, { collectBody 
       response.on("data", (chunk) => {
         if (!collectBody) return;
         size += chunk.length;
-        if (size > MAX_METADATA_BYTES) {
-          request.destroy(requestError("ERC8004_METADATA_TOO_LARGE", "Agent metadata exceeds the maximum allowed size.", 422));
+        if (size > maxBytes) {
+          request.destroy(requestError(tooLargeCode, tooLargeMessage, 422));
           return;
         }
         chunks.push(chunk);
@@ -345,6 +401,7 @@ export function pinnedHttpsRequest({ url, addresses }, init = {}, { collectBody 
       if (!collectBody) response.resume();
     });
     request.once("error", reject);
+    if (init.body != null) request.write(init.body);
     request.end();
   });
 }

@@ -832,6 +832,7 @@ export function agentHtml({ auth = {} } = {}) {
             '<p class="api-description">' + escapeHtml(truncate(agent.description || "On-chain agent discovered through 8004scan.", 132)) + '</p>' +
             '<div class="api-core-metrics"><div class="api-price"><span>Payment</span><strong>' + (agent.x402_supported ? "x402" : "Declared by agent") + '</strong><small>Verify before call</small></div>' +
             '<div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>' + escapeHtml(score) + '</strong><small>8004scan score</small></div></div></div>' +
+            '<div class="execution-result" data-execution-result hidden></div>' +
             '<div class="api-card-footer"><div class="pill-row">' + renderPills(protocols) + '</div>' +
             '<button type="button" class="button ' + (verified ? "primary" : "ghost") + '" onclick="hireErc8004Agent(this,\'' + escapeAttr(agent.agent_id) + '\')">Hire / call</button></div>' +
           '</article>';
@@ -850,12 +851,22 @@ export function agentHtml({ auth = {} } = {}) {
             if (!imported.agent?.callable) throw new Error(imported.agent?.verification_error || "Registered on-chain, not verified callable.");
             const hireResponse = await fetch("/agent-router/erc8004/hire", {
               method: "POST", headers: { "content-type": "application/json" },
-              body: JSON.stringify({ chain_id: 56, agent_id: agentId, input: { task: document.getElementById("service-search").value.trim() } })
+              body: JSON.stringify({ chain_id: 56, agent_id: agentId, execute: true, input: { task: document.getElementById("service-search").value.trim() } })
             });
             const hired = await hireResponse.json();
             if (!hireResponse.ok) throw new Error(hired.error?.message || "Agent is not ready to call.");
-            button.textContent = "Ready via " + hired.dispatch.adapter.toUpperCase();
-            button.title = "Verified endpoint: " + hired.dispatch.endpoint;
+            if (hired.status === "completed") {
+              const result = button.closest(".erc8004-agent-card")?.querySelector("[data-execution-result]");
+              if (result) {
+                result.hidden = false;
+                result.textContent = truncate(JSON.stringify(hired.result), 240);
+              }
+              button.textContent = "Completed";
+              button.title = "Agent returned a verified JSON response.";
+            } else {
+              button.textContent = "Ready via " + hired.dispatch.adapter.toUpperCase();
+              button.title = "Verified endpoint: " + hired.dispatch.endpoint;
+            }
           } catch (error) {
             button.textContent = "Unavailable";
             button.title = error.message;
