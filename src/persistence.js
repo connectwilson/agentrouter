@@ -532,7 +532,7 @@ export async function claimPersistentProviderId({ providerId, ownerKey }) {
   const inserted = await pool.query(
     `insert into adn_provider_claims (provider_id, owner_key, claimed_at)
      values ($1, $2, now())
-     on conflict (provider_id) do nothing
+     on conflict do nothing
      returning provider_id, owner_key, claimed_at`,
     [normalizedProviderId, normalizedOwnerKey]
   );
@@ -593,7 +593,7 @@ export async function claimPersistentServiceRegistration({
     const insertedProvider = await client.query(
       `insert into adn_provider_claims (provider_id, owner_key, claim_state, claimed_at)
        values ($1, $2, 'pending', now())
-       on conflict (provider_id) do nothing
+       on conflict do nothing
        returning provider_id, owner_key, claim_state, claimed_at`,
       [normalizedProviderId, normalizedOwnerKey]
     );
