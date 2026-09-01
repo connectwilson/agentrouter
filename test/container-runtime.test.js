@@ -16,3 +16,10 @@ test("CI builds the production image and verifies provider writes as its runtime
   assert.match(workflow, /test -w \/app\/providers/);
   assert.match(workflow, /touch \/app\/providers\/\.write-smoke/);
 });
+
+test("production image excludes repository-only tests and documentation", async () => {
+  const dockerignore = await fs.readFile(".dockerignore", "utf8");
+  const entries = new Set(dockerignore.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  assert.equal(entries.has("test"), true);
+  assert.equal(entries.has("docs"), true);
+});

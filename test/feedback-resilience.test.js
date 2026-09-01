@@ -72,6 +72,201 @@ test("a hydrated feedback grant rotates its opaque token after restart", async (
   assert.notEqual(store.feedbackGrants.get(requestId).token_hash, "old-hash");
 });
 
+test("issuing a local feedback grant can durably materialize a privacy-minimized v2 routing observation", async () => {
+  const store = createMemoryStore();
+  const writes = [];
+  const result = await issueLocalFeedbackGrant(store, {
+    request_id: "local_search_x_routeobs",
+    service_id: "local_social_x",
+    operation: "search",
+    capability: "social_user_voice_research",
+    result_status: "completed",
+    routing_summary: {
+      task_family: "social_research",
+      route_family: "local_browser",
+      capability: "social_user_voice_research",
+      source_family: "social",
+      action: "route",
+      source: "x",
+      selected_service_id: "local_social_x",
+      candidate_sources: ["x"],
+      budget: {
+        max_price_usdc: "0.05",
+        selected_price_usdc: "0",
+        compliant: true
+      },
+      authorization: {
+        required: false,
+        action: "none",
+        source: null
+      }
+    }
+  }, {
+    actorKey: "actor:owner",
+    writeEvent: async (entry) => writes.push(entry),
+    randomBytes: () => Buffer.alloc(32, 3)
+  });
+
+  assert.equal(result.status, "feedback_grant_issued");
+  assert.equal(result.routing_observation_id, store.routeObservations[0].observation_id);
+  assert.equal(writes[0].eventType, "route_observation");
+  assert.equal(writes[1].eventType, "feedback_grant");
+  assert.equal(store.routeObservations.length, 1);
+  assert.equal(store.routeObservations[0].observation_version, "agent_router_route_observation_v2");
+  assert.equal(store.routeObservations[0].action, "route");
+  assert.deepEqual(store.routeObservations[0].authorization, {
+    required: false,
+    action: "none",
+    source: null
+  });
+});
+
+test("local feedback grant persistence is one atomic idempotent bundle", async () => {
+  const store = createMemoryStore();
+  const committed = [];
+  let batchCalls = 0;
+  const body = {
+    request_id: "local_search_reddit_atomic_retry",
+    service_id: "local_social_reddit",
+    operation: "search",
+    capability: "social_search",
+    result_status: "completed",
+    routing_summary: { route_family: "local_browser" }
+  };
+
+  await assert.rejects(
+    issueLocalFeedbackGrant(store, body, {
+      actorKey: "actor:owner",
+      writeEvents: async (entries) => {
+        batchCalls += 1;
+        assert.deepEqual(entries.map((entry) => entry.eventType), ["route_observation", "feedback_grant"]);
+        throw new Error("feedback grant insert failed");
+      },
+      randomBytes: () => Buffer.alloc(32, 4)
+    }),
+    /feedback grant insert failed/
+  );
+  assert.equal(batchCalls, 1, "the two rows must be offered to one transaction boundary");
+  assert.deepEqual(committed, [], "a failed bundle must not leave a durable orphan");
+  assert.equal(store.routeObservations.length, 0, "memory must not claim an uncommitted observation");
+  assert.equal(store.feedbackGrants.size, 0, "memory must not claim an uncommitted grant");
+
+  const first = await issueLocalFeedbackGrant(store, body, {
+    actorKey: "actor:owner",
+    writeEvents: async (entries) => {
+      for (const entry of entries) {
+        const identity = `${entry.eventType}:${entry.event.observation_id || entry.event.request_id}`;
+        if (!committed.some((item) => item.identity === identity)) committed.push({ identity, entry });
+      }
+      return true;
+    },
+    randomBytes: () => Buffer.alloc(32, 4)
+  });
+  const replay = await issueLocalFeedbackGrant(store, body, {
+    actorKey: "actor:owner",
+    writeEvents: async () => assert.fail("an in-process replay must not write a second bundle"),
+    randomBytes: () => Buffer.alloc(32, 4)
+  });
+
+  assert.equal(committed.length, 2);
+  assert.equal(first.routing_observation_id, committed[0].entry.event.observation_id);
+  assert.equal(replay.routing_observation_id, first.routing_observation_id);
+  assert.equal(replay.status, "feedback_grant_already_issued");
+});
+
+test("local feedback observations are derived from validated server fields, not client routing claims", async () => {
+  const store = createMemoryStore();
+  const writes = [];
+  const result = await issueLocalFeedbackGrant(store, {
+    request_id: "local_search_x_poisoned_summary",
+    service_id: "local_social_x",
+    operation: "search",
+    capability: "social_user_voice_research",
+    result_status: "no_results",
+    routing_summary: {
+      task_family: "financial_market_data",
+      route_family: "external_api",
+      capability: "stock_quote",
+      source_family: "market",
+      action: "fallback",
+      selected_service_id: "evil_paid_service",
+      candidate_sources: ["evil_paid_service"],
+      budget: {
+        max_price_usdc: "0",
+        selected_price_usdc: "999",
+        compliant: false
+      },
+      authorization: { required: true, action: "connect_source", source: "evil" }
+    }
+  }, {
+    actorKey: "actor:owner",
+    writeEvents: async (entries) => writes.push(...entries),
+    randomBytes: () => Buffer.alloc(32, 5)
+  });
+
+  const observation = writes.find((entry) => entry.eventType === "route_observation").event;
+  assert.equal(result.routing_observation_id, observation.observation_id);
+  assert.equal(observation.task_family, "social_research");
+  assert.equal(observation.route_family, "local_browser");
+  assert.equal(observation.capability, "social_user_voice_research");
+  assert.equal(observation.source_family, "social");
+  assert.equal(observation.action, "route");
+  assert.equal(observation.selected_service_id, "local_social_x");
+  assert.deepEqual(observation.candidates.map((candidate) => candidate.service_id), ["local_social_x"]);
+  assert.deepEqual(observation.budget, {
+    max_price_usdc: "0",
+    selected_price_usdc: "0",
+    compliant: true
+  });
+  assert.deepEqual(observation.authorization, { required: false, action: "none", source: null });
+});
+
+test("local feedback grants reject invalid platform, capability, operation, and result status enums", async () => {
+  const cases = [
+    {
+      request_id: "local_search_telegram_invalid",
+      service_id: "local_social_telegram",
+      operation: "search",
+      capability: "social_search",
+      result_status: "completed"
+    },
+    {
+      request_id: "local_search_x_badcap",
+      service_id: "local_social_x",
+      operation: "search",
+      capability: "stock_quote",
+      result_status: "completed"
+    },
+    {
+      request_id: "local_post_x_badop",
+      service_id: "local_social_x",
+      operation: "search",
+      capability: "social_post_read",
+      result_status: "completed"
+    },
+    {
+      request_id: "local_search_reddit_badstatus",
+      service_id: "local_social_reddit",
+      operation: "search",
+      capability: "social_search",
+      result_status: "budget_violation"
+    }
+  ];
+
+  for (const body of cases) {
+    const store = createMemoryStore();
+    await assert.rejects(
+      issueLocalFeedbackGrant(store, body, {
+        actorKey: "actor:owner",
+        writeEvents: async () => assert.fail("invalid metadata must not be persisted")
+      }),
+      (error) => error?.statusCode === 422 && error?.code === "INVALID_LOCAL_FEEDBACK_GRANT"
+    );
+    assert.equal(store.routeObservations.length, 0);
+    assert.equal(store.feedbackGrants.size, 0);
+  }
+});
+
 test("persistent hydration restores external feedback, quote feedback, and submitted ERC-8004 state", async () => {
   const store = createMemoryStore();
   const record = registerService(store, {

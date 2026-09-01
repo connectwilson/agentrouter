@@ -17,7 +17,13 @@ const REQUIRED_SLICES = [
   "ambiguity",
   "auth",
   "budget",
-  "no_match"
+  "no_match",
+  "implementation_status",
+  "partner_api",
+  "browser_only",
+  "structured_request",
+  "registered_service",
+  "legacy_intent"
 ];
 
 function approximate(actual, expected, epsilon = 1e-9) {
@@ -42,13 +48,18 @@ function decisionFor(entry, overrides = {}) {
 }
 
 async function loadEvaluator() {
-  return import("../src/routing-evaluation.js");
+  return import("./support/routing-evaluation.js");
 }
+
+test("offline routing evaluation stays outside the production source tree", () => {
+  assert.equal(fs.existsSync(path.join(here, "..", "src", "routing-evaluation.js")), false);
+  assert.equal(fs.existsSync(path.join(here, "support", "routing-evaluation.js")), true);
+});
 
 test("routing benchmark is versioned, provider-tolerant, and covers the known risk slices", () => {
   assert.equal(benchmark.schema_version, "agentrouter_routing_benchmark_v1");
   assert.match(benchmark.benchmark_version, /^\d+\.\d+\.\d+$/);
-  assert.ok(benchmark.cases.length >= 60);
+  assert.ok(benchmark.cases.length >= 94);
   assert.equal(benchmark.cases.filter((entry) => entry.provenance === "original_30").length, 30);
 
   const ids = new Set();
@@ -58,6 +69,10 @@ test("routing benchmark is versioned, provider-tolerant, and covers the known ri
     assert.ok(entry.prompt.trim().length > 0);
     assert.ok(entry.locale);
     assert.ok(Array.isArray(entry.slices) && entry.slices.length > 0);
+    if (entry.request) {
+      assert.equal(typeof entry.request.capability, "string", entry.id);
+      assert.equal(typeof entry.request.params, "object", entry.id);
+    }
     assert.ok(["route", "clarify", "no_match"].includes(entry.expected.action), entry.id);
     assert.ok([
       "external_api",

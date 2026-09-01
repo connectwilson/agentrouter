@@ -13,6 +13,7 @@ export function createMemoryStore() {
     qualityEvents: [],
     evidenceEvents: [],
     routeObservations: [],
+    routingFeedbackEvents: [],
     issuedQuotes: new Map(),
     quoteFeedbackEvents: [],
     feedbackGrants: new Map(),

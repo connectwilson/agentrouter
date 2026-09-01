@@ -64,7 +64,8 @@ export async function askAgentRouter(store, {
   max_price: maxPrice = "0.05",
   currency = "USDC",
   invoke = true,
-  consumerApiKey = ""
+  consumerApiKey = "",
+  routePlan = null
 } = {}) {
   const invocationOptions = { consumerApiKey };
   if (!String(task || "").trim()) {
@@ -76,6 +77,8 @@ export async function askAgentRouter(store, {
   if (clarification) return clarification;
   const serviceDiscovery = discoverServiceOptions(store, task, maxPrice);
   if (serviceDiscovery) return serviceDiscovery;
+  const plannedRoute = plannedNaturalLanguageRoute(task, routePlan);
+  if (plannedRoute) return plannedRoute;
   const intent = inferIntent(task);
   const structuredRequest = intentToCapabilityRequest(intent, { max_price: maxPrice });
   if (structuredRequest) {
@@ -224,6 +227,132 @@ export async function askAgentRouter(store, {
   };
 }
 
+function plannedNaturalLanguageRoute(task, plan) {
+  if (!plan || typeof plan !== "object") return null;
+  if (plan.abstain_reason === "source_not_callable") {
+    const source = plan.source_constraint || plan.provider_constraint || plan.candidate_sources?.[0] || null;
+    return {
+      ok: false,
+      status: "source_not_callable",
+      task,
+      source,
+      must_not_execute: true,
+      error: {
+        code: "SOURCE_NOT_CALLABLE",
+        message: `${source || "The requested source"} is known to AgentRouter but has no callable connector yet.`
+      },
+      fallback_allowed: false
+    };
+  }
+  if (["invalid_budget", "budget_exceeded", "price_unknown"].includes(plan.abstain_reason)) {
+    const priceUnknown = plan.abstain_reason === "price_unknown";
+    return {
+      ok: false,
+      status: plan.abstain_reason === "invalid_budget" ? "invalid_request" : priceUnknown ? "quote_required" : "quote_blocked",
+      task,
+      error: {
+        code: plan.abstain_reason === "invalid_budget" ? "INVALID_BUDGET" : priceUnknown ? "UPSTREAM_PRICE_UNKNOWN" : "BUDGET_EXCEEDED",
+        message: plan.abstain_reason === "invalid_budget"
+          ? "max_price must be a finite non-negative USDC amount."
+          : priceUnknown
+            ? "The source uses metered credits or tokens whose USDC cost is unknown. Obtain a quote before routing."
+            : "No planned route is available within the requested budget."
+      },
+      fallback_allowed: false
+    };
+  }
+  if (["insufficient_context", "unsupported_source"].includes(plan.abstain_reason)
+    || (plan.abstain_reason === "no_external_data_required" && Number(plan.confidence) >= 0.9)) {
+    return {
+      ok: false,
+      status: plan.abstain_reason === "insufficient_context" ? "clarification_required" : "no_external_data_required",
+      task,
+      clarification_required: plan.abstain_reason === "insufficient_context",
+      reason: plan.abstain_reason,
+      fallback_allowed: false,
+      next_actions: plan.abstain_reason === "insufficient_context"
+        ? ["Clarify what should be researched before selecting or paying a data source."]
+        : ["Answer from the information already provided; do not make an external or paid call."]
+    };
+  }
+  if (!["external_api", "local_browser"].includes(plan.route_family)) return null;
+
+  const call = plan.route_family === "local_browser"
+    ? {
+        capability: plan.capability || "social_search",
+        params: { ...plan.params }
+      }
+    : {
+        capability: "external_api_query",
+        params: { ...plan.params }
+      };
+  const browserRoute = plan.route_family === "local_browser";
+  const planned = {
+    ok: false,
+    status: "no_service_found",
+    task,
+    tried: plan.candidate_sources || [],
+    suggested_route: {
+      reason: browserRoute
+        ? "This request should use the user's signed-in local browser session."
+        : "This request belongs to a specialist or current-web source, not a marketplace capability match.",
+      capability: call.capability,
+      call
+    },
+    handoff: {
+      kind: "agentrouter_route",
+      tool: "agentrouter_request",
+      request: call,
+      preserve_route_context: true
+    },
+    fallback_allowed: plan.must_not_fallback !== true,
+    next_actions: [
+      `Retry as a structured call: ${JSON.stringify(call)}`,
+      browserRoute
+        ? "Run the call through the local AgentRouter MCP bridge so the signed-in browser can execute it."
+        : "Use the planned source; do not substitute a source from a different data family."
+    ]
+  };
+  if (plan.auth_requirement?.required !== true) return planned;
+  if (plan.auth_requirement.kind === "agentrouter_account") {
+    return {
+      ...planned,
+      status: "connection_required",
+      action_required: {
+        action: "connect_agentrouter_account",
+        preferred_tool: "agentrouter_connect",
+        tool_arguments: { client_name: "current AI client" },
+        authorization_kind: "agentrouter_account_login"
+      },
+      fallback_allowed: false
+    };
+  }
+  if (plan.auth_requirement.kind === "source_connection") {
+    return {
+      ...planned,
+      status: "source_credentials_required",
+      connection_action: {
+        action: "configure_api_credentials",
+        preferred_tool: "agentrouter_connect_source",
+        authorization_kind: "api_credentials",
+        tool_arguments: { source: plan.auth_requirement.source }
+      },
+      fallback_allowed: false
+    };
+  }
+  return {
+    ...planned,
+    status: "local_browser_handoff_required",
+    action_required: {
+      action: "execute_local_browser_handoff",
+      preferred_tool: "agentrouter_request",
+      authorization_kind: "local_browser_session",
+      tool_arguments: call
+    },
+    fallback_allowed: false
+  };
+}
+
 function paymentRequiredFromQuote({ task, quoted, protocol }) {
   if (!quoted.ok && quoted.status !== "quote_blocked") return { ...quoted, task };
   const response = {
@@ -255,73 +384,30 @@ export async function askAgentRouterRemote({
   max_price: maxPrice = "0.05",
   currency = "USDC"
 }) {
-  const clarification = detectClarification(task);
-  if (clarification) return clarification;
-  const intent = inferIntent(task);
-  const structuredRequest = intentToCapabilityRequest(intent, { max_price: maxPrice });
-  if (structuredRequest) {
-    const routed = await post(baseUrl, "/agent-router/request", {
-      ...structuredRequest,
-      budget: { max_amount: maxPrice, currency }
-    });
-    return {
-      ...routed,
-      task,
-      selected_service: routed.selected_service ? publicSelectedService(routed.selected_service) : routed.selected_service,
-      input: routed.input,
-      answer: routed.result ? summarize(task, routed.result) : undefined
-    };
-  }
-  const candidates = await searchCandidatesRemote(baseUrl, intent, maxPrice);
-  if (!candidates.length) {
-    return {
-      ok: false,
-      status: "no_service_found",
-      task,
-      tried: intent.search_queries,
-      handoff: {
-        kind: "external_acquisition",
-        backend: "agent-reach",
-        reason: "agentrouter_coverage_gap",
-        preserve_route_context: true
-      },
-      fallback_allowed: true
-    };
-  }
-  const selected = selectService(candidates, intent);
-  const selectedManifest = await post(baseUrl, "/connector/get_manifest", { service_id: selected.service_id });
-  const preview = await post(baseUrl, "/connector/preview_service", { service_id: selected.service_id });
-  const tokenResolution = await maybeResolveTokenAddressRemote(baseUrl, intent, selectedManifest, { maxPrice, currency });
-  if (tokenResolution?.ok === false) {
-    return {
-      ok: false,
-      status: tokenResolution.status,
-      task,
-      selected_service: publicSelectedService(selected),
-      input: buildServiceAwareInput(intent, selectedManifest),
-      token_resolution: tokenResolution
-    };
-  }
-  const serviceInput = buildServiceAwareInput(tokenResolution?.intent || intent, selectedManifest);
-  const invocation = await post(baseUrl, "/connector/invoke_paid_service", {
-    service_id: selected.service_id,
-    input: serviceInput,
-    budget: {
-      max_amount: maxPrice,
-      currency
-    }
-  });
-  return {
-    ok: true,
+  return postAgentRouterDecision(baseUrl, "/agent-router/ask", {
     task,
-    selected_service: publicSelectedService(selected),
-    input: serviceInput,
-    token_resolution: tokenResolution || null,
-    preview_sample_type: preview.sample_type || null,
-    result: invocation.result,
-    feedback: invocation.feedback,
-    answer: summarize(task, invocation.result)
-  };
+    max_price: maxPrice,
+    currency
+  });
+}
+
+async function postAgentRouterDecision(baseUrl, path, body) {
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json();
+  // Canonical routing decisions intentionally use HTTP status codes for
+  // terminal outcomes such as authorization and budget gates. They are still
+  // valid agent-facing results, not transport failures.
+  if (!response.ok && !payload?.status) {
+    const error = new Error(payload?.error?.message || payload?.error?.code || `HTTP ${response.status}`);
+    error.payload = payload;
+    error.http_status = response.status;
+    throw error;
+  }
+  return payload;
 }
 
 export function inferIntent(task) {
@@ -941,6 +1027,10 @@ function detectClarification(task) {
       ok: false,
       status: "needs_clarification",
       question: "你说的最大痛点，是永续合约爆仓集中区，还是期权 max pain？",
+      // Keep the legacy machine-readable field while the canonical response
+      // exposes the richer question/options contract. Older CLI/MCP clients
+      // can still stop before payment without guessing the capability.
+      ambiguities: [{ field: "capability" }],
       options: [
         {
           label: "永续合约爆仓痛点",
@@ -1001,7 +1091,7 @@ function discoverServiceOptions(store, task, maxPrice) {
   };
 }
 
-function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
+export function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
   if (intent.wants_smart_money_activity) {
     return {
       capability: "token_smart_money_activity",

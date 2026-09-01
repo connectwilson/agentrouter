@@ -2,6 +2,7 @@ export function agentRouterConnectionAction() {
   return {
     action: "connect_agentrouter_account",
     preferred_tool: "agentrouter_connect",
+    authorization_kind: "agentrouter_account_login",
     tool_arguments: { client_name: "current AI client" },
     user_experience: "Open the returned browser approval link. After approval, retry the original request automatically.",
     api_key_fallback: {

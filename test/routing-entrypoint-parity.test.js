@@ -48,6 +48,23 @@ function normalizedDecision(payload) {
   };
 }
 
+function normalizedOutcome(payload) {
+  const observation = payload.routing_observation;
+  assert.ok(observation?.observation_id, "the real entrypoint must record its terminal decision");
+  return {
+    status: payload.status,
+    action: observation.action,
+    route_family: observation.route_family,
+    capability: observation.capability,
+    authorization_kind: payload.action_required?.authorization_kind
+      || payload.connection_action?.authorization_kind
+      || null,
+    preferred_tool: payload.action_required?.preferred_tool
+      || payload.connection_action?.preferred_tool
+      || null
+  };
+}
+
 test("ask and fetch expose the same canonical decision for high-risk natural-language routes", async () => {
   await withServer(async (baseUrl) => {
     for (const task of [
@@ -61,6 +78,7 @@ test("ask and fetch expose the same canonical decision for high-risk natural-lan
         post(baseUrl, "/agent-router/fetch", task)
       ]);
       assert.deepEqual(normalizedDecision(ask), normalizedDecision(fetchResult), task);
+      assert.deepEqual(normalizedOutcome(ask), normalizedOutcome(fetchResult), task);
     }
   });
 });
@@ -70,7 +88,9 @@ test("canonical plans make auth and fallback decisions observable instead of hid
     const scholarly = await post(baseUrl, "/agent-router/fetch", "使用 OpenAlex 查找 AgentRouter 相关论文。");
     assert.equal(scholarly.route_plan.source_constraint, "openalex");
     assert.equal(scholarly.route_plan.must_not_fallback, true);
-    assert.equal(scholarly.route_plan.auth_requirement.kind, "source_connection");
+    // Account authorization is the outer boundary. Source authorization only
+    // becomes actionable after AgentRouter knows which user's source to bind.
+    assert.equal(scholarly.route_plan.auth_requirement.kind, "agentrouter_account");
 
     const vague = await post(baseUrl, "/agent-router/fetch", "帮我研究一下这个东西。");
     assert.equal(vague.route_plan.route_family, "none");

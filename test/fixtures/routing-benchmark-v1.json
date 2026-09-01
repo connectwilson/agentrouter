@@ -1,6 +1,6 @@
 {
   "schema_version": "agentrouter_routing_benchmark_v1",
-  "benchmark_version": "1.0.0",
+  "benchmark_version": "1.2.0",
   "description": "A held-out, provider-tolerant benchmark for routing intent, source family, authorization, abstention, and budget safety.",
   "cases": [
     {
@@ -136,7 +136,7 @@
       "provenance": "original_30",
       "slices": ["onchain", "specialist_service", "migration", "cjk_english"],
       "context": { "account_state": "connected", "source_state": "connected" },
-      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "smart_money_activity", "acceptable_sources": [], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "token_smart_money_activity", "acceptable_sources": [], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
     },
     {
       "id": "AR-ROUTE-016",
@@ -722,6 +722,137 @@
       "slices": ["scholarly", "explicit_source", "english"],
       "context": { "account_state": "connected", "source_state": "connected" },
       "expected": { "action": "route", "route_family": "external_api", "capability": "scholarly_literature", "acceptable_sources": ["openalex"], "forbidden_sources": ["exa"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-081",
+      "prompt": "Use Parallel to search for current AgentRouter product updates.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["implementation_status", "planned_source", "no_match", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "not_callable" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "public_web_research", "acceptable_sources": [], "forbidden_sources": ["parallel", "exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-082",
+      "prompt": "Use Exa to search for current AgentRouter product updates.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["implementation_status", "available_source", "explicit_source", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "public_web_research", "acceptable_sources": ["exa"], "forbidden_sources": ["parallel"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-083",
+      "prompt": "Use Bright Data to scrape current AgentRouter coverage.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["implementation_status", "partner_api", "no_match", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "not_callable" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "public_web_research", "acceptable_sources": [], "forbidden_sources": ["bright_data", "exa"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-084",
+      "prompt": "查找小红书上用户对 AgentRouter 的评价。",
+      "locale": "zh-CN",
+      "provenance": "runtime_regression",
+      "slices": ["implementation_status", "browser_only", "social", "contrast", "cjk_english"],
+      "context": { "account_state": "connected", "browser_session": "not_connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_search", "acceptable_sources": ["xiaohongshu"], "forbidden_sources": ["bright_data", "linkedin"], "authorization_kind": "local_browser_session", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-085",
+      "prompt": "Use SocialCrawl to collect AgentRouter discussions across social platforms.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["implementation_status", "social", "partner_api", "no_match", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "not_callable" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "social_search", "acceptable_sources": [], "forbidden_sources": ["socialcrawl", "socialdatax"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-086",
+      "prompt": "Use SocialDataX to collect AgentRouter discussions across social platforms.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["implementation_status", "social", "available_source", "contrast", "english"],
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "social_search", "acceptable_sources": ["socialdatax"], "forbidden_sources": ["socialcrawl"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-087",
+      "prompt": "Structured social research across Reddit, X, and Xiaohongshu.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["structured_request", "social", "multi_source", "browser_only", "contrast", "english"],
+      "request": { "capability": "social_user_voice_research", "params": { "question": "Research AgentRouter user feedback", "platforms": ["reddit", "x", "xiaohongshu"] } },
+      "context": { "account_state": "not_connected", "browser_session": "not_connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_user_voice_research", "acceptable_sources": ["reddit", "x", "xiaohongshu"], "forbidden_sources": ["agentrouter_social_dispatch"], "authorization_kind": "local_browser_session", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-088",
+      "prompt": "Structured social research with no platform constraint.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["structured_request", "social", "hosted_dispatch", "contrast", "english"],
+      "request": { "capability": "social_user_voice_research", "params": { "question": "Research AgentRouter user feedback" } },
+      "context": { "account_state": "connected", "source_state": "connected" },
+      "expected": { "action": "route", "route_family": "external_api", "capability": "social_user_voice_research", "acceptable_sources": ["agentrouter_social_dispatch"], "forbidden_sources": ["xiaohongshu"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-089",
+      "prompt": "Structured social research across Reddit and unavailable SocialCrawl.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["structured_request", "social", "multi_source", "implementation_status", "partner_api", "no_match", "contrast", "english"],
+      "request": { "capability": "social_user_voice_research", "params": { "question": "Research AgentRouter user feedback", "platforms": ["reddit", "socialcrawl"] } },
+      "context": { "account_state": "connected", "browser_session": "not_connected", "source_state": "not_callable" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "social_user_voice_research", "acceptable_sources": [], "forbidden_sources": ["socialcrawl"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-090",
+      "prompt": "Structured social research across X and unavailable LinkedIn API.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["structured_request", "social", "multi_source", "implementation_status", "partner_api", "no_match", "contrast", "english"],
+      "request": { "capability": "social_user_voice_research", "params": { "question": "Research AgentRouter user feedback", "platforms": ["x", "linkedin"] } },
+      "context": { "account_state": "connected", "browser_session": "not_connected", "source_state": "not_callable" },
+      "expected": { "action": "no_match", "route_family": "no_match", "capability": "social_user_voice_research", "acceptable_sources": [], "forbidden_sources": ["linkedin"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-091",
+      "prompt": "Structured social research across Reddit and X only.",
+      "locale": "en-US",
+      "provenance": "runtime_regression",
+      "slices": ["structured_request", "social", "multi_source", "browser_only", "contrast", "english"],
+      "request": { "capability": "social_user_voice_research", "params": { "question": "Research AgentRouter user feedback", "platforms": ["reddit", "x"] } },
+      "context": { "account_state": "not_connected", "browser_session": "not_connected" },
+      "expected": { "action": "route", "route_family": "local_browser", "capability": "social_user_voice_research", "acceptable_sources": ["reddit", "x"], "forbidden_sources": ["socialcrawl", "linkedin"], "authorization_kind": "local_browser_session", "paid_allowed": false, "max_price_usdc": "0" }
+    },
+    {
+      "id": "AR-ROUTE-092",
+      "prompt": "查询标记为 Matrixport 的地址",
+      "locale": "zh-CN",
+      "provenance": "runtime_regression",
+      "slices": ["registered_service", "wallet_intelligence", "legacy_intent", "auth", "contrast", "cjk_english"],
+      "context": { "account_state": "not_connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "wallet_profile", "acceptable_sources": ["agentrouter_registry"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "agentrouter_account", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-093",
+      "prompt": "查询 Matrixport 关联钱包",
+      "locale": "zh-CN",
+      "provenance": "runtime_regression",
+      "slices": ["registered_service", "wallet_intelligence", "legacy_intent", "contrast", "cjk_english"],
+      "context": { "account_state": "connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "related_wallets", "acceptable_sources": ["agentrouter_registry"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+    },
+    {
+      "id": "AR-ROUTE-094",
+      "prompt": "查询 ETH smart money 净流入",
+      "locale": "zh-CN",
+      "provenance": "runtime_regression",
+      "slices": ["registered_service", "onchain", "legacy_intent", "contrast", "cjk_english"],
+      "context": { "account_state": "connected" },
+      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "smart_money_netflow", "acceptable_sources": ["agentrouter_registry"], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
     }
   ]
 }

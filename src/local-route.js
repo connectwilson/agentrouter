@@ -1,123 +1,131 @@
 import crypto from "node:crypto";
 import { DiscoveryConnector } from "./connector.js";
-import { inferIntent } from "./agent-router.js";
 import { invokePaidServiceWithLocalWallet } from "./local-invoke.js";
+import { createRouteObservationV2 } from "./routing/metrics.js";
 import { verifyServiceResult } from "./verifier.js";
 import { createCompactResult } from "./compact-result.js";
+import { validateBudgetAmount } from "./budget-normalization.js";
 
 export async function routeTaskWithLocalWallet({ baseUrl, task, constraints = {}, budget = {} }) {
   const connector = new DiscoveryConnector({ baseUrl });
   const timing = createRouteTiming();
-  const inferred = inferIntent(task);
-  if (inferred.wants_smart_money_activity) {
-    return routeTokenSmartMoneyActivityWithLocalWallet({
+  const normalizedBudget = normalizedRequestBudget({ constraints, budget });
+  const budgetValidation = validateBudgetAmount(normalizedBudget.max_amount, { field: "max_price_usdc" });
+  if (!budgetValidation.ok) {
+    return withTiming({
+      ok: false,
+      status: budgetValidation.code,
+      data_returned: false,
+      error: budgetValidation.message,
+      field: budgetValidation.field,
+      retryable: false
+    }, timing);
+  }
+  const canonical = await timing.measure("canonical_fetch_ms", () => postJsonAllowPayment(baseUrl, "/agent-router/fetch", {
+    task,
+    execution_mode: "local_wallet_preflight",
+    ...(normalizedBudget.explicitMaxAmount ? { max_price: normalizedBudget.max_amount } : {}),
+    ...(normalizedBudget.explicitCurrency ? { currency: normalizedBudget.currency } : {}),
+    ...(normalizedBudget.explicitMaxAmount || Object.keys(constraints).length
+      ? {
+          constraints: {
+            ...constraints,
+            ...(normalizedBudget.explicitMaxAmount ? { max_price_usdc: normalizedBudget.max_amount } : {})
+          }
+        }
+      : {}),
+    ...(normalizedBudget.explicitMaxAmount || normalizedBudget.explicitCurrency || Object.keys(budget).length
+      ? {
+          budget: {
+            ...budget,
+            ...(normalizedBudget.explicitMaxAmount ? { max_amount: normalizedBudget.max_amount } : {}),
+            ...(normalizedBudget.explicitCurrency ? { currency: normalizedBudget.currency } : {})
+          }
+        }
+      : {}),
+    consumer_context: {
+      source: "agentrouter_mcp_local_wallet",
+      task
+    }
+  }));
+  const plan = canonical?.route_plan || null;
+  if (!plan || plan.route_family !== "registered_service" || !plan.capability) {
+    return withTiming(canonical, timing);
+  }
+  if (plan.capability === "token_smart_money_activity"
+    && plan.params?.token_symbol
+    && !plan.params?.token_address) {
+    const routed = await routeTokenSmartMoneyActivityWithLocalWallet({
       baseUrl,
       connector,
       task,
-      intent: inferred,
-      constraints,
-      budget,
+      intent: {
+        token: plan.params.token_symbol,
+        chain: plan.params.chain,
+        input: { ...plan.params }
+      },
+      constraints: {
+        ...constraints,
+        max_price_usdc: normalizedBudget.max_amount
+      },
+      budget: {
+        ...budget,
+        ...normalizedBudget
+      },
       timing
     });
-  }
-  const resolved = await timing.measure("resolve_route_ms", () => connector.resolveRoute({ task, constraints }));
-  if (resolved.status === "needs_clarification" || resolved.status === "no_match") {
-    return { ...resolved, timing: timing.snapshot() };
-  }
-
-  let invocation;
-  try {
-    invocation = await timing.measure("local_paid_invoke_ms", () => invokePaidServiceWithLocalWallet({
-      baseUrl,
-      serviceId: resolved.selected_service.service_id,
-      input: resolved.input,
-      budget: {
-        max_amount: constraints.max_price_usdc ?? budget.max_amount ?? "0.05",
-        currency: budget.currency || "USDC"
-      },
-      request: {
-        capability: resolved.intent?.capability || "natural_language_route",
-        params: resolved.intent || { task },
-        constraints,
-        consumer_context: {
-          source: "agentrouter_mcp_local_wallet",
-          task
-        }
-      }
-    }));
-  } catch (error) {
     return {
-      ...resolved,
-      ok: false,
-      status: error.status || error.code || "local_paid_invocation_failed",
-      data_returned: false,
-      error: error.message,
-      retryable: Boolean(error.retryable),
-      arc_rpc: error.arc_rpc || null,
-      action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
-      upstream_status: error.upstreamStatus || null,
-      timing: timing.snapshot()
+      ...mergeCanonicalResult(canonical, routed),
+      timing: routed.timing || timing.snapshot()
     };
   }
-  const manifest = await timing.measure("get_manifest_ms", () => connector.getManifest(resolved.selected_service.service_id));
-  const verification = timing.measureSync("verify_result_ms", () => verifyServiceResult({
-    result: invocation.result,
-    manifest,
-    intent: resolved.intent,
-    constraints
-  }));
-  const compactResult = createCompactResult({
-    result: invocation.result,
-    verification,
-    quote: resolved.quote,
-    feedback: invocation.feedback,
-    evidence: invocation.evidence_recording?.evidence,
+  const compatibilityRoute = await timing.measure("compatibility_resolve_route_ms", () =>
+    connector.resolveRoute({ task, constraints })
+  ).catch(() => null);
+  return executeCanonicalLocalWalletRoute({
+    baseUrl,
     request: {
-      capability: resolved.intent?.capability,
-      params: resolved.intent || inferred
+      capability: plan.capability,
+      params: plan.params || {},
+      constraints: {
+        ...constraints,
+        max_price_usdc: normalizedBudget.max_amount
+      },
+      budget: {
+        ...budget,
+        ...normalizedBudget
+      },
+      consumer_context: {
+        source: "agentrouter_mcp_local_wallet",
+        task
+      }
     },
-    input: resolved.input
+    normalizedBudget,
+    canonicalResult: canonical,
+    compatibilityStatus: compatibilityRoute?.status || null,
+    timing
   });
-
-  return {
-    ...resolved,
-    result: invocation.result,
-    compact_result: compactResult,
-    local_payment: invocation.local_payment,
-    evidence_recording: invocation.evidence_recording,
-    consumer_feedback_request: invocation.evidence_recording?.consumer_feedback_request || null,
-    verification,
-    timing: timing.snapshot(),
-    routing_event: {
-      event_version: "agent_route_event_v1",
-      task,
-      normalized_intent: resolved.intent,
-      service_id: resolved.selected_service.service_id,
-      provider_id: resolved.selected_service.provider_id,
-      verification,
-      score: resolved.selected_service.routing_score,
-      created_at: new Date().toISOString()
-    }
-  };
 }
 
 export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request = {}, budget = {} }) {
-  const connector = new DiscoveryConnector({ baseUrl });
   const timing = createRouteTiming();
-  const normalizedBudget = {
-    max_amount: request.constraints?.max_price_usdc ?? request.budget?.max_amount ?? budget.max_amount ?? "0.05",
-    currency: request.budget?.currency || budget.currency || "USDC"
-  };
+  const normalizedBudget = normalizedRequestBudget({ constraints: request.constraints || {}, budget: request.budget || budget });
   const requested = {
     ...request,
-    budget: {
-      ...(request.budget || {}),
-      ...normalizedBudget
-    }
+    execution_mode: "local_wallet_preflight",
+    ...(normalizedBudget.explicitMaxAmount || normalizedBudget.explicitCurrency || request.budget
+      ? {
+          budget: {
+            ...(request.budget || {}),
+            ...(normalizedBudget.explicitMaxAmount ? { max_amount: normalizedBudget.max_amount } : {}),
+            ...(normalizedBudget.explicitCurrency ? { currency: normalizedBudget.currency } : {})
+          }
+        }
+      : {})
   };
-  let quoted;
+  let canonical;
   try {
-    quoted = await timing.measure("resolve_structured_route_ms", () => postJsonAllowPayment(baseUrl, "/agent-router/quote", requested));
+    canonical = await timing.measure("canonical_request_ms", () => postJsonAllowPayment(baseUrl, "/agent-router/request", requested));
   } catch (error) {
     return {
       ok: false,
@@ -130,29 +138,77 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
       timing: timing.snapshot()
     };
   }
-  if (quoted.status === "quote_blocked" || quoted.quote?.would_pay === false) {
-    return {
-      ...quoted,
+  const plan = canonical?.route_plan || null;
+  if (!plan || plan.route_family !== "registered_service" || !requested.capability) {
+    return withTiming(canonical, timing);
+  }
+  return executeCanonicalLocalWalletRoute({
+    baseUrl,
+    request: {
+      ...requested,
+      constraints: {
+        ...(requested.constraints || {}),
+        max_price_usdc: normalizedBudget.max_amount
+      },
+      budget: {
+        ...(requested.budget || {}),
+        ...normalizedBudget
+      },
+      consumer_context: {
+        ...(requested.consumer_context || {}),
+        source: requested.consumer_context?.source || "agentrouter_structured_request_local_wallet"
+      }
+    },
+    normalizedBudget,
+    canonicalResult: canonical,
+    timing
+  });
+}
+
+async function executeCanonicalLocalWalletRoute({
+  baseUrl,
+  request,
+  normalizedBudget,
+  canonicalResult,
+  compatibilityStatus = null,
+  timing
+}) {
+  const connector = new DiscoveryConnector({ baseUrl });
+  let quoted;
+  try {
+    quoted = await timing.measure("resolve_structured_route_ms", () => postJsonAllowPayment(baseUrl, "/agent-router/quote", request));
+  } catch (error) {
+    return withTiming(mergeCanonicalResult(canonicalResult, {
+      ok: false,
+      status: error.status || error.code || "structured_route_failed",
       data_returned: false,
-      timing: timing.snapshot()
-    };
+      error: error.message,
+      wallet: error.wallet || null,
+      arc_rpc: error.arc_rpc || null,
+      action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
+      payload: error.payload || null
+    }), timing);
+  }
+  if (quoted.status === "quote_blocked" || quoted.quote?.would_pay === false) {
+    return withTiming(mergeCanonicalResult(canonicalResult, {
+      ...quoted,
+      data_returned: false
+    }), timing);
   }
   if (quoted.status !== "payment_required" && quoted.status !== "quoted") {
-    return {
+    return withTiming(mergeCanonicalResult(canonicalResult, {
       ...quoted,
-      data_returned: false,
-      timing: timing.snapshot()
-    };
+      data_returned: false
+    }), timing);
   }
   const serviceId = quoted.selected_service?.service_id;
   if (!serviceId) {
-    return {
+    return withTiming(mergeCanonicalResult(canonicalResult, {
       ...quoted,
       ok: false,
       status: "selected_service_missing",
-      data_returned: false,
-      timing: timing.snapshot()
-    };
+      data_returned: false
+    }), timing);
   }
 
   let invocation;
@@ -163,38 +219,39 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
       input: quoted.input || {},
       budget: normalizedBudget,
       request: {
-        capability: requested.capability,
-        params: requested.params || {},
-        constraints: requested.constraints || {},
+        capability: request.capability,
+        params: request.params || {},
+        constraints: quoted.request?.constraints || request.constraints || {},
         budget: normalizedBudget,
-        consumer_context: {
-          ...(requested.consumer_context || {}),
-          source: requested.consumer_context?.source || "agentrouter_structured_request_local_wallet"
-        }
-      }
+        consumer_context: request.consumer_context || {}
+      },
+      routingObservation: canonicalResult?.routing_observation || null,
+      routingSummary: canonicalResult?.routing_observation
+        ? terminalRoutingSummary(canonicalResult, quoted, request)
+        : null
     }));
   } catch (error) {
-    return {
+    return withTiming(mergeCanonicalResult(canonicalResult, {
       ...quoted,
       ok: false,
       status: error.status || error.code || "local_paid_invocation_failed",
       data_returned: false,
       error: error.message,
       retryable: Boolean(error.retryable),
+      wallet: error.wallet || null,
       arc_rpc: error.arc_rpc || null,
       action_required: error.status === "arc_payment_unavailable" ? "fix_arc_rpc_or_retry" : undefined,
       upstream_status: error.upstreamStatus || null,
-      payload: error.payload || null,
-      timing: timing.snapshot()
-    };
+      payload: error.payload || null
+    }), timing);
   }
 
   const manifest = await timing.measure("get_manifest_ms", () => connector.getManifest(serviceId));
   const verification = timing.measureSync("verify_result_ms", () => verifyServiceResult({
     result: invocation.result,
     manifest,
-    intent: requested.params || {},
-    constraints: requested.constraints || {}
+    intent: request.params || {},
+    constraints: request.constraints || {}
   }));
   const compactResult = createCompactResult({
     result: invocation.result,
@@ -202,14 +259,18 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
     quote: quoted.quote,
     feedback: invocation.feedback,
     evidence: invocation.evidence_recording?.evidence,
-    request: requested,
+    request,
     input: quoted.input
   });
 
-  return {
+  const executionStatus = "paid_with_local_wallet";
+  return withTiming(mergeCanonicalResult(canonicalResult, {
     ...quoted,
     ok: true,
-    status: "paid_with_local_wallet",
+    status: compatibilityStatus === "route_with_assumption"
+      ? compatibilityStatus
+      : executionStatus,
+    execution_status: executionStatus,
     protocol: {
       protocol_version: "agent_router_request_v1",
       semantic_parser: "external_main_agent",
@@ -219,10 +280,173 @@ export async function routeCapabilityRequestWithLocalWallet({ baseUrl, request =
     compact_result: compactResult,
     local_payment: invocation.local_payment,
     evidence_recording: invocation.evidence_recording,
+    routing_observation: invocation.evidence_recording?.routing_observation || undefined,
     consumer_feedback_request: invocation.evidence_recording?.consumer_feedback_request || null,
+    feedback_required: Boolean(invocation.evidence_recording?.consumer_feedback_request),
+    next_required_action: invocation.evidence_recording?.consumer_feedback_request
+      ? "After using this result in the final answer, call agentrouter_feedback with this request_id."
+      : null,
     verification,
-    data_returned: invocation.result?.status === "success",
+    data_returned: invocation.result?.status === "success"
+  }), timing);
+}
+
+function terminalRoutingSummary(canonicalResult, quoted, request) {
+  const plan = canonicalResult?.route_plan || {};
+  const selectedServiceId = quoted?.selected_service?.service_id || null;
+  return {
+    task_family: plan.task_family || "unknown",
+    route_family: plan.route_family || "registered_service",
+    capability: plan.capability || request?.capability || "unknown",
+    source_family: plan.route_family === "registered_service" ? "registry" : "unknown",
+    action: "route",
+    selected_service_id: selectedServiceId,
+    candidate_sources: Array.isArray(plan.candidate_sources) ? plan.candidate_sources : [],
+    budget: {
+      max_price_usdc: plan.budget_gate?.max_price_usdc ?? request?.constraints?.max_price_usdc ?? null,
+      selected_price_usdc: quoted?.quote?.amount || quoted?.quote?.pricing?.amount || null,
+      compliant: true
+    },
+    authorization: { required: false, action: "none", source: null }
+  };
+}
+
+function mergeCanonicalResult(canonicalResult = {}, payload = {}) {
+  const routedPlan = mergedRoutePlan(canonicalResult.route_plan, payload.route_plan, payload);
+  const routedObservation = mergedRoutingObservation(canonicalResult.routing_observation, routedPlan, payload);
+  return {
+    ...canonicalResult,
+    ...payload,
+    route_plan: routedPlan,
+    routing_observation: routedObservation
+  };
+}
+
+function normalizedRequestBudget({ constraints = {}, budget = {} } = {}) {
+  const explicitMaxAmount = Object.hasOwn(constraints, "max_price_usdc") || Object.hasOwn(budget, "max_amount");
+  const explicitCurrency = Object.hasOwn(budget, "currency");
+  return {
+    max_amount: constraints.max_price_usdc ?? budget.max_amount ?? "0.05",
+    currency: budget.currency || "USDC",
+    explicitMaxAmount,
+    explicitCurrency
+  };
+}
+
+function withTiming(payload, timing) {
+  return {
+    ...payload,
     timing: timing.snapshot()
+  };
+}
+
+function mergedRoutePlan(canonicalPlan, payloadPlan, payload = {}) {
+  if (payloadPlan) return payloadPlan;
+  if (!canonicalPlan) return payloadPlan || null;
+  const terminalStatus = payload.execution_status || payload.status;
+  if (!isLocalWalletTerminalStatus(terminalStatus)) return canonicalPlan;
+  const quoteBlocked = terminalStatus === "quote_blocked";
+  return {
+    ...canonicalPlan,
+    auth_requirement: {
+      required: false,
+      kind: "none",
+      source: null
+    },
+    ...(quoteBlocked
+      ? {
+          budget_gate: {
+            ...(canonicalPlan.budget_gate || {}),
+            paid_calls_allowed: false,
+            status: "blocked"
+          },
+          abstain_reason: "budget_exceeded",
+          must_not_fallback: true
+        }
+      : {})
+  };
+}
+
+function mergedRoutingObservation(canonicalObservation, routePlan, payload = {}) {
+  if (payload.routing_observation) return payload.routing_observation;
+  if (!canonicalObservation) return null;
+  const terminalStatus = payload.execution_status || payload.status;
+  if (!isLocalWalletTerminalStatus(terminalStatus)) return canonicalObservation;
+  return summarizeRouteObservation(createRouteObservationV2({
+    observation_id: `route_obs_local_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`,
+    request_id: canonicalObservation.request_id || `route_req_local_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`,
+    created_at: new Date().toISOString(),
+    entrypoint: "local_wallet",
+    task_family: routePlan?.task_family || "unknown",
+    route_family: routePlan?.route_family || canonicalObservation.route_family || "registered_service",
+    capability: routePlan?.capability || canonicalObservation.capability || "unknown",
+    source_family: routePlan?.route_family === "registered_service" ? "registry" : "unknown",
+    action: routeObservationActionForStatus(terminalStatus),
+    selected_service_id: payload.selected_service?.service_id || payload.service_id || null,
+    candidates: payload.selected_service?.service_id
+      ? [{
+          service_id: payload.selected_service.service_id,
+          source_family: routePlan?.route_family === "registered_service" ? "registry" : "unknown",
+          routing_score: 1,
+          price_usdc: payload.quote?.amount || payload.quote?.pricing?.amount || null
+        }]
+      : [],
+    confidence: routePlan?.confidence ?? null,
+    fallback: {
+      used: false,
+      from: null,
+      to: null,
+      reason: null
+    },
+    authorization: {
+      required: false,
+      action: "none",
+      source: null
+    },
+    budget: {
+      max_price_usdc: routePlan?.budget_gate?.max_price_usdc ?? null,
+      selected_price_usdc: payload.quote?.amount || payload.quote?.pricing?.amount || null,
+      compliant: terminalStatus === "paid_with_local_wallet" ? true : null
+    },
+    routing_policy_version: routePlan?.schema_version || null,
+    diagnostics: {
+      local_wallet_execution: true,
+      terminal_status: terminalStatus
+    }
+  }));
+}
+
+function routeObservationActionForStatus(status) {
+  if (status === "paid_with_local_wallet") return "route";
+  if (status === "quote_blocked" || status === "selected_service_missing" || status === "structured_route_failed") return "no_match";
+  return "route";
+}
+
+function isLocalWalletTerminalStatus(status) {
+  return typeof status === "string" && [
+    "paid_with_local_wallet",
+    "quote_blocked",
+    "selected_service_missing",
+    "local_paid_invocation_failed",
+    "provider_unavailable_before_payment",
+    "payment_challenge_unavailable",
+    "provider_prepay_validation_failed",
+    "arc_payment_unavailable",
+    "wallet_needs_funding",
+    "structured_route_failed"
+  ].includes(status);
+}
+
+function summarizeRouteObservation(observation) {
+  if (!observation) return null;
+  return {
+    observation_id: observation.observation_id,
+    request_id: observation.request_id,
+    action: observation.action,
+    route_family: observation.route_family,
+    capability: observation.capability,
+    durability_status: "memory_only",
+    feedback_endpoint: null
   };
 }
 
@@ -362,6 +586,7 @@ async function routeTokenSmartMoneyActivityWithLocalWallet({ baseUrl, connector,
   return {
     ok: true,
     status: "paid_with_local_wallet",
+    execution_status: "paid_with_local_wallet",
     task,
     request: quote.request,
     selected_service: quote.selected_service,

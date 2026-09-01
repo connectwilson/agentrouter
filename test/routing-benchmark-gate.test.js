@@ -4,8 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { inferRoutePlan } from "../src/canonical-route-plan.js";
-import { aggregateRoutingAccuracy, evaluateRoutingDecision } from "../src/routing-evaluation.js";
+import { inferRoutePlan, inferStructuredRoutePlan } from "../src/routing/planner.js";
+import { aggregateRoutingAccuracy, evaluateRoutingDecision } from "./support/routing-evaluation.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const benchmark = JSON.parse(fs.readFileSync(
@@ -25,6 +25,7 @@ function contextFor(entry) {
     agentrouter_authenticated: entry.context?.account_state === "connected",
     connected_sources: connected,
     local_browser_sessions: browserSessions,
+    require_price_upper_bound: expected.max_price_usdc !== null,
     constraints: {
       max_price_usdc: expected.max_price_usdc ?? "0.05"
     }
@@ -32,7 +33,13 @@ function contextFor(entry) {
 }
 
 function decisionFromPlan(entry, plan, entrypoint) {
-  const blocked = plan.abstain_reason === "budget_exceeded";
+  const blocked = [
+    "budget_exceeded",
+    "price_unknown",
+    "invalid_budget",
+    "unsupported_source",
+    "source_not_callable"
+  ].includes(plan.abstain_reason);
   const action = blocked
     ? "no_match"
     : plan.abstain_reason === "insufficient_context"
@@ -59,18 +66,20 @@ function decisionFromPlan(entry, plan, entrypoint) {
     selected_source: blocked ? null : plan.candidate_sources[0] || null,
     candidate_sources: blocked ? [] : plan.candidate_sources,
     authorization_kind: blocked ? "none" : authKind,
-    price_usdc: blocked ? 0 : Number(plan.estimated_price_usdc || 0),
+    price_usdc: blocked || plan.estimated_price_usdc == null
+      ? null
+      : Number(plan.estimated_price_usdc),
     confidence: plan.confidence
   };
 }
 
-test("the versioned 80-case benchmark enforces routing accuracy and safety gates", () => {
-  const evaluated = benchmark.cases.flatMap((entry) => {
-    const plan = inferRoutePlan(entry.prompt, contextFor(entry));
-    return ["ask", "fetch"].map((entrypoint) => evaluateRoutingDecision(
-      entry,
-      decisionFromPlan(entry, plan, entrypoint)
-    ));
+test("the versioned benchmark enforces canonical planner accuracy and safety gates", () => {
+  const evaluated = benchmark.cases.map((entry) => {
+    const context = contextFor(entry);
+    const plan = entry.request
+      ? inferStructuredRoutePlan(entry.request, context)
+      : inferRoutePlan(entry.prompt, context);
+    return evaluateRoutingDecision(entry, decisionFromPlan(entry, plan, "canonical_planner"));
   });
   const metrics = aggregateRoutingAccuracy(evaluated, {
     eceBins: 10,
@@ -83,7 +92,10 @@ test("the versioned 80-case benchmark enforces routing accuracy and safety gates
   assert.ok(metrics.source_recall_at_3 >= 0.97, JSON.stringify(metrics));
   assert.ok(metrics.abstention_precision >= 0.95, JSON.stringify(metrics));
   assert.ok(metrics.abstention_recall >= 0.95, JSON.stringify(metrics));
-  assert.equal(metrics.entrypoint_parity, 1);
+  // Runtime entrypoint parity is exercised against real HTTP/MCP/CLI paths in
+  // routing-entrypoint-parity and routing-runtime-integration. It must not be
+  // manufactured here by cloning one planner output under two labels.
+  assert.equal(metrics.entrypoint_parity, null);
   assert.ok(metrics.authorization_accuracy >= 0.98, JSON.stringify(metrics));
   assert.equal(metrics.budget_violation_rate, 0);
   assert.equal(metrics.unsafe_paid_route_rate, 0);

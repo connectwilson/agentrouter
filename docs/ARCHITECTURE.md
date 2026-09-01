@@ -14,6 +14,18 @@
   - `apify_actor` — an Apify Actor run through `run-sync-get-dataset-items`, returning its dataset items as the envelope's `data.items`. Execution is synchronous only; a config asking for `execution_mode: "async"` is rejected at registration with `APIFY_ASYNC_NOT_SUPPORTED`. The Apify token is stored as a provider secret and never reaches the manifest or an agent. Buyer input is filtered to `input_allowlist` and merged over `input_template`, and `dataset.fields` optionally projects items down to the listed keys. Tuned by `ADN_APIFY_API_BASE` and `ADN_APIFY_MAX_WAIT_MS`.
 - Wallet/Payment: adapter boundary supporting prepaid platform credits, x402-style payment, and Arc settlement. The credits backend uses Stripe Hosted Checkout plus a PostgreSQL append-only ledger.
 
+### Routing module boundaries
+
+- `src/routing/planner.js` is the canonical pure decision layer. It owns route family, capability, source constraints, authorization requirements, budget gates, confidence, and abstention.
+- `src/routing/metrics.js` owns privacy-minimized runtime observations, authenticated labels, and aggregate production metrics. It must not retain raw prompts.
+- `src/routing/runtime.js` adapts catalog/account state into canonical plans, enforces preflight handoffs and budget/source blocks, reconciles terminal results, and records the final observation. HTTP handlers call this module instead of rebuilding routing state locally.
+- `src/routing/fetch.js` owns multi-requirement fetch orchestration and fallback sequencing; it returns routing payloads without depending on HTTP request or response objects.
+- `src/routing/http-handlers.js` executes the structured request/fetch contracts and returns `{ statusCode, payload }`. `src/routing/http-boundary.js` is the single status/payment mapping boundary. `src/server.js` owns transport, authentication, and dependency wiring only.
+- `test/support/routing-evaluation.js` is an offline benchmark evaluator. It is test-only and must not be imported by production modules.
+- `src/router.js` remains the registered-service execution and quoting layer during the compatibility migration. New semantic routing rules belong in the canonical planner, not in another entrypoint-specific parser.
+- HTTP, MCP, CLI, local-wallet, and browser entrypoints may adapt inputs and execute plans, but they must expose the same canonical plan and terminal observation contract.
+- `packages/agentrouter-mcp/server/index.js` is the stdio/remote transport coordinator. Local social planning, observation decoration, and feedback summaries live in `packages/agentrouter-mcp/server/local-routing.js`; new local routing rules must not be added back to the transport entrypoint.
+
 ## Trust Boundaries
 
 - Demand agents should not choose payment target or amount directly. Invocation derives those from the service manifest and provider challenge.

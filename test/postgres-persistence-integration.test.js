@@ -17,6 +17,8 @@ import {
   enqueuePersistentAnchorJob,
   finalizePersistentServiceRegistration,
   reservePersistentAnchorJobNonce,
+  serviceEventIdempotencyKey,
+  writePersistentServiceEvent,
   writePersistentPublicApiCandidates
 } from "../src/persistence.js";
 
@@ -85,7 +87,8 @@ async function runPostgresAssertions(databaseUrl) {
     settlementServiceIds: [],
     candidateIds: [],
     anchorJobs: [],
-    nonceKeys: []
+    nonceKeys: [],
+    eventKeys: []
   };
   let schemaPrimed = false;
 
@@ -105,6 +108,7 @@ async function runPostgresAssertions(databaseUrl) {
     await assertSettlementReplayBoundary({ inspectionPool, cleanup, uniquePrefix });
     await assertPublicApiLeaseFencing({ inspectionPool, cleanup, uniquePrefix });
     await assertConcurrentAnchorNonces({ cleanup, uniquePrefix });
+    await assertRoutingFeedbackCas({ inspectionPool, cleanup, uniquePrefix });
   } finally {
     try {
       if (schemaPrimed) await cleanupRows(inspectionPool, cleanup);
@@ -405,7 +409,88 @@ async function assertConcurrentAnchorNonces({ cleanup, uniquePrefix }) {
   assert.equal(replay.reserved_nonce, reserved[0].reserved_nonce, "retrying one job must reuse its reserved nonce");
 }
 
+async function assertRoutingFeedbackCas({ inspectionPool, cleanup, uniquePrefix }) {
+  const observationId = `${uniquePrefix}_routing_observation`;
+  const requestId = `${uniquePrefix}_routing_request`;
+  const actorKey = `${uniquePrefix}:routing-owner`;
+  const baseEvent = {
+    event_version: "agent_router_routing_feedback_v1",
+    feedback_id: `routing_feedback_${observationId}`,
+    observation_id: observationId,
+    request_id: requestId,
+    verdict: "incorrect",
+    expected_action: "route",
+    expected_route_family: "external_api",
+    expected_capability: "general_web_research",
+    expected_source_family: "web_search",
+    reason_code: "wrong_source",
+    actor_key: actorKey,
+    created_at: new Date().toISOString()
+  };
+  const entries = ["exa", "reddit"].map((expectedServiceId) => ({
+    eventType: "routing_feedback",
+    serviceId: expectedServiceId,
+    requestId,
+    event: { ...baseEvent, expected_service_id: expectedServiceId }
+  }));
+  const eventKey = serviceEventIdempotencyKey(entries[0]);
+  assert.equal(eventKey, serviceEventIdempotencyKey(entries[1]), "service and label payload must not split the routing label key");
+  cleanup.eventKeys.push(eventKey);
+
+  const results = await Promise.all(entries.map((entry) => writePersistentServiceEvent(entry)));
+  assert.deepEqual(results.map((result) => result.status).sort(), ["created", "existing"]);
+  assert.deepEqual(results[0].event, results[1].event, "both instances must observe one canonical durable label");
+
+  const rows = await inspectionPool.query(
+    "select event from adn_service_events where idempotency_key = $1",
+    [eventKey]
+  );
+  assert.equal(rows.rowCount, 1);
+  assert.deepEqual(rows.rows[0].event, results[0].event);
+
+  const replay = await writePersistentServiceEvent({
+    ...entries.find((entry) => entry.event.expected_service_id === results[0].event.expected_service_id),
+    event: { ...results[0].event, created_at: new Date(Date.now() + 1_000).toISOString() }
+  });
+  assert.equal(replay.status, "existing");
+  assert.deepEqual(replay.event, results[0].event);
+
+  const legacyObservationId = `${observationId}_legacy_key`;
+  const legacyEvent = {
+    ...baseEvent,
+    observation_id: legacyObservationId,
+    feedback_id: `routing_feedback_${legacyObservationId}`,
+    expected_service_id: "legacy_canonical"
+  };
+  const legacyKey = crypto.createHash("sha256").update(`${uniquePrefix}:legacy-routing-key`).digest("hex");
+  cleanup.eventKeys.push(legacyKey);
+  await inspectionPool.query(
+    `insert into adn_service_events (event_type, service_id, request_id, event, idempotency_key, created_at)
+     values ('routing_feedback', $1, $2, $3::jsonb, $4, now())`,
+    ["legacy_canonical", requestId, JSON.stringify(legacyEvent), legacyKey]
+  );
+  const migratedIdentityAttempt = {
+    eventType: "routing_feedback",
+    serviceId: "new_conflicting_service",
+    requestId,
+    event: { ...legacyEvent, expected_service_id: "new_conflicting_service" }
+  };
+  cleanup.eventKeys.push(serviceEventIdempotencyKey(migratedIdentityAttempt));
+  const legacyReplay = await writePersistentServiceEvent(migratedIdentityAttempt);
+  assert.equal(legacyReplay.status, "existing");
+  assert.deepEqual(legacyReplay.event, legacyEvent, "pre-migration routing labels remain canonical after the key change");
+  const legacyRows = await inspectionPool.query(
+    `select count(*)::int as count from adn_service_events
+     where event_type = 'routing_feedback' and event->>'observation_id' = $1 and event->>'actor_key' = $2`,
+    [legacyObservationId, actorKey]
+  );
+  assert.equal(legacyRows.rows[0].count, 1);
+}
+
 async function cleanupRows(pool, cleanup) {
+  if (cleanup.eventKeys.length) {
+    await pool.query("delete from adn_service_events where idempotency_key = any($1::text[])", [cleanup.eventKeys]);
+  }
   if (cleanup.anchorJobs.length) {
     await pool.query("delete from adn_anchor_outbox where job_id = any($1::text[])", [cleanup.anchorJobs]);
   }

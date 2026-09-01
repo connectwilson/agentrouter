@@ -5,6 +5,8 @@
 *.key
 node_modules
 providers
+test
+docs
 agentrouter-skill-export/.git
 coverage
 .DS_Store

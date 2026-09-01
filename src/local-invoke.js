@@ -14,6 +14,8 @@ export async function invokePaidServiceWithLocalWallet({
   input = {},
   budget = { max_amount: "0.05", currency: "USDC" },
   request = null,
+  routingObservation = null,
+  routingSummary = null,
   transportOptions = {}
 }) {
   const rawMaxAmount = budget?.max_amount ?? budget?.max_price_usdc ?? budget?.max_price;
@@ -32,6 +34,8 @@ export async function invokePaidServiceWithLocalWallet({
       input,
       budget,
       request,
+      routingObservation,
+      routingSummary,
       transportOptions: providerTransportOptions
     });
   }
@@ -163,6 +167,8 @@ export async function invokePaidServiceWithLocalWallet({
     localPayment: event,
     completionGrant: payment.completion_grant,
     budget,
+    routingObservation,
+    routingSummary,
     request: request || {
       capability: "direct_service_invocation",
       params: input,
@@ -197,7 +203,7 @@ function localBudgetError(validation) {
   return error;
 }
 
-async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, budget, request = null, transportOptions = {} }) {
+async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, budget, request = null, routingObservation = null, routingSummary = null, transportOptions = {} }) {
   const completionAuthorization = await requestCompletionGrant(baseUrl, serviceId, input);
   const wallet = await readWallet();
   const started = Date.now();
@@ -261,6 +267,8 @@ async function invokeOfficialX402Service({ baseUrl, manifest, serviceId, input, 
     completionGrant: completionAuthorization.completion_grant,
     completionNonce: completionAuthorization.completion_nonce,
     budget,
+    routingObservation,
+    routingSummary,
     request: request || {
       capability: "direct_service_invocation",
       params: input,
@@ -410,7 +418,7 @@ function atomicAmountFromRequirement(requirement) {
   }
 }
 
-async function recordCompletedInvocation({ baseUrl, serviceId, input, result, feedback, localPayment, completionGrant = null, completionNonce = null, budget, request }) {
+async function recordCompletedInvocation({ baseUrl, serviceId, input, result, feedback, localPayment, completionGrant = null, completionNonce = null, budget, request, routingObservation = null, routingSummary = null }) {
   if (!baseUrl) return { ok: false, status: "skipped", reason: "missing_registry_url" };
   try {
     return await postJson(baseUrl, "/agent-router/calls/complete", {
@@ -422,7 +430,9 @@ async function recordCompletedInvocation({ baseUrl, serviceId, input, result, fe
       local_payment: localPayment,
       completion_grant: completionGrant,
       completion_nonce: completionNonce,
-      budget
+      budget,
+      ...(routingObservation ? { routing_observation: routingObservation } : {}),
+      ...(routingSummary ? { routing_summary: routingSummary } : {})
     });
   } catch (error) {
     return {

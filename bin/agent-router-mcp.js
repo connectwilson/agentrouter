@@ -5,7 +5,7 @@ import { getArcUsdcBalance } from "../src/arc-payment.js";
 import { submitSponsoredErc8004Feedback } from "../src/bsc-paymaster.js";
 import { firstSpecifiedBudget } from "../src/budget-normalization.js";
 import { invokePaidServiceWithLocalWallet } from "../src/local-invoke.js";
-import { routeTaskWithLocalWallet } from "../src/local-route.js";
+import { routeCapabilityRequestWithLocalWallet, routeTaskWithLocalWallet } from "../src/local-route.js";
 import { createCompactResult } from "../src/compact-result.js";
 import { currentPaymentBackend } from "../src/payment-adapter.js";
 import { initSessionWallet, initWallet, readWallet, walletStatus } from "../src/wallet.js";
@@ -446,7 +446,11 @@ async function fetchWithLocalWallet(args = {}) {
       });
       continue;
     }
-    results.push(await requestWithLocalWallet(request));
+    results.push(await routeCapabilityRequestWithLocalWallet({
+      baseUrl,
+      request,
+      budget: request.budget || {}
+    }));
   }
 
   const successful = results.filter((result) => result?.ok !== false && result?.result);
@@ -583,79 +587,53 @@ async function requestWithLocalWallet(args) {
     throw error;
   }
 
-  const quote = await post("/agent-router/quote", {
-    capability: args.capability,
-    params,
-    constraints: args.constraints || {},
-    budget: args.budget || {},
-    consumer_context: args.consumer_context || {}
-  });
-  if (!quote.ok) return quote;
-  let invocation;
-  try {
-    invocation = await invokePaidServiceWithLocalWallet({
-      baseUrl,
-      serviceId: quote.selected_service.service_id,
-      input: quote.input,
-      budget: {
-        max_amount: firstSpecifiedBudget(args.constraints?.max_price_usdc, args.budget?.max_amount, "0.05"),
-        currency: args.budget?.currency || "USDC"
-      },
-      request: {
-        capability: args.capability,
-        params,
-        constraints: quote.request?.constraints || args.constraints || {},
-        consumer_context: {
-          ...(args.consumer_context || {}),
-          source: "agentrouter_mcp_local_wallet",
-          token_resolution: tokenResolution ? {
-            status: tokenResolution.status,
-            token_symbol: tokenResolution.token_symbol,
-            token_address: tokenResolution.token_address,
-            chain: tokenResolution.chain,
-            matched_symbol: tokenResolution.matched_symbol || null,
-            matched_name: tokenResolution.matched_name || null,
-            resolution_type: tokenResolution.resolution_type || null,
-            requires_disclosure: Boolean(tokenResolution.requires_disclosure),
-            disclosure: tokenResolution.disclosure || null
-          } : null
-        }
+  const result = await routeCapabilityRequestWithLocalWallet({
+    baseUrl,
+    request: {
+      capability: args.capability,
+      params,
+      constraints: args.constraints || {},
+      budget: args.budget || {},
+      consumer_context: {
+        ...(args.consumer_context || {}),
+        source: "agentrouter_mcp_local_wallet",
+        token_resolution: tokenResolution ? {
+          status: tokenResolution.status,
+          token_symbol: tokenResolution.token_symbol,
+          token_address: tokenResolution.token_address,
+          chain: tokenResolution.chain,
+          matched_symbol: tokenResolution.matched_symbol || null,
+          matched_name: tokenResolution.matched_name || null,
+          resolution_type: tokenResolution.resolution_type || null,
+          requires_disclosure: Boolean(tokenResolution.requires_disclosure),
+          disclosure: tokenResolution.disclosure || null
+        } : null
       }
+    },
+    budget: args.budget || {}
+  });
+  if (result?.status === "wallet_needs_funding") {
+    return fundingRequiredResponse({
+      error: result,
+      selectedService: result.selected_service || null,
+      quote: result.quote || null
     });
-  } catch (error) {
-    if (error.code === "WALLET_INSUFFICIENT_ARC_USDC") {
-      return fundingRequiredResponse({ error, selectedService: quote.selected_service, quote: quote.quote });
-    }
-    if (error.status === "arc_payment_unavailable") {
-      return arcPaymentUnavailableResponse({ error, selectedService: quote.selected_service, quote: quote.quote });
-    }
-    throw error;
   }
-  return {
-    ok: true,
-    status: "paid_with_local_wallet",
-    request: quote.request,
-    selected_service: quote.selected_service,
-    token_resolution: publicTokenResolution(tokenResolution),
-    input: quote.input,
-    quote: quote.quote,
-    result: invocation.result,
-    compact_result: createCompactResult({
-      result: invocation.result,
-      verification: invocation.evidence_recording?.verification || {},
-      quote: quote.quote,
-      feedback: invocation.feedback,
-      evidence: invocation.evidence_recording?.evidence
-    }),
-    feedback: invocation.feedback,
-    local_payment: invocation.local_payment,
-    evidence_recording: invocation.evidence_recording,
-    consumer_feedback_request: invocation.evidence_recording?.consumer_feedback_request || null,
-    feedback_required: Boolean(invocation.evidence_recording?.consumer_feedback_request),
-    next_required_action: invocation.evidence_recording?.consumer_feedback_request
+  if (result?.status === "arc_payment_unavailable") {
+    return arcPaymentUnavailableResponse({
+      error: result,
+      selectedService: result.selected_service || null,
+      quote: result.quote || null
+    });
+  }
+  if (tokenResolution && result && typeof result === "object") {
+    result.token_resolution = publicTokenResolution(tokenResolution);
+    result.feedback_required = result.feedback_required ?? Boolean(result.consumer_feedback_request);
+    result.next_required_action = result.next_required_action || (result.consumer_feedback_request
       ? "After using this result in the final answer, call agentrouter_feedback with this request_id."
-      : null
-  };
+      : null);
+  }
+  return result;
 }
 
 async function resolveTokenForLocalWalletRequest({ capability, params, constraints, budget, consumerContext }) {

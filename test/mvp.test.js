@@ -3482,7 +3482,13 @@ test("AgentRouter discloses wrapped-token substitutions during token resolution"
     });
     assert.equal(cli.code, 0, cli.stderr);
     const cliRouted = JSON.parse(cli.stdout);
-    assert.equal(cliRouted.ok, true);
+    assert.equal(cliRouted.ok, true, JSON.stringify({
+      ok: cliRouted.ok,
+      status: cliRouted.status,
+      error: cliRouted.error,
+      attempted_services: cliRouted.attempted_services,
+      error_payload: cliRouted.payload
+    }, null, 2));
     assert.equal(cliRouted.status, "paid_with_local_wallet");
     assert.equal(cliRouted.token_resolution.token_symbol, "HYPE");
     assert.equal(cliRouted.token_resolution.chain, "hyperevm");
@@ -3574,7 +3580,13 @@ test("AgentRouter retries the next token smart-money service when a provider fai
       });
       assert.equal(cli.code, 0, cli.stderr);
       const payload = JSON.parse(cli.stdout);
-      assert.equal(payload.ok, true);
+      assert.equal(payload.ok, true, JSON.stringify({
+        ok: payload.ok,
+        status: payload.status,
+        error: payload.error,
+        attempted_services: payload.attempted_services,
+        error_payload: payload.payload
+      }, null, 2));
       assert.equal(payload.selected_service.service_id, "healthy_hype_flow");
       assert.equal(payload.attempted_services[0].service_id, "failing_hype_flow");
       assert.equal(payload.attempted_services[0].status, "PROVIDER_HTTP_UNSAFE_TARGET");
@@ -5059,6 +5071,7 @@ test("CLI route resolves service and pays with local wallet", async () => {
     assert.equal(routed.code, 0, routed.stderr);
     const payload = JSON.parse(routed.stdout);
     assert.equal(payload.status, "route_with_assumption");
+    assert.equal(payload.execution_status, "paid_with_local_wallet");
     assert.equal(payload.selected_service.service_id, "btc_liquidation_max_pain_demo");
     assert.equal(payload.local_payment.status, "success");
     assert.equal(payload.local_payment.amount, "0.02");
@@ -5078,6 +5091,7 @@ test("agent-router ask uses local wallet instead of quote-only path when wallet 
     assert.equal(routed.code, 0, routed.stderr);
     const payload = JSON.parse(routed.stdout);
     assert.equal(payload.status, "route_with_assumption");
+    assert.equal(payload.execution_status, "paid_with_local_wallet");
     assert.equal(payload.local_payment.status, "success");
     assert.notEqual(payload.protocol?.invocation_policy, "quote_only_no_server_side_payment");
     const log = await readPaymentLog();
@@ -5096,6 +5110,7 @@ test("agent-router fetch is the single-call paid CLI fallback for natural-langua
     assert.doesNotMatch(routed.stdout, /btc_liquidation_max_pain_demo/);
     const payload = JSON.parse(routed.stdout);
     assert.equal(payload.status, "route_with_assumption");
+    assert.equal(payload.execution_status, "paid_with_local_wallet");
     assert.equal(payload.data_returned, true);
     assert.equal(payload.result.status, "success");
     assert.ok(payload.result.data.max_liquidation_pain_price || payload.result.data.max_pain_price);
@@ -5215,6 +5230,7 @@ test("CLI route returns clarification before payment for unclear max pain task",
     assert.equal(routed.code, 0, routed.stderr);
     const payload = JSON.parse(routed.stdout);
     assert.equal(payload.status, "needs_clarification");
+    assert.ok(Array.isArray(payload.ambiguities), JSON.stringify(payload, null, 2));
     assert.equal(payload.ambiguities[0].field, "capability");
     const log = await readPaymentLog();
     assert.equal(log.filter((event) => event.consumer_id === "cli").length, 0);
@@ -6158,8 +6174,12 @@ test("a question with no matching service gets a route it can actually take", as
     // The registry holds crypto services, so most questions have no match. A
     // bare "no_service_found" leaves the agent guessing; it now gets the call
     // that works, on the same entry point the MCP fetch route already used.
+    // Anonymous agents must first establish the AgentRouter account boundary;
+    // this is distinct from asking the user for a source API key.
     const jobs = await ask("find senior crypto product manager jobs remote");
-    assert.equal(jobs.status, "no_service_found");
+    assert.equal(jobs.status, "connection_required");
+    assert.equal(jobs.action_required.action, "connect_agentrouter_account");
+    assert.equal(jobs.action_required.authorization_kind, "agentrouter_account_login");
     assert.equal(jobs.suggested_route.call.capability, "external_api_query");
     assert.equal(jobs.suggested_route.call.params.source, "exa");
     assert.match(jobs.next_actions[0], /Retry as a structured call/);

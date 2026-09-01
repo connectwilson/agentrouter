@@ -14,6 +14,7 @@
     "demo": "node src/demo.js",
     "test": "node --test",
     "test:mvp": "node --test",
+    "test:routing": "node --test --test-concurrency=1 test/canonical-route-plan.test.js test/routing-accuracy-evaluation.test.js test/routing-benchmark-gate.test.js test/routing-entrypoint-parity.test.js test/routing-metrics-api.test.js test/routing-runtime-integration.test.js test/local-routing-parity.test.js test/routing-feedback-persistence.test.js test/routing-feedback-cross-instance.test.js test/routing-observation-privacy.test.js",
     "provider:import": "node scripts/import-provider-docs.js",
     "provider:sync": "node scripts/sync-provider-configs.js",
     "catalog:sync": "node scripts/public-api-pipeline.js sync",

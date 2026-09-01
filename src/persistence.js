@@ -955,6 +955,9 @@ export async function listPersistentProviderConfigs() {
 
 export async function writePersistentServiceEvent({ eventType, serviceId, requestId, event }) {
   if (!persistenceEnabled()) return false;
+  if (eventType === "routing_feedback") {
+    return claimPersistentRoutingFeedback({ serviceId, requestId, event });
+  }
   const pool = await getPool();
   await ensureSchema(pool);
   const idempotencyKey = serviceEventIdempotencyKey({ eventType, serviceId, requestId, event });
@@ -971,6 +974,133 @@ export async function writePersistentServiceEvent({ eventType, serviceId, reques
   return true;
 }
 
+/**
+ * Commit a related set of service events as one durable unit. Local browser
+ * executions use this for the route observation and its feedback grant: a
+ * grant without its observation cannot be measured, while an observation
+ * without its grant can never receive a label.
+ */
+export async function writePersistentServiceEventsAtomically(entries = []) {
+  if (!Array.isArray(entries) || entries.length === 0) return true;
+  if (!persistenceEnabled()) return false;
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(674312915)");
+    for (const entry of entries) {
+      const eventType = String(entry?.eventType || "").trim();
+      const serviceId = entry?.serviceId || null;
+      const requestId = entry?.requestId || null;
+      const event = entry?.event;
+      if (!eventType || !event || typeof event !== "object") {
+        const error = new Error("An atomic service-event bundle contains an invalid entry.");
+        error.statusCode = 422;
+        error.code = "INVALID_SERVICE_EVENT_BUNDLE";
+        throw error;
+      }
+      if (eventType === "routing_feedback") {
+        const error = new Error("Routing feedback must use its actor-owned durable claim path.");
+        error.statusCode = 422;
+        error.code = "INVALID_SERVICE_EVENT_BUNDLE";
+        throw error;
+      }
+      const idempotencyKey = serviceEventIdempotencyKey({
+        eventType,
+        serviceId,
+        requestId,
+        event
+      });
+      const conflictClause = eventType === "route_observation"
+        ? `do update set
+             service_id = excluded.service_id,
+             request_id = excluded.request_id,
+             event = excluded.event`
+        : "do nothing";
+      await client.query(
+        `insert into adn_service_events (event_type, service_id, request_id, event, idempotency_key, created_at)
+         values ($1, $2, $3, $4::jsonb, $5, coalesce(($4::jsonb->>'created_at')::timestamptz, now()))
+         on conflict (idempotency_key) where idempotency_key is not null ${conflictClause}`,
+        [eventType, serviceId, requestId, JSON.stringify(event), idempotencyKey]
+      );
+    }
+    await client.query("commit");
+    return true;
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function claimPersistentRoutingFeedback({ serviceId, requestId, event } = {}) {
+  if (!persistenceEnabled()) return null;
+  const idempotencyKey = serviceEventIdempotencyKey({
+    eventType: "routing_feedback",
+    serviceId,
+    requestId,
+    event
+  });
+  if (!idempotencyKey) {
+    const error = new Error("Routing feedback requires an observation and authenticated actor.");
+    error.statusCode = 422;
+    error.code = "INVALID_ROUTING_FEEDBACK_IDENTITY";
+    throw error;
+  }
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(674312915)");
+    const previous = await client.query(
+      `select event from adn_service_events
+       where event_type = 'routing_feedback'
+         and event->>'observation_id' = $1
+         and coalesce(event->>'actor_key', event->>'consumer_id', '') = $2
+       order by event_id asc
+       limit 1`,
+      [String(event?.observation_id || ""), String(event?.actor_key || event?.consumer_id || "")]
+    );
+    let status = previous.rows[0] ? "existing" : "created";
+    let canonical = previous.rows[0]?.event || null;
+    if (!canonical) {
+      const inserted = await client.query(
+        `insert into adn_service_events (event_type, service_id, request_id, event, idempotency_key, created_at)
+         values ('routing_feedback', $1, $2, $3::jsonb, $4, coalesce(($3::jsonb->>'created_at')::timestamptz, now()))
+         on conflict (idempotency_key) where idempotency_key is not null do nothing
+         returning event`,
+        [serviceId || null, requestId || null, JSON.stringify(event), idempotencyKey]
+      );
+      canonical = inserted.rows[0]?.event || null;
+      if (!canonical) {
+        status = "existing";
+        const existing = await client.query(
+          `select event from adn_service_events
+           where idempotency_key = $1 and event_type = 'routing_feedback'
+           limit 1`,
+          [idempotencyKey]
+        );
+        canonical = existing.rows[0]?.event || null;
+      }
+    }
+    if (!canonical) {
+      const error = new Error("The canonical routing feedback row could not be read after its durable claim.");
+      error.code = "ROUTING_FEEDBACK_CANONICAL_MISSING";
+      throw error;
+    }
+    await client.query("commit");
+    return { status, event: canonical, idempotency_key: idempotencyKey };
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export function serviceEventIdempotencyKey({ eventType, serviceId, requestId, event }) {
   const idempotentTypes = new Set([
     "consumer_feedback",
@@ -982,18 +1112,38 @@ export function serviceEventIdempotencyKey({ eventType, serviceId, requestId, ev
     "erc8004_hire_completion",
     "issued_quote",
     "quote_feedback",
+    "route_observation",
+    "routing_feedback",
     "erc8004_platform_identity",
     "erc8004_vendor_identity",
     "erc8004_agent_import"
   ]);
   if (!idempotentTypes.has(eventType) || !requestId) return null;
+  let eventIdentity = event?.consumer_id
+    || event?.actor_key
+    || (eventType === "erc8004_agent_import" ? event?.verified_at || event?.imported_at : "");
+  if (eventType === "routing_feedback") {
+    const observationId = String(event?.observation_id || "").trim();
+    const actorKey = String(event?.actor_key || event?.consumer_id || "").trim();
+    if (!observationId || !actorKey) return null;
+    return crypto.createHash("sha256").update(JSON.stringify([
+      eventType,
+      { actor_key: actorKey, observation_id: observationId }
+    ])).digest("hex");
+  }
+  if (eventType === "route_observation") {
+    const observationId = String(event?.observation_id || "").trim();
+    if (!observationId) return null;
+    return crypto.createHash("sha256").update(JSON.stringify([
+      eventType,
+      { observation_id: observationId }
+    ])).digest("hex");
+  }
   return crypto.createHash("sha256").update(JSON.stringify([
     eventType,
     serviceId || "",
     requestId,
-    event?.consumer_id
-      || event?.actor_key
-      || (eventType === "erc8004_agent_import" ? event?.verified_at || event?.imported_at : "")
+    eventIdentity
   ])).digest("hex");
 }
 
@@ -1682,6 +1832,9 @@ async function applyPersistenceSchema(client) {
     create index if not exists adn_service_events_type_idx on adn_service_events(event_type);
     create index if not exists adn_service_events_request_idx on adn_service_events(request_id);
     create index if not exists adn_service_events_hydration_idx on adn_service_events(created_at, event_id);
+    create index if not exists adn_service_events_routing_feedback_identity_idx
+      on adn_service_events ((event->>'observation_id'), (coalesce(event->>'actor_key', event->>'consumer_id', '')), event_id)
+      where event_type = 'routing_feedback';
     create table if not exists adn_browser_handoff_claims (
       handoff_id text primary key,
       expires_at timestamptz not null,

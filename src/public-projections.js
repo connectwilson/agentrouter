@@ -47,17 +47,42 @@ export function publicRouteObservation(event = {}) {
     ...pickScalars(event, [
       "observation_version",
       "observation_id",
+      "request_id",
       "created_at",
       "route_type",
       "status",
+      "entrypoint",
+      "task_family",
+      "route_family",
+      "capability",
+      "source_family",
+      "action",
       "candidates_considered",
       "selected_service_id",
-      "selected_routing_score"
+      "selected_routing_score",
+      "top_score",
+      "runner_up_score",
+      "score_margin",
+      "confidence",
+      "routing_policy_version",
+      "durability_status"
     ]),
     request: capability === undefined ? undefined : { capability },
     score_model: pickScalars(event.score_model, ["name", "version"]),
     candidates: Array.isArray(event.candidates)
       ? event.candidates.map(publicRouteCandidate)
+      : undefined,
+    fallback: event.fallback && typeof event.fallback === "object"
+      ? pickScalars(event.fallback, ["used", "from", "to", "reason"])
+      : undefined,
+    authorization: event.authorization && typeof event.authorization === "object"
+      ? pickScalars(event.authorization, ["required", "action", "source"])
+      : undefined,
+    budget: event.budget && typeof event.budget === "object"
+      ? pickScalars(event.budget, ["max_price_usdc", "selected_price_usdc", "compliant"])
+      : undefined,
+    diagnostics: event.diagnostics && typeof event.diagnostics === "object"
+      ? pickScalars(event.diagnostics, ["intent_confidence", "candidate_count", "eligible_candidate_count", "abstain_reason", "policy_gate"])
       : undefined,
     quote: publicObservationQuote(event.quote),
     outcome: publicObservationOutcome(event.outcome)
@@ -264,7 +289,9 @@ function publicRouteCandidate(candidate) {
       "recent_failure_rate",
       "consumer_feedback_count",
       "routing_score",
-      "equivalent_service_count"
+      "equivalent_service_count",
+      "source_family",
+      "price_usdc"
     ]),
     pricing: publicPricing(candidate.pricing),
     equivalent_service_ids: Array.isArray(candidate.equivalent_service_ids)

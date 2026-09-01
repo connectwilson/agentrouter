@@ -935,7 +935,7 @@ test("remote MCP turns a missing upstream source into a browser authorization ha
   }
 });
 
-test("remote MCP routes social user voice research through the same built-in dispatcher", async () => {
+test("remote MCP routes unconstrained social user voice research through the built-in dispatcher", async () => {
   const store = createMemoryStore();
   const user = { provider: "github", id: "mcp-social-user", name: "MCP Social User" };
   const account = await ensureCreditAccount(store, user);
@@ -966,7 +966,7 @@ test("remote MCP routes social user voice research through the same built-in dis
         method: "tools/call",
         params: {
           name: "agentrouter_request",
-          arguments: { capability: "social_user_voice_research", params: { question: "AgentRouter feedback", platforms: ["x"] } }
+          arguments: { capability: "social_user_voice_research", params: { question: "AgentRouter feedback" } }
         }
       })
     });

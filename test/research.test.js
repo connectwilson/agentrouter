@@ -581,7 +581,7 @@ test("AgentRouter request endpoint runs the built-in social research capability"
       }
     }
   });
-  const server = createServer({ socialResearchRunner });
+  const server = createServer({ socialResearchRunner, allowHostedSocialResearchRunner: true });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   try {

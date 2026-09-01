@@ -13,7 +13,7 @@ import { abortServiceRegistration, applyErc8004VendorIdentity, feedbackGrantActo
 import { createEvidenceEnvelope, hashJson } from "./evidence.js";
 import { discoverApiServices, publishApiDrafts } from "./openapi-import.js";
 import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabilityRequest, routeTask } from "./router.js";
-import { claimPersistentBrowserHandoff, claimPersistentErc8004Hire, claimPersistentServiceRegistration, closePersistence, completePersistentErc8004Hire, failPersistentErc8004Hire, finalizePersistentServiceRegistration, persistenceEnabled, persistenceReadiness, persistentRegistryRequired, releasePersistentServiceRegistration, writePersistentServiceEvent } from "./persistence.js";
+import { claimPersistentBrowserHandoff, claimPersistentErc8004Hire, claimPersistentServiceRegistration, closePersistence, completePersistentErc8004Hire, failPersistentErc8004Hire, finalizePersistentServiceRegistration, persistenceEnabled, persistenceReadiness, persistentRegistryRequired, releasePersistentServiceRegistration, writePersistentServiceEvent, writePersistentServiceEventsAtomically } from "./persistence.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { verifyArcUsdcTransfer } from "./arc-payment.js";
 import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
@@ -26,7 +26,7 @@ import { authProviders, authUserKey, beginOAuth, clearOAuthStateCookie, complete
 import { accountSpendLimit, authenticateCreditRequest, bindDepositAddress, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, findAccountByDepositAddress, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey, setAccountSpendLimit } from "./credits.js";
 import { approveDeviceAuthorization, beginDeviceAuthorization, getDeviceAuthorizationByUserCode, hashDeviceCode, pollDeviceAuthorization } from "./device-auth.js";
 import { currentPaymentBackend, effectivePricing } from "./payment-adapter.js";
-import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agentrouter-connection.js";
+import { agentRouterConnectionRequired } from "./agentrouter-connection.js";
 import { createCreditTopup, processStripeCreditWebhook } from "./credit-payments.js";
 import { claimCryptoTopup, cryptoTopupInstructions, depositPaymentUri } from "./credit-crypto.js";
 import QRCode from "qrcode-svg";
@@ -39,8 +39,8 @@ import { runSocialResearchCapability } from "./research-capability.js";
 import { buildLocalSocialExecutionPlan, getLocalSocialPlatformCatalog } from "./local-social-privacy.js";
 import { createSocialConnection, deleteSocialConnection, hydrateSocialConnections, listSocialConnections, socialProvidersForUser } from "./social-connections.js";
 import { getExternalApiCatalog,
-  externalSourceAccessAction, freeLocalAlternative, getExternalApiServiceDetail, inferExternalApiRequest, runExternalApiQuery } from "./external-api-capability.js";
-import { findSocialPostUrl, runSocialPostReadCapability } from "./social-post-read.js";
+  externalSourceAccessAction, getExternalApiServiceDetail, runExternalApiQuery } from "./external-api-capability.js";
+import { runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
 import { listCapabilityPacks, serviceMatchesCapabilityPack } from "./capability-packs.js";
 import { publicEvidenceEvent, publicFeedbackEvent, publicManifestProjection, publicRouteObservation } from "./public-projections.js";
@@ -62,6 +62,21 @@ import { createErc8004Discovery, executeErc8004HttpAgent, normalizeErc8004Agent,
 import { createErc8004HireArtifacts, erc8004HireClaim, erc8004HireServiceId, executeErc8004HireOnce, requireReadOnlyErc8004ExecutionPolicy } from "./erc8004-hire.js";
 import { loadRemoteMcpSession, persistRemoteMcpSession } from "./remote-mcp-session.js";
 import { isInternalProviderValidationRequest } from "./provider-validation-auth.js";
+import { aggregateRoutingMetrics, createRouteObservationV2, recordRoutingFeedback } from "./routing/metrics.js";
+import {
+  attachCanonicalRouteObservation,
+  canonicalRoutePlan,
+  canonicalStructuredRoutePlan,
+  requestHasExplicitBudget,
+  structuredRoutePreflight
+} from "./routing/runtime.js";
+import { runRemoteAgentRouterFetch } from "./routing/fetch.js";
+import {
+  paymentBoundaryStatusCode,
+  requestPaymentRequired,
+  routePaymentRequired
+} from "./routing/http-boundary.js";
+import { executeAgentRouterFetch, executeAgentRouterRequest } from "./routing/http-handlers.js";
 
 const mcpPackageMetadata = JSON.parse(await fs.readFile(new URL("../packages/agentrouter-mcp/package.json", import.meta.url), "utf8"));
 
@@ -105,6 +120,8 @@ function routeUsesLiveServiceState(pathname) {
     "/agent-router/quote",
     "/agent-router/ask",
     "/agent-router/feedback",
+    "/agent-router/routing-feedback",
+    "/agent-router/metrics",
     "/agent-router/erc8004"
   ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
@@ -158,6 +175,7 @@ export function createServer({
   store = createMemoryStore(),
   baseUrl = "",
   socialResearchRunner = runSocialResearchCapability,
+  allowHostedSocialResearchRunner = false,
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {},
@@ -198,8 +216,19 @@ export function createServer({
       : [],
     refresh: refreshPersistentServiceEvents,
     writeEvent: writePersistentServiceEvent,
+    writeEvents: writePersistentServiceEventsAtomically,
     ...serviceEventPersistence
   };
+  if (typeof serviceEventPersistence.writeEvent === "function" && typeof serviceEventPersistence.writeEvents !== "function") {
+    resolvedServiceEventPersistence.writeEvents = async (entries) => {
+      let durable = true;
+      for (const entry of entries) {
+        const written = await resolvedServiceEventPersistence.writeEvent(entry);
+        if (written === false) durable = false;
+      }
+      return durable;
+    };
+  }
   const resolvedPublicApiPipelineOptions = {
     ...publicApiAutomationOptions(),
     registrationPersistence: resolvedProviderClaimPersistence,
@@ -213,6 +242,7 @@ export function createServer({
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
         socialResearchRunner,
+        allowHostedSocialResearchRunner,
         socialConnectionOptions,
         socialProviderFactory,
         publicApiPipelineOptions: resolvedPublicApiPipelineOptions,
@@ -282,6 +312,7 @@ function safeDiagnosticToken(value, fallback) {
 
 async function routeRequest(req, res, store, baseUrl, {
   socialResearchRunner = runSocialResearchCapability,
+  allowHostedSocialResearchRunner = false,
   socialConnectionOptions = {},
   socialProviderFactory = socialProvidersForUser,
   publicApiPipelineOptions = {},
@@ -310,7 +341,8 @@ async function routeRequest(req, res, store, baseUrl, {
       ? loadProviderConfigs(targetStore, targetBaseUrl, { validate: false, force: true })
       : [],
     refresh: refreshPersistentServiceEvents,
-    writeEvent: writePersistentServiceEvent
+    writeEvent: writePersistentServiceEvent,
+    writeEvents: writePersistentServiceEventsAtomically
   },
   erc8004DiscoveryEnabled = process.env.ADN_ERC8004_DISCOVERY_ENABLED !== "0"
 } = {}) {
@@ -866,7 +898,8 @@ async function routeRequest(req, res, store, baseUrl, {
       socialConnectionOptions,
       socialProviderFactory,
       socialResearchRunner,
-      browserHandoffClaim
+      browserHandoffClaim,
+      writeEvent: serviceEventPersistence.writeEvent
     });
     return;
   }
@@ -1723,7 +1756,8 @@ async function routeRequest(req, res, store, baseUrl, {
     const body = await readJson(req);
     const result = await issueLocalFeedbackGrant(store, body, {
       actorKey: feedbackActorKey,
-      writeEvent: serviceEventPersistence.writeEvent
+      writeEvent: serviceEventPersistence.writeEvent,
+      writeEvents: serviceEventPersistence.writeEvents
     });
     sendJson(res, 201, result);
     return;
@@ -1826,7 +1860,11 @@ async function routeRequest(req, res, store, baseUrl, {
       return;
     }
     if (!allowSensitiveWrite(req, res, writeRateLimiter, callActorKey)) return;
-    const result = await recordCompletedAgentCall(store, body, { actorKey: callActorKey });
+    const result = await recordCompletedAgentCall(store, body, {
+      actorKey: callActorKey,
+      writeEvent: serviceEventPersistence.writeEvent,
+      writeEvents: serviceEventPersistence.writeEvents
+    });
     sendJson(res, result.ok ? (result.status === "completed_invocation_already_recorded" ? 200 : 201) : result.statusCode || 422, result);
     return;
   }
@@ -1916,57 +1954,31 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname === "/agent-router/request") {
     const body = await readJson(req);
-    if (body.capability === "external_api_query") {
-      const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
-      const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(body.params?.source || "").toLowerCase());
-      if (!ownerKey && sourceDefinition?.connection_required === true) {
-        // This source genuinely needs a credential, so the 401 stands. But
-        // telling the agent only to connect an account is a dead end when the
-        // same data is readable for free through the local browser — attach the
-        // call that works instead of leaving it to guess.
-        const alternative = freeLocalAlternative(String(body.params?.source || "").toLowerCase(), body.params || {});
-        return sendJson(res, 401, {
-          ...agentRouterConnectionRequired(),
-          ...(alternative ? { free_alternative: alternative, recommended_action: "use_free_local_alternative" } : {})
-        });
-      }
-      const result = await runExternalApiQuery(store, ownerKey, body.params || {}, socialConnectionOptions);
-      sendJson(res, externalApiStatusCode(result), result);
-      return;
-    }
-    if (body.capability === "social_user_voice_research") {
-      const providers = await socialProviderFactory(store, authUserKey(auth.user), socialConnectionOptions);
-      const result = await socialResearchRunner(body.params || {}, { searchOptions: { localOptions: { providers } } });
-      sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
-      return;
-    }
-    if (body.capability === "social_post_read") {
-      const providers = await socialProviderFactory(store, authUserKey(auth.user) || paymentContext.ownerKey || "", socialConnectionOptions);
-      const result = await runSocialPostReadCapability(body.params || {}, { providers, consumerContext: body.consumer_context });
-      sendJson(res, result.status === "invalid_request" ? 422 : 200, result);
-      return;
-    }
-    if (!paymentContext.invoke) {
-      const result = quoteCapabilityRequest(store, body, {
-        actorKey: sensitiveWriteActorKey(req, authUserKey(auth.user) || paymentContext.ownerKey)
-      });
-      const payload = requestPaymentRequired(result);
-      sendJson(res, paymentBoundaryStatusCode(payload), payload);
-      return;
-    }
-    const result = await routeCapabilityRequest(store, body, paymentContext);
-    sendJson(res, result.ok === false && result.status === "invalid_request" ? 422 : 200, result);
+    const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    const result = await executeAgentRouterRequest(store, body, {
+      ...paymentContext,
+      ownerKey,
+      actorKey: sensitiveWriteActorKey(req, ownerKey),
+      socialConnectionOptions,
+      socialProviderFactory,
+      socialResearchRunner,
+      allowHostedSocialResearchRunner,
+      writeEvent: serviceEventPersistence.writeEvent
+    });
+    sendJson(res, result.statusCode, result.payload);
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/agent-router/fetch") {
     const body = await readJson(req);
-    const result = await runRemoteAgentRouterFetch(store, body, {
+    const result = await executeAgentRouterFetch(store, body, {
       ...paymentContext,
+      ownerKey: authUserKey(auth.user) || paymentContext.ownerKey || "",
       socialConnectionOptions,
-      socialProviderFactory
+      socialProviderFactory,
+      writeEvent: serviceEventPersistence.writeEvent
     });
-    sendJson(res, paymentBoundaryStatusCode(result), result);
+    sendJson(res, result.statusCode, result.payload);
     return;
   }
 
@@ -1999,14 +2011,29 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if (req.method === "POST" && url.pathname === "/agent-router/ask") {
     const body = await readJson(req);
+    const task = body.task || body.query || "";
+    const maxPrice = body.max_price ?? body.maxPrice ?? "0.05";
+    const ownerKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    const routePlan = canonicalRoutePlan(store, task, {
+      ownerKey,
+      maxPrice,
+      budgetExplicit: requestHasExplicitBudget(body)
+    });
     const result = await askAgentRouter(store, {
-      task: body.task || body.query || "",
-      max_price: body.max_price ?? body.maxPrice ?? "0.05",
+      task,
+      max_price: maxPrice,
       currency: body.currency || "USDC",
       invoke: paymentContext.invoke,
-      consumerApiKey: paymentContext.consumerApiKey
+      consumerApiKey: paymentContext.consumerApiKey,
+      routePlan
     });
-    sendJson(res, paymentBoundaryStatusCode(result), result);
+    const observed = await attachCanonicalRouteObservation(store, result, {
+      plan: routePlan,
+      entrypoint: "ask",
+      actorKey: ownerKey,
+      writeEvent: serviceEventPersistence.writeEvent
+    });
+    sendJson(res, paymentBoundaryStatusCode(observed), observed);
     return;
   }
 
@@ -2033,10 +2060,13 @@ async function routeRequest(req, res, store, baseUrl, {
     const serviceId = url.searchParams.get("service_id");
     const capability = url.searchParams.get("capability");
     const status = url.searchParams.get("status");
+    const observationActorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 50)));
     const observations = (store.routeObservations || [])
+      .filter((event) => event?.observation_version !== "agent_router_route_observation_v2"
+        || (observationActorKey && event.actor_key === observationActorKey))
       .filter((event) => !serviceId || event.selected_service_id === serviceId)
-      .filter((event) => !capability || event.request?.capability === capability)
+      .filter((event) => !capability || event.capability === capability || event.request?.capability === capability)
       .filter((event) => !status || event.status === status)
       .slice(-limit);
     sendJson(res, 200, {
@@ -2045,6 +2075,33 @@ async function routeRequest(req, res, store, baseUrl, {
       note: "Route observations are lightweight training/evaluation records for future learned routing.",
       count: observations.length,
       observations: observations.map(publicRouteObservation)
+    }, {
+      "cache-control": "private, no-store",
+      "vary": "Cookie, Authorization, X-Api-Key, X-AgentRouter-Api-Key, X-AgentRouter-Publish-Token"
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/agent-router/metrics/routing") {
+    if (!requireAdminToken(req, res, auth)) return;
+    sendJson(res, 200, aggregateRoutingMetrics(store), {
+      "cache-control": "no-store"
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/agent-router/routing-feedback") {
+    const actorKey = authUserKey(auth.user) || paymentContext.ownerKey || "";
+    if (!actorKey) return sendAuthRequired(res, "Sign in to label a routing decision.");
+    if (!allowSensitiveWrite(req, res, writeRateLimiter, actorKey)) return;
+    const body = await readJson(req);
+    const result = await recordRoutingFeedback(store, body, {
+      actorKey,
+      writeEvent: serviceEventPersistence.writeEvent,
+      refreshEvents: () => serviceEventPersistence.refresh(store)
+    });
+    sendJson(res, result.statusCode || (result.ok ? 201 : 422), result, {
+      "cache-control": "no-store"
     });
     return;
   }
@@ -2295,7 +2352,7 @@ function requireAdminToken(req, res, auth) {
   sendJson(res, auth.user ? 403 : 401, {
     error: {
       code: auth.user ? "ADMIN_TOKEN_REQUIRED" : "AUTH_REQUIRED",
-      message: "An AgentRouter admin API token is required for catalog pipeline mutations."
+      message: "An AgentRouter admin API token is required for this operator endpoint."
     }
   });
   return false;
@@ -2787,31 +2844,40 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
       budget: args.budget || {},
       consumer_context: args.consumer_context || { source: "remote_mcp" }
     };
+    const ownerKey = paymentContext.ownerKey || "";
+    const routePlan = canonicalStructuredRoutePlan(store, request, { ownerKey });
+    const complete = (result) => attachCanonicalRouteObservation(store, result, {
+      plan: routePlan,
+      entrypoint: "mcp_request",
+      actorKey: ownerKey,
+      writeEvent: paymentContext.writeEvent
+    });
     if (request.capability === "external_api_query") {
-      const ownerKey = paymentContext.ownerKey || "";
       const sourceDefinition = getExternalApiCatalog(store, ownerKey).find((item) => item.source === String(request.params?.source || "").toLowerCase());
+      const preflight = structuredRoutePreflight(routePlan);
+      if (preflight) return complete(preflight);
       if (sourceDefinition?.connection_required === true && !ownerKey) {
-        return agentRouterConnectionRequired();
+        return complete(agentRouterConnectionRequired());
       }
-      return runExternalApiQuery(store, ownerKey, request.params, paymentContext.socialConnectionOptions || {});
+      return complete(await runExternalApiQuery(store, ownerKey, request.params, paymentContext.socialConnectionOptions || {}));
     }
     if (request.capability === "social_user_voice_research") {
-      const ownerKey = paymentContext.ownerKey || "";
+      const preflight = structuredRoutePreflight(routePlan);
+      if (preflight) return complete(preflight);
       const providerFactory = paymentContext.socialProviderFactory || socialProvidersForUser;
       const researchRunner = paymentContext.socialResearchRunner || runSocialResearchCapability;
       const providers = await providerFactory(store, ownerKey, paymentContext.socialConnectionOptions || {});
-      return researchRunner(request.params, { searchOptions: { localOptions: { providers } } });
+      return complete(await researchRunner(request.params, { searchOptions: { localOptions: { providers } } }));
     }
     if (request.capability === "social_post_read") {
-      const ownerKey = paymentContext.ownerKey || "";
       const providerFactory = paymentContext.socialProviderFactory || socialProvidersForUser;
       const providers = await providerFactory(store, ownerKey, paymentContext.socialConnectionOptions || {});
-      return runSocialPostReadCapability(request.params, { providers, consumerContext: request.consumer_context });
+      return complete(await runSocialPostReadCapability(request.params, { providers, consumerContext: request.consumer_context }));
     }
     if (!paymentContext.invoke) {
-      return requestPaymentRequired(quoteCapabilityRequest(store, request));
+      return complete(requestPaymentRequired(quoteCapabilityRequest(store, request)));
     }
-    return routeCapabilityRequest(store, request, paymentContext);
+    return complete(await routeCapabilityRequest(store, request, paymentContext));
   }
   if (name === "agentrouter_quote") {
     return quoteCapabilityRequest(store, {
@@ -2855,12 +2921,25 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
     };
   }
   if (name === "agentrouter_ask") {
-    return askAgentRouter(store, {
-      task: args.task || args.query || "",
-      max_price: args.max_price ?? args.maxPrice ?? "0.05",
+    const task = args.task || args.query || "";
+    const maxPrice = args.max_price ?? args.maxPrice ?? "0.05";
+    const routePlan = canonicalRoutePlan(store, task, {
+      ownerKey: paymentContext.ownerKey || "",
+      maxPrice,
+      budgetExplicit: requestHasExplicitBudget(args)
+    });
+    const result = await askAgentRouter(store, {
+      task,
+      max_price: maxPrice,
       currency: args.currency || "USDC",
       invoke: paymentContext.invoke,
-      consumerApiKey: paymentContext.consumerApiKey
+      consumerApiKey: paymentContext.consumerApiKey,
+      routePlan
+    });
+    return attachCanonicalRouteObservation(store, result, {
+      plan: routePlan,
+      entrypoint: "mcp_ask",
+      actorKey: paymentContext.ownerKey || ""
     });
   }
   return {
@@ -2871,198 +2950,6 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
   };
 }
 
-async function runRemoteAgentRouterFetch(store, args = {}, {
-  invoke = true,
-  consumerApiKey = "",
-  ownerKey = "",
-  socialConnectionOptions = {},
-  socialProviderFactory = socialProvidersForUser
-} = {}) {
-  let requirements = Array.isArray(args.data_requirements) ? args.data_requirements : [];
-  const maxPrice = args.max_price ?? args.constraints?.max_price_usdc ?? args.budget?.max_amount ?? "0.05";
-  const currency = args.currency || args.budget?.currency || "USDC";
-
-  // Prefer a source the caller has actually connected over a default one.
-  // Resolved once here because both routing passes need it: the specialized
-  // pass before the service router, and the web fallback after it.
-  const connectedSources = requirements.length ? [] : getExternalApiCatalog(store, ownerKey)
-    .filter((item) => item.connected === true)
-    .map((item) => item.source);
-
-  if (!requirements.length) {
-    const socialPost = findSocialPostUrl(args.task || args.query || "");
-    if (socialPost) {
-      const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
-      return runSocialPostReadCapability(
-        { url: socialPost.canonical_url, platform: socialPost.platform },
-        { providers, consumerContext: args.consumer_context }
-      );
-    }
-    // Only the unambiguous domain sources run ahead of the registered-service
-    // router. A generic web search used to run first and preempt services that
-    // would have matched.
-    const externalApiRequest = inferExternalApiRequest(args.task || args.query || "", {
-      connectedSources,
-      tier: "specialized"
-    });
-    if (externalApiRequest) requirements = [externalApiRequest];
-  }
-
-  if (!requirements.length) {
-    const routed = await askAgentRouter(store, {
-      task: args.task || args.query || "",
-      max_price: maxPrice,
-      currency,
-      invoke,
-      consumerApiKey
-    });
-    // "No registered service covers this" is not an answer when a web search
-    // has one. The router used to only *suggest* the fallback and hand back a
-    // dead end, so the agent had to guess a rephrasing and ask again.
-    if (routed?.status !== "no_service_found") return routed;
-    const webSearch = inferExternalApiRequest(args.task || args.query || "", {
-      connectedSources,
-      tier: "web"
-    });
-    if (!webSearch) return routed;
-    requirements = [webSearch];
-  }
-
-  const researchPlans = requirements
-    .map((requirement) => requirement?.research_plan)
-    .filter((plan) => plan && typeof plan === "object");
-  const results = [];
-  for (const requirement of requirements) {
-    const request = requirementToCapabilityRequest(requirement, args, { maxPrice, currency });
-    if (!request.capability) {
-      results.push({
-        ok: false,
-        status: "invalid_requirement",
-        requirement,
-        message: "Each data requirement needs capability or type."
-      });
-      continue;
-    }
-    if (request.capability === "social_post_read") {
-      const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
-      results.push(await runSocialPostReadCapability(request.params, { providers, consumerContext: request.consumer_context }));
-      continue;
-    }
-    if (request.capability === "external_api_query") {
-      const sourceDefinition = getExternalApiCatalog(store, ownerKey)
-        .find((item) => item.source === String(request.params?.source || "").toLowerCase());
-      if (!ownerKey && sourceDefinition?.connection_required === true) {
-        results.push(agentRouterConnectionRequired());
-      } else {
-        results.push(await runExternalApiQuery(store, ownerKey, request.params, socialConnectionOptions));
-      }
-      continue;
-    }
-    if (invoke) {
-      results.push(await routeCapabilityRequest(store, request, { consumerApiKey }));
-    } else {
-      results.push(requestPaymentRequired(quoteCapabilityRequest(store, request)));
-    }
-  }
-  const successful = results.filter(resultReturnedUsableData);
-  const unsatisfied = results.filter((result) => !resultReturnedUsableData(result));
-  const allPaymentRequired = unsatisfied.length === results.length && unsatisfied.every((result) => result?.status === "payment_required");
-  const connectionRequired = unsatisfied.find((result) => result?.status === "connection_required");
-  const sourceRequired = unsatisfied.filter((result) =>
-    result?.status === "source_credentials_required" || result?.connection_action?.preferred_tool === "agentrouter_connect_source");
-  const sourceActions = sourceRequired.map((result) => ({
-    source: result?.source?.source || result?.source || result?.connection_action?.tool_arguments?.source || null,
-    status: result.status,
-    connection_action: result.connection_action,
-    message: result.message || result.error?.message || null
-  }));
-  const feedbackRequired = results.some((result) => result?.consumer_feedback_request);
-  return {
-    ok: unsatisfied.length === 0,
-    status: connectionRequired && !successful.length
-      ? "connection_required"
-      : sourceRequired.length && !successful.length
-        ? "source_credentials_required"
-      : allPaymentRequired
-        ? "payment_required"
-        : unsatisfied.length
-          ? (successful.length ? "partial_data_returned" : "no_data_returned")
-          : "data_returned",
-    protocol: {
-      protocol_version: "agentrouter_fetch_v1",
-      external_contract: "single_agent_data_call",
-      internal_steps: "discovery_routing_quote_payment_invocation_verification_evidence_feedback"
-    },
-    task: args.task || args.query || null,
-    data_requirements_count: requirements.length,
-    data_returned_count: successful.length,
-    results,
-    compact_results: results.map((result) => result?.compact_result || null).filter(Boolean),
-    ...(researchPlans.length ? { research_plans: researchPlans } : {}),
-    ...(sourceActions.length ? {
-      connection_action: sourceActions[0].connection_action,
-      source_actions: sourceActions,
-      retry_original_request_after_connection: true,
-      do_not_fallback_outside_agentrouter: true
-    } : {}),
-    feedback_required: feedbackRequired,
-    next_required_action: connectionRequired?.action_required || sourceActions[0]?.connection_action || (feedbackRequired
-      ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
-      : null)
-  };
-}
-
-function resultReturnedUsableData(result) {
-  if (!result || result.ok === false || result.status === "no_results") return false;
-  const value = result.result;
-  if (value === undefined || value === null) return false;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value !== "object") return true;
-  if (Array.isArray(value.items)) return value.items.length > 0;
-  if (Number.isFinite(Number(value.count))) return Number(value.count) > 0;
-  if (value.data !== undefined) {
-    if (Array.isArray(value.data)) return value.data.length > 0;
-    return value.data !== null && value.data !== "";
-  }
-  return Object.keys(value).length > 0;
-}
-
-function requirementToCapabilityRequest(requirement = {}, args = {}, { maxPrice, currency }) {
-  const {
-    capability,
-    type,
-    params,
-    constraints,
-    budget,
-    consumer_context: consumerContext,
-    research_plan: _researchPlan,
-    ...inlineParams
-  } = requirement;
-  const cleanInlineParams = {};
-  for (const [key, value] of Object.entries(inlineParams)) {
-    if (value !== undefined && value !== null) cleanInlineParams[key] = value;
-  }
-  return {
-    capability: capability || type,
-    params: params && typeof params === "object" ? params : cleanInlineParams,
-    constraints: {
-      ...(args.constraints || {}),
-      ...(constraints || {}),
-      max_price_usdc: constraints?.max_price_usdc ?? args.constraints?.max_price_usdc ?? maxPrice
-    },
-    budget: {
-      ...(args.budget || {}),
-      ...(budget || {}),
-      max_amount: budget?.max_amount ?? args.budget?.max_amount ?? maxPrice,
-      currency: budget?.currency || args.budget?.currency || currency
-    },
-    consumer_context: {
-      ...(args.consumer_context || {}),
-      ...(consumerContext || {}),
-      source: consumerContext?.source || args.consumer_context?.source || "agentrouter_fetch_remote_mcp"
-    }
-  };
-}
 
 function remoteMcpResult(id, result) {
   return { jsonrpc: "2.0", id, result };
@@ -3152,15 +3039,6 @@ function applySecurityHeaders(res) {
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
   res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
-}
-
-function externalApiStatusCode(result) {
-  if (result?.ok !== false) return 200;
-  if (["invalid_request", "unsupported_source", "unsupported_operation"].includes(result.status)) return 422;
-  if (result.status === "connection_required" || result.status === "auth_required") return 401;
-  if (result.status === "rate_limited") return 429;
-  if (result.status === "provider_error") return 502;
-  return 400;
 }
 
 function sendRemoteMcpJson(res, statusCode, body, headers = {}) {
@@ -3613,60 +3491,6 @@ function createAgentRouterOriginDocument(store, baseUrl) {
   };
 }
 
-function requestPaymentRequired(result) {
-  if (!result.ok && result.status !== "quote_blocked") return result;
-  const response = {
-    ...result,
-    ok: false,
-    status: result.status === "quote_blocked" ? "quote_blocked" : "payment_required",
-    protocol: {
-      protocol_version: "agent_router_request_v1",
-      invocation_policy: "quote_only_no_server_side_payment"
-    },
-    next_step: result.status === "quote_blocked"
-      ? "Increase the max_price budget or choose a lower-cost service."
-      : paymentRequiredNextStep(result)
-  };
-  return response.status === "payment_required" && isAgentRouterCreditsQuote(result)
-    ? agentRouterConnectionRequired(response)
-    : response;
-}
-
-function paymentRequiredNextStep(result) {
-  if (isAgentRouterCreditsQuote(result)) return "Call agentrouter_connect to approve this AI client in the browser, then retry automatically.";
-  return "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof.";
-}
-
-function paymentBoundaryStatusCode(payload) {
-  if (payload?.status === "invalid_request") return 422;
-  if (payload?.status === "connection_required") return 401;
-  if (payload?.status === "payment_required" || payload?.status === "quote_blocked") return 402;
-  if (payload?.status === "no_data_returned") {
-    const statuses = (payload.results || []).map((result) => result?.status);
-    if (statuses.some((status) => ["unsupported_source", "unsupported_operation", "invalid_request"].includes(status))) return 422;
-    if (statuses.some((status) => status === "rate_limited")) return 429;
-    if (statuses.some((status) => status === "provider_error")) return 502;
-  }
-  return 200;
-}
-
-function routePaymentRequired(resolved, body) {
-  if (resolved.status === "needs_clarification" || resolved.status === "no_match") return resolved;
-  const response = {
-    ...resolved,
-    ok: false,
-    status: "payment_required",
-    protocol: {
-      protocol_version: "agent_router_route_v1",
-      invocation_policy: "resolve_only_no_server_side_payment"
-    },
-    budget: body.budget || {},
-    next_step: "Use local MCP with a payment-capable backend, or call the provider endpoint with a valid x402/Arc payment proof."
-  };
-  return currentPaymentBackend() === "credits"
-    ? agentRouterConnectionRequired(response)
-    : response;
-}
 
 function paymentRequiredForService(store, serviceId, input = {}, budget = {}) {
   const record = store.services.get(serviceId);
@@ -4264,7 +4088,121 @@ function mockOpenApi(baseUrl) {
   };
 }
 
-async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}) {
+function completedRouteObservationError(statusCode, code, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+function publicCompletedRouteObservation(observation, actorKey) {
+  return {
+    ...publicRouteObservation(observation),
+    durability_status: observation.durability_status,
+    feedback_endpoint: actorKey ? "/agent-router/routing-feedback" : null
+  };
+}
+
+/**
+ * Replace the authenticated preflight decision with its terminal state while
+ * retaining the same observation identity. Client routing summaries are only
+ * hints: every trust- and budget-sensitive field comes from the server-owned
+ * preflight observation, the verified service manifest, and the completion
+ * actor established by the completion grant or account session.
+ */
+export async function upsertCompletedCallRouteObservation(store, body = {}, {
+  actorKey = "",
+  serviceId = "",
+  request = {},
+  manifest = null,
+  writeEvents = writePersistentServiceEventsAtomically
+} = {}) {
+  const suppliedIdentity = body.routing_observation;
+  const suppliedSummary = body.routing_summary;
+  if (!suppliedIdentity && !suppliedSummary) return null;
+  if (!suppliedIdentity || typeof suppliedIdentity !== "object") {
+    throw completedRouteObservationError(422, "ROUTING_OBSERVATION_IDENTITY_REQUIRED", "A terminal routing summary must include its server-issued preflight observation identity.");
+  }
+  const observationId = String(suppliedIdentity.observation_id || "").trim();
+  const routeRequestId = String(suppliedIdentity.request_id || "").trim();
+  if (!observationId || !routeRequestId) {
+    throw completedRouteObservationError(422, "ROUTING_OBSERVATION_IDENTITY_REQUIRED", "Both observation_id and request_id are required for terminal routing state.");
+  }
+  const index = (store.routeObservations || []).findIndex((item) => item?.observation_id === observationId);
+  const existing = index >= 0 ? store.routeObservations[index] : null;
+  if (!existing || existing.observation_version !== "agent_router_route_observation_v2") {
+    throw completedRouteObservationError(404, "ROUTING_OBSERVATION_NOT_FOUND", "The server-issued preflight routing observation was not found.");
+  }
+  if (String(existing.request_id || "") !== routeRequestId) {
+    throw completedRouteObservationError(409, "ROUTING_OBSERVATION_IDENTITY_MISMATCH", "The routing request identity does not match the preflight observation.");
+  }
+  if (existing.actor_key && existing.actor_key !== actorKey) {
+    throw completedRouteObservationError(403, "FORBIDDEN_ROUTING_OBSERVATION_ACTOR", "This routing observation belongs to another authenticated actor.");
+  }
+  const candidateServiceIds = new Set((existing.candidates || []).map((candidate) => String(candidate?.service_id || "")).filter(Boolean));
+  if (existing.selected_service_id) candidateServiceIds.add(String(existing.selected_service_id));
+  if (!serviceId || !candidateServiceIds.has(String(serviceId))) {
+    throw completedRouteObservationError(409, "ROUTING_OBSERVATION_SERVICE_MISMATCH", "The completed service was not selected by this preflight route.");
+  }
+  const requestedCapability = String(request?.capability || "").trim();
+  if (requestedCapability && existing.capability !== "unknown" && requestedCapability !== existing.capability) {
+    throw completedRouteObservationError(409, "ROUTING_OBSERVATION_CAPABILITY_MISMATCH", "The completed capability does not match the preflight route.");
+  }
+
+  const maxPrice = existing.budget?.max_price_usdc ?? null;
+  const manifestPrice = manifest?.pricing?.amount;
+  const selectedPrice = manifestPrice == null ? existing.budget?.selected_price_usdc ?? null : String(manifestPrice);
+  const maxNumber = Number(maxPrice);
+  const selectedNumber = Number(selectedPrice);
+  const budgetCompliant = maxPrice == null || selectedPrice == null || !Number.isFinite(maxNumber) || !Number.isFinite(selectedNumber)
+    ? null
+    : selectedNumber <= maxNumber;
+  const terminal = createRouteObservationV2({
+    observation_id: existing.observation_id,
+    request_id: existing.request_id,
+    created_at: existing.created_at,
+    entrypoint: existing.entrypoint,
+    task_family: existing.task_family,
+    route_family: existing.route_family,
+    capability: existing.capability,
+    source_family: existing.source_family,
+    action: "route",
+    selected_service_id: serviceId,
+    candidates: existing.candidates,
+    confidence: existing.confidence,
+    fallback: existing.fallback,
+    authorization: { required: false, action: "none", source: null },
+    budget: {
+      max_price_usdc: maxPrice,
+      selected_price_usdc: selectedPrice,
+      compliant: budgetCompliant
+    },
+    actor_key: existing.actor_key || actorKey,
+    routing_policy_version: existing.routing_policy_version,
+    diagnostics: {
+      ...(existing.diagnostics || {}),
+      candidate_count: existing.candidates?.length || 0,
+      eligible_candidate_count: existing.candidates?.length || 0,
+      abstain_reason: null,
+      policy_gate: budgetCompliant === false ? "violation" : "allowed"
+    }
+  });
+  const durable = await writeEvents([{
+    eventType: "route_observation",
+    serviceId,
+    requestId: terminal.request_id,
+    event: terminal
+  }]);
+  terminal.durability_status = durable === false ? "memory_only" : "durable";
+  store.routeObservations[index] = terminal;
+  return publicCompletedRouteObservation(terminal, actorKey);
+}
+
+async function recordCompletedAgentCall(store, body = {}, {
+  actorKey = "",
+  writeEvent = writePersistentServiceEvent,
+  writeEvents = writePersistentServiceEventsAtomically
+} = {}) {
   const serviceId = body.service_id || body.feedback?.service_id || body.result?.service_id;
   const record = store.services.get(serviceId);
   if (!record) {
@@ -4363,6 +4301,13 @@ async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}
       serviceId,
       verification: replayedEvidence.verification || verification
     });
+    const routingObservation = await upsertCompletedCallRouteObservation(store, body, {
+      actorKey,
+      serviceId,
+      request,
+      manifest,
+      writeEvents
+    });
     return {
       ok: true,
       status: "completed_invocation_already_recorded",
@@ -4372,15 +4317,23 @@ async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}
       evidence: replayedEvidence,
       feedback: existingFeedback || null,
       payment_verification: paymentVerification,
-      consumer_feedback_request: consumerFeedbackRequest
+      consumer_feedback_request: consumerFeedbackRequest,
+      routing_observation: routingObservation
     };
   }
+  const routingObservation = await upsertCompletedCallRouteObservation(store, body, {
+    actorKey,
+    serviceId,
+    request,
+    manifest,
+    writeEvents
+  });
   feedbackEvent.payment_verification = paymentVerification;
   upsertOperationalFeedback(record, feedbackEvent);
   if (!store.feedbackEvents.some((event) => event.request_id === requestId && event.payment_tx === feedbackEvent.payment_tx)) {
     store.feedbackEvents.push(feedbackEvent);
   }
-  await writePersistentServiceEvent({
+  await writeEvent({
     eventType: "operational_feedback",
     serviceId,
     requestId,
@@ -4414,7 +4367,7 @@ async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}
   const savedEvidence = existingEvidence || evidence;
   if (!existingEvidence) {
     store.evidenceEvents.push(evidence);
-    await writePersistentServiceEvent({
+    await writeEvent({
       eventType: "evidence",
       serviceId,
       requestId,
@@ -4437,7 +4390,7 @@ async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}
   if (!store.qualityEvents.some((event) => event.quality_event_id === qualityEvent.quality_event_id)) {
     store.qualityEvents.push(qualityEvent);
   }
-  await writePersistentServiceEvent({
+  await writeEvent({
     eventType: "quality_event",
     serviceId,
     requestId,
@@ -4464,7 +4417,8 @@ async function recordCompletedAgentCall(store, body = {}, { actorKey = "" } = {}
     feedback: feedbackEvent,
     payment_verification: paymentVerification,
     quality_event: qualityEvent,
-    consumer_feedback_request: consumerFeedbackRequest
+    consumer_feedback_request: consumerFeedbackRequest,
+    routing_observation: routingObservation
   };
 }
 

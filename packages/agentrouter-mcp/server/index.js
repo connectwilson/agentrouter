@@ -19,6 +19,16 @@ import {
 import { completeLocalBrowserHandoff } from "./local-browser-connector.js";
 import { createExpiringTokenCache } from "./feedback-token-cache.js";
 import { launchBrowserAuthorization } from "./browser-launcher.js";
+import {
+  decorateStandaloneLocalResult,
+  handleLocalStructuredSocialBatchRequest,
+  localFeedbackRoutingSummary
+} from "./local-routing.js";
+
+export {
+  decorateStandaloneLocalResult,
+  handleLocalStructuredSocialBatchRequest
+} from "./local-routing.js";
 
 const baseUrl = String(process.env.AGENT_ROUTER_URL || "https://agentrouter.network").replace(/\/$/, "");
 const remoteOrigins = parseRemoteOrigins(baseUrl, process.env.AGENT_ROUTER_FALLBACK_URLS);
@@ -110,7 +120,7 @@ async function forwardRequest(message) {
     }
     const browserCompletion = localBrowserCompletionRequest(message);
     if (browserCompletion) {
-      const result = completeLocalBrowserHandoff(browserCompletion);
+      const result = decorateStandaloneLocalResult(completeLocalBrowserHandoff(browserCompletion));
       await attachLocalFeedbackGrant(result);
       send({
         jsonrpc: "2.0",
@@ -122,10 +132,23 @@ async function forwardRequest(message) {
       });
       return;
     }
+    const localStructuredSocial = await handleLocalStructuredSocialBatchRequest(message);
+    if (localStructuredSocial) {
+      await attachLocalFeedbackGrant(localStructuredSocial);
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(localStructuredSocial, null, 2) }],
+          isError: localStructuredSocial.ok === false
+        }
+      });
+      return;
+    }
     // Keyword search only works where a browser is: the hosted server has none.
     const localSearch = localSocialSearchRequest(message);
     if (localSearch) {
-      const result = await runLocalSocialSearch(localSearch);
+      const result = decorateStandaloneLocalResult(await runLocalSocialSearch(localSearch));
       await attachLocalFeedbackGrant(result);
       send({
         jsonrpc: "2.0",
@@ -141,17 +164,18 @@ async function forwardRequest(message) {
     if (localSocialPost) {
       const nativeHandoff = localBrowserHandoffRequest(message, localSocialPost);
       if (nativeHandoff) {
+        const result = decorateStandaloneLocalResult(nativeHandoff);
         send({
           jsonrpc: "2.0",
           id: message.id,
           result: {
-            content: [{ type: "text", text: JSON.stringify(nativeHandoff, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
             isError: false
           }
         });
         return;
       }
-      const result = await runLocalSocialPostRead(localSocialPost.canonical_url);
+      const result = decorateStandaloneLocalResult(await runLocalSocialPostRead(localSocialPost.canonical_url));
       await attachLocalFeedbackGrant(result);
       send({
         jsonrpc: "2.0",
@@ -283,16 +307,27 @@ async function openSourceAccessPage(clientAction, originalRequest) {
   return result;
 }
 
-async function attachLocalFeedbackGrant(result) {
+export async function attachLocalFeedbackGrant(result, {
+  registerGrant = (body) => postAuthenticatedJson("/agent-router/feedback/grant", body),
+  tokenCache = localFeedbackTokens
+} = {}) {
+  if (!result || typeof result !== "object") return result;
+  if (Array.isArray(result.results)) {
+    for (const item of result.results) {
+      await attachLocalFeedbackGrant(item, { registerGrant, tokenCache });
+    }
+    return result;
+  }
   if (!result?.request_id || !result?.service_id || !result?.consumer_feedback_request) return result;
   const params = result.request?.params || {};
   try {
-    const response = await postAuthenticatedJson("/agent-router/feedback/grant", {
+    const response = await registerGrant({
       request_id: result.request_id,
       service_id: result.service_id,
       operation: params.operation || (result.request_id.includes("_post_") ? "post" : "search"),
       capability: result.request?.capability || "social_search",
-      result_status: result.status
+      result_status: result.status,
+      routing_summary: localFeedbackRoutingSummary(result)
     });
     if (!response.ok || !response.payload?.feedback_token) {
       result.consumer_feedback_request.registration = {
@@ -302,7 +337,7 @@ async function attachLocalFeedbackGrant(result) {
       return result;
     }
     const token = response.payload.feedback_token;
-    localFeedbackTokens.set(result.request_id, token);
+    tokenCache.set(result.request_id, token);
     result.consumer_feedback_request.feedback_token_required = true;
     result.consumer_feedback_request.registration = { status: "registered", service_id: result.service_id };
     return result;

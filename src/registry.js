@@ -20,7 +20,8 @@ import {
   rewritePersistentServiceRegistration,
   releasePersistentServiceRegistration,
   waitForPersistentServiceRegistrationActivation,
-  writePersistentServiceEvent
+  writePersistentServiceEvent,
+  writePersistentServiceEventsAtomically
 } from "./persistence.js";
 import {
   createConfigHash,
@@ -38,6 +39,7 @@ import { executeProviderConfig } from "./provider-runtime.js";
 import { settlementChain } from "./chains.js";
 import { agentRouterConnectionRequired } from "./agentrouter-connection.js";
 import { requestProviderHttp } from "./provider-http-transport.js";
+import { createRouteObservationV2 } from "./routing/metrics.js";
 import { validateBudgetAmount } from "./budget-normalization.js";
 import { internalProviderValidationHeaders } from "./provider-validation-auth.js";
 
@@ -1642,15 +1644,81 @@ function sameConsumerEvent(left, right) {
 }
 
 export function parseLocalFeedbackRequestId(requestId) {
-  const match = /^local_(search|post|read_user_posts)_([a-z]+)_/.exec(String(requestId || ""));
+  const match = /^local_(search|post|read_user_posts)_([a-z]+)_([A-Za-z0-9_-]{4,160})$/.exec(String(requestId || ""));
   return match ? { operation: match[1], platform: match[2] } : null;
 }
 
-export async function issueLocalFeedbackGrant(store, body = {}, {
-  actorKey = "",
-  writeEvent = writePersistentServiceEvent,
-  randomBytes = (size) => crypto.randomBytes(size)
-} = {}) {
+const LOCAL_FEEDBACK_PLATFORM_CAPABILITIES = Object.freeze({
+  search: Object.freeze({
+    x: ["social_search", "social_keyword_search", "social_user_voice_research"],
+    reddit: ["social_search", "social_keyword_search", "social_user_voice_research"],
+    xiaohongshu: ["social_search", "social_keyword_search", "social_user_voice_research"],
+    bilibili: ["social_search", "social_keyword_search", "social_user_voice_research"],
+    youtube: ["social_search", "social_keyword_search", "social_user_voice_research"],
+    zhihu: ["social_search", "social_keyword_search", "social_user_voice_research"],
+    weibo: ["social_search", "social_keyword_search", "social_user_voice_research"]
+  }),
+  read_user_posts: Object.freeze({
+    x: ["social_search", "social_keyword_search", "social_user_voice_research"]
+  }),
+  post: Object.freeze({
+    x: ["social_post_read"],
+    tiktok: ["social_post_read"],
+    youtube: ["social_post_read"],
+    bilibili: ["social_post_read"],
+    reddit: ["social_post_read"],
+    xiaohongshu: ["social_post_read"],
+    zhihu: ["social_post_read"],
+    weibo: ["social_post_read"]
+  })
+});
+
+const LOCAL_FEEDBACK_RESULT_STATUSES = new Set(["completed", "no_results"]);
+
+function invalidLocalFeedbackGrant(message) {
+  const error = new Error(message);
+  error.statusCode = 422;
+  error.code = "INVALID_LOCAL_FEEDBACK_GRANT";
+  return error;
+}
+
+function normalizeLocalFeedbackGrantMetadata(body, parsed, existing = null) {
+  const operation = String(body.operation || existing?.operation || parsed.operation).trim().toLowerCase();
+  const platform = String(body.platform || existing?.platform || parsed.platform).trim().toLowerCase();
+  if (operation !== parsed.operation || platform !== parsed.platform) {
+    throw invalidLocalFeedbackGrant("Local feedback metadata does not match request_id.");
+  }
+  const allowedCapabilities = LOCAL_FEEDBACK_PLATFORM_CAPABILITIES[operation]?.[platform];
+  if (!allowedCapabilities) {
+    throw invalidLocalFeedbackGrant("The local feedback platform and operation are not supported.");
+  }
+  const defaultCapability = operation === "post" ? "social_post_read" : "social_search";
+  const capability = String(body.capability || existing?.capability || defaultCapability).trim().toLowerCase();
+  if (!allowedCapabilities.includes(capability)) {
+    throw invalidLocalFeedbackGrant("The local feedback capability does not match its platform operation.");
+  }
+  const resultStatus = String(body.result_status || existing?.result_status || "completed").trim().toLowerCase();
+  if (!LOCAL_FEEDBACK_RESULT_STATUSES.has(resultStatus) || (operation === "post" && resultStatus !== "completed")) {
+    throw invalidLocalFeedbackGrant("The local feedback result status is not eligible for a grant.");
+  }
+  return { operation, platform, capability, result_status: resultStatus };
+}
+
+export async function issueLocalFeedbackGrant(store, body = {}, options = {}) {
+  const actorKey = options.actorKey || "";
+  const randomBytes = options.randomBytes || ((size) => crypto.randomBytes(size));
+  const writeEvents = typeof options.writeEvents === "function"
+    ? options.writeEvents
+    : typeof options.writeEvent === "function"
+      ? async (entries) => {
+          let durable = true;
+          for (const entry of entries) {
+            const result = await options.writeEvent(entry);
+            if (result === false) durable = false;
+          }
+          return durable;
+        }
+      : writePersistentServiceEventsAtomically;
   const requestId = String(body.request_id || "").trim();
   const parsed = parseLocalFeedbackRequestId(requestId);
   if (!actorKey || !parsed) {
@@ -1660,13 +1728,14 @@ export async function issueLocalFeedbackGrant(store, body = {}, {
     throw error;
   }
   const serviceId = String(body.service_id || `local_social_${parsed.platform}`);
-  if (serviceId !== `local_social_${parsed.platform}` || (body.operation && body.operation !== parsed.operation)) {
+  if (serviceId !== `local_social_${parsed.platform}`) {
     const error = new Error("Local feedback grant metadata does not match request_id.");
     error.statusCode = 422;
     error.code = "LOCAL_FEEDBACK_GRANT_MISMATCH";
     throw error;
   }
   const existing = store.feedbackGrants?.get(requestId);
+  const metadata = normalizeLocalFeedbackGrantMetadata(body, parsed, existing);
   if (existing) {
     if (existing.actor_key !== actorKey) {
       const error = new Error("This local invocation belongs to another authenticated account.");
@@ -1675,35 +1744,77 @@ export async function issueLocalFeedbackGrant(store, body = {}, {
       throw error;
     }
     if (existing.public?.feedback_token) {
-      return { ...existing.public, status: "feedback_grant_already_issued" };
+      return {
+        ...existing.public,
+        status: "feedback_grant_already_issued",
+        routing_observation_id: existing.routing_observation_id || existing.public.routing_observation_id || null
+      };
     }
     const feedbackToken = randomBytes(32).toString("base64url");
     const rotatedAt = new Date().toISOString();
     const rotated = { ...existing, token_hash: hashJson(feedbackToken), rotated_at: rotatedAt };
-    await writeEvent({ eventType: "feedback_grant_rotation", serviceId, requestId, event: rotated });
-    const publicGrant = { ok: true, status: "feedback_grant_rotated", request_id: requestId, service_id: serviceId, feedback_token: feedbackToken, created_at: existing.created_at, rotated_at: rotatedAt };
+    await writeEvents([{ eventType: "feedback_grant_rotation", serviceId, requestId, event: rotated }]);
+    const publicGrant = {
+      ok: true,
+      status: "feedback_grant_rotated",
+      request_id: requestId,
+      service_id: serviceId,
+      feedback_token: feedbackToken,
+      created_at: existing.created_at,
+      rotated_at: rotatedAt,
+      routing_observation_id: existing.routing_observation_id || null
+    };
     store.feedbackGrants.set(requestId, { ...rotated, public: publicGrant });
     return publicGrant;
   }
   const feedbackToken = randomBytes(32).toString("base64url");
   const createdAt = new Date().toISOString();
+  const localObservation = localRouteObservationFromGrant({
+    store,
+    body,
+    actorKey,
+    serviceId,
+    requestId,
+    createdAt
+  });
   const grant = {
     event_version: "agent_local_feedback_grant_v1",
     request_id: requestId,
     service_id: serviceId,
     provider_id: "local_browser_connector",
     actor_key: actorKey,
-    operation: parsed.operation,
-    platform: parsed.platform,
-    capability: String(body.capability || "social_search"),
-    result_status: String(body.result_status || "completed"),
+    operation: metadata.operation,
+    platform: metadata.platform,
+    capability: metadata.capability,
+    result_status: metadata.result_status,
     token_hash: hashJson(feedbackToken),
-    created_at: createdAt
+    created_at: createdAt,
+    routing_observation_id: localObservation?.observation_id || null
   };
-  await writeEvent({ eventType: "feedback_grant", serviceId, requestId, event: grant });
+  const entries = [
+    ...(localObservation ? [{ eventType: "route_observation", serviceId, requestId, event: localObservation }] : []),
+    { eventType: "feedback_grant", serviceId, requestId, event: grant }
+  ];
+  const durable = await writeEvents(entries);
+  if (localObservation) {
+    localObservation.durability_status = durable === false ? "memory_only" : "durable";
+    store.routeObservations ||= [];
+    if (!store.routeObservations.some((item) => item.observation_id === localObservation.observation_id)) {
+      store.routeObservations.push(localObservation);
+    }
+  }
   const operational = localOperationalEventFromGrant(grant);
   store.feedbackGrants ||= new Map();
-  const publicGrant = { ok: true, status: "feedback_grant_issued", request_id: requestId, service_id: serviceId, feedback_token: feedbackToken, created_at: createdAt };
+  const publicGrant = {
+    ok: true,
+    status: "feedback_grant_issued",
+    request_id: requestId,
+    service_id: serviceId,
+    feedback_token: feedbackToken,
+    created_at: createdAt,
+    routing_observation_id: localObservation?.observation_id || null,
+    routing_observation_durability: localObservation?.durability_status || null
+  };
   store.feedbackGrants.set(requestId, { ...grant, public: publicGrant });
   if (!store.feedbackEvents.some((event) => event.request_id === requestId && event.service_id === serviceId)) {
     store.feedbackEvents.push(operational);
@@ -1748,6 +1859,62 @@ function localOperationalEventFromGrant(grant) {
     consumer_feedback_expected: true,
     created_at: grant.created_at
   };
+}
+
+function localRouteObservationFromGrant({ store, body, actorKey, serviceId, requestId, createdAt }) {
+  const parsed = parseLocalFeedbackRequestId(requestId);
+  if (!parsed) return null;
+  const metadata = normalizeLocalFeedbackGrantMetadata(body, parsed);
+  const existing = (store.routeObservations || []).find((item) => item?.request_id === requestId && item?.actor_key === actorKey);
+  if (existing?.observation_version === "agent_router_route_observation_v2") return existing;
+  const taskFamily = metadata.capability === "social_post_read"
+    ? "social_post_read"
+    : metadata.capability === "social_user_voice_research"
+      ? "social_research"
+      : "social_search";
+  return createRouteObservationV2({
+    observation_id: existing?.observation_id || `route_obs_local_${hashJson({ actorKey, requestId, serviceId }).slice(2, 18)}`,
+    request_id: requestId,
+    created_at: createdAt,
+    entrypoint: "mcp_request",
+    task_family: taskFamily,
+    route_family: "local_browser",
+    capability: metadata.capability,
+    source_family: "social",
+    action: "route",
+    selected_service_id: serviceId,
+    candidates: [{
+      service_id: serviceId,
+      source_family: "local_browser",
+      routing_score: 1,
+      price_usdc: "0"
+    }],
+    confidence: 1,
+    fallback: {
+      used: false,
+      from: null,
+      to: null,
+      reason: null
+    },
+    authorization: {
+      required: false,
+      action: "none",
+      source: null
+    },
+    budget: {
+      max_price_usdc: "0",
+      selected_price_usdc: "0",
+      compliant: true
+    },
+    actor_key: actorKey,
+    routing_policy_version: "agentrouter_route_plan_v1",
+    diagnostics: {
+      local_feedback_grant: true,
+      candidate_count: 1,
+      eligible_candidate_count: 1,
+      policy_gate: "allowed"
+    }
+  });
 }
 
 
@@ -2091,6 +2258,7 @@ function materializeProviderClaimsFromServices(store) {
 }
 
 export async function hydrateServiceEventRows(store, events = []) {
+  const hydratedRoutingFeedback = new Set();
   for (const row of events) {
     const event = row.event;
     if (row.event_type === "provider_claim") {
@@ -2286,6 +2454,23 @@ export async function hydrateServiceEventRows(store, events = []) {
     if (row.event_type === "route_observation") {
       if (!store.routeObservations.some((item) => item.observation_id === event.observation_id)) {
         store.routeObservations.push(event);
+      }
+      continue;
+    }
+    if (row.event_type === "routing_feedback") {
+      store.routingFeedbackEvents ||= [];
+      const valid = event?.event_version === "agent_router_routing_feedback_v1"
+        && event?.observation_id
+        && event?.request_id
+        && event?.actor_key;
+      const identity = valid ? `${event.observation_id}\u0000${event.actor_key}` : "";
+      if (valid && !hydratedRoutingFeedback.has(identity)) {
+        hydratedRoutingFeedback.add(identity);
+        const existingIndex = store.routingFeedbackEvents.findIndex((item) =>
+          item?.observation_id === event.observation_id && item?.actor_key === event.actor_key
+        );
+        if (existingIndex >= 0) store.routingFeedbackEvents[existingIndex] = event;
+        else store.routingFeedbackEvents.push(event);
       }
       continue;
     }

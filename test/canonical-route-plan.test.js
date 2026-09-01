@@ -1,12 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { inferRoutePlan } from "../src/canonical-route-plan.js";
+import { inferRoutePlan } from "../src/routing/planner.js";
+import { requestHasExplicitBudget } from "../src/routing/runtime.js";
+
+test("routing runtime preserves explicit numeric zero budgets", () => {
+  assert.equal(requestHasExplicitBudget({ constraints: { max_price_usdc: 0 } }), true);
+  assert.equal(requestHasExplicitBudget({}), false);
+});
 
 const DEFAULT_CONTEXT = Object.freeze({
   agentrouter_authenticated: true,
   connected_sources: ["exa"],
   local_browser_sessions: [],
+  require_price_upper_bound: false,
   constraints: { max_price_usdc: "0.05" }
 });
 
@@ -40,7 +47,7 @@ function assertCanonicalEnvelope(plan) {
   assert.deepEqual(Object.keys(plan.budget_gate).sort(), ["max_price_usdc", "paid_calls_allowed", "status"]);
   assert.match(plan.budget_gate.max_price_usdc, /^\d+(?:\.\d+)?$/);
   assert.equal(typeof plan.budget_gate.paid_calls_allowed, "boolean");
-  assert.ok(["allowed", "free_only", "blocked"].includes(plan.budget_gate.status));
+  assert.ok(["allowed", "free_only", "blocked", "quote_required"].includes(plan.budget_gate.status));
   assert.ok(plan.abstain_reason === null || typeof plan.abstain_reason === "string");
   assert.equal(typeof plan.must_not_fallback, "boolean");
 }
@@ -306,4 +313,64 @@ test("a zero budget blocks paid explicit routes but still permits free specialis
   });
   assert.deepEqual(free.auth_requirement, { required: false, kind: "none", source: null });
   assert.equal(free.abstain_reason, null);
+});
+
+test("source ranking keeps semantic fit primary but lets confident trust evidence break a bad default", () => {
+  const baseline = inferRoutePlan(
+    "研究 AgentRouter 的产品定位、主要竞品和市场机会。",
+    context({ connected_sources: [] })
+  );
+  assert.equal(baseline.candidate_sources[0], "exa");
+  assert.ok(Array.isArray(baseline.candidate_scores));
+  assert.equal(baseline.candidate_scores[0].source, "exa");
+
+  const trustAdjusted = inferRoutePlan(
+    "研究 AgentRouter 的产品定位、主要竞品和市场机会。",
+    context({
+      connected_sources: [],
+      source_signals: {
+        exa: { routing_trust_score: 0.15, trust_score_confidence: 0.95, recent_failure_rate: 0.8 },
+        tavily: { routing_trust_score: 0.98, trust_score_confidence: 0.95, recent_failure_rate: 0 }
+      }
+    })
+  );
+  assert.equal(trustAdjusted.candidate_sources[0], "tavily");
+  assert.equal(trustAdjusted.candidate_scores[0].source, "tavily");
+  assert.ok(trustAdjusted.candidate_scores[0].routing_score > trustAdjusted.candidate_scores[1].routing_score);
+  assert.equal(
+    trustAdjusted.top1_top2_margin,
+    Number((trustAdjusted.candidate_scores[0].routing_score - trustAdjusted.candidate_scores[1].routing_score).toFixed(4))
+  );
+});
+
+test("an explicit source wins over overlapping registered-service keywords", () => {
+  const scholarly = inferRoutePlan(
+    "使用 OpenAlex 查找 smart money activity 的同行评审论文。",
+    context({ connected_sources: ["openalex"] })
+  );
+  assert.equal(scholarly.route_family, "external_api");
+  assert.equal(scholarly.source_constraint, "openalex");
+  assert.equal(scholarly.candidate_sources[0], "openalex");
+  assert.equal(scholarly.capability, "scholarly_literature");
+
+  const webResearch = inferRoutePlan(
+    "Use Exa to research XLM liquidation max pain.",
+    context({ connected_sources: ["exa"] })
+  );
+  assert.equal(webResearch.route_family, "external_api");
+  assert.equal(webResearch.source_constraint, "exa");
+  assert.equal(webResearch.candidate_sources[0], "exa");
+  assert.match(webResearch.params.query, /XLM/i);
+});
+
+test("an unknown upstream price requires a quote instead of passing a tiny budget", () => {
+  const plan = inferRoutePlan(
+    "Use Firecrawl API to research AgentRouter competitors.",
+    context({ require_price_upper_bound: true, constraints: { max_price_usdc: "0.000001" } })
+  );
+  assert.equal(plan.source_constraint, "firecrawl");
+  assert.equal(plan.estimated_price_usdc, null);
+  assert.equal(plan.abstain_reason, "price_unknown");
+  assert.equal(plan.budget_gate.status, "quote_required");
+  assert.equal(plan.must_not_fallback, true);
 });
