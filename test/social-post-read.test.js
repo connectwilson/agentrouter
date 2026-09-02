@@ -168,6 +168,7 @@ test("hosted fetch selects a declared native browser without requiring OpenCLI",
     assert.equal(payload.handoff.selected_adapter, "codex_browser");
     assert.deepEqual(payload.handoff.fallback_adapters, []);
     assert.equal(payload.handoff.fallback, undefined);
+    assert.equal(payload.fallback_allowed, false);
     assert.match(payload.action_required.message, /built-in browser/i);
     assert.doesNotMatch(payload.action_required.message, /install|restart/i);
   } finally {
@@ -322,6 +323,7 @@ test("MCP bridge exposes native browser handoff completion without advertising O
   assert.equal(nativeHandoff.handoff.selected_adapter, "claude_in_chrome");
   assert.deepEqual(nativeHandoff.handoff.fallback_adapters, []);
   assert.equal(nativeHandoff.handoff.fallback, undefined);
+  assert.equal(nativeHandoff.fallback_allowed, false);
 
   const completion = localBrowserCompletionRequest({
     method: "tools/call",
@@ -437,6 +439,7 @@ test("hosted fetch prefers native browser search and completes multi-result evid
     assert.equal(routed.handoff.selected_adapter, "codex_browser");
     assert.equal(routed.handoff.operation, "search");
     assert.equal(routed.handoff.fallback, undefined);
+    assert.equal(routed.fallback_allowed, false);
 
     const response = await fetch(`${baseUrl}/agent-router/browser-handoffs/complete`, {
       method: "POST",
@@ -485,6 +488,7 @@ test("structured hosted requests expose native browser trends instead of an Open
     assert.equal(routed.handoff.operation, "read_trends");
     assert.deepEqual(routed.handoff.fallback_adapters, []);
     assert.equal(routed.handoff.fallback, undefined);
+    assert.equal(routed.fallback_allowed, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -832,6 +836,7 @@ test("keyword search runs locally so it works without a platform API token", asy
   assert.equal(nativeHandoff.handoff.operation, "search");
   assert.deepEqual(nativeHandoff.handoff.fallback_adapters, []);
   assert.equal(nativeHandoff.handoff.fallback, undefined);
+  assert.equal(nativeHandoff.fallback_allowed, false);
   assert.equal(nativeHandoff.action_required.reload_after_bridge_update, false);
 
   const legacyMessage = structuredClone(nativeMessage);
