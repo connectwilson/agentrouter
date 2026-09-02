@@ -166,7 +166,8 @@ test("hosted fetch selects a declared native browser without requiring OpenCLI",
     assert.equal(response.status, 200);
     assert.equal(payload.status, "local_connector_required");
     assert.equal(payload.handoff.selected_adapter, "codex_browser");
-    assert.deepEqual(payload.handoff.fallback_adapters, ["opencli"]);
+    assert.deepEqual(payload.handoff.fallback_adapters, []);
+    assert.equal(payload.handoff.fallback, undefined);
     assert.match(payload.action_required.message, /built-in browser/i);
     assert.doesNotMatch(payload.action_required.message, /install|restart/i);
   } finally {
@@ -303,7 +304,7 @@ test("public MCP bridge intercepts natural and structured X reads only", () => {
   }), null);
 });
 
-test("MCP bridge exposes native browser handoff completion without replacing OpenCLI fallback", () => {
+test("MCP bridge exposes native browser handoff completion without advertising OpenCLI to modern clients", () => {
   const message = {
     method: "tools/call",
     params: {
@@ -319,7 +320,8 @@ test("MCP bridge exposes native browser handoff completion without replacing Ope
   const parsed = localSocialPostRequest(message);
   const nativeHandoff = localBrowserHandoffRequest(message, parsed);
   assert.equal(nativeHandoff.handoff.selected_adapter, "claude_in_chrome");
-  assert.deepEqual(nativeHandoff.handoff.fallback_adapters, ["opencli"]);
+  assert.deepEqual(nativeHandoff.handoff.fallback_adapters, []);
+  assert.equal(nativeHandoff.handoff.fallback, undefined);
 
   const completion = localBrowserCompletionRequest({
     method: "tools/call",
@@ -333,7 +335,7 @@ test("MCP bridge exposes native browser handoff completion without replacing Ope
   const fetchTool = bridgeMcpTools.find((tool) => tool.name === "agentrouter_fetch");
   assert.deepEqual(
     fetchTool.inputSchema.properties.consumer_context.properties.local_browser.properties.operations.items.enum,
-    ["read_post"]
+    ["read_post", "search", "read_user_posts", "read_thread", "read_trends"]
   );
 });
 
@@ -406,6 +408,83 @@ test("HTTP clients can complete a native browser handoff without MCP stdio", asy
     const completed = await response.json();
     assert.equal(response.status, 200);
     assert.equal(completed.result.post.text, "HTTP result");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("hosted fetch prefers native browser search and completes multi-result evidence", async () => {
+  const server = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const routed = await fetch(`${baseUrl}/agent-router/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "查询今天 X 上关于 crypto 最火的 5 个话题",
+        max_price: "0",
+        consumer_context: {
+          local_browser: {
+            adapter: "codex_browser",
+            available: true,
+            operations: ["search", "read_trends"]
+          }
+        }
+      })
+    }).then((response) => response.json());
+    assert.equal(routed.status, "local_connector_required");
+    assert.equal(routed.handoff.selected_adapter, "codex_browser");
+    assert.equal(routed.handoff.operation, "search");
+    assert.equal(routed.handoff.fallback, undefined);
+
+    const response = await fetch(`${baseUrl}/agent-router/browser-handoffs/complete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handoff: routed.handoff,
+        result: {
+          canonical_url: "https://x.com/search?q=crypto",
+          items: [{ id: "77", url: "https://x.com/example/status/77", text: "crypto trend", author: "example" }]
+        }
+      })
+    });
+    const completed = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(completed.result.item_count, 1);
+    assert.equal(completed.source.backend_id, "codex_browser");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("structured hosted requests expose native browser trends instead of an OpenCLI instruction", async () => {
+  const server = createServer({ store: createMemoryStore() });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const routed = await fetch(`${baseUrl}/agent-router/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "social_user_voice_research",
+        params: { platform: "x", operation: "read_trends", category: "crypto", limit: 5 },
+        constraints: { max_price_usdc: "0" },
+        consumer_context: {
+          local_browser: {
+            adapter: "claude_in_chrome",
+            available: true,
+            operations: ["read_trends"]
+          }
+        }
+      })
+    }).then((response) => response.json());
+
+    assert.equal(routed.status, "local_connector_required");
+    assert.equal(routed.handoff.selected_adapter, "claude_in_chrome");
+    assert.equal(routed.handoff.operation, "read_trends");
+    assert.deepEqual(routed.handoff.fallback_adapters, []);
+    assert.equal(routed.handoff.fallback, undefined);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -751,7 +830,8 @@ test("keyword search runs locally so it works without a platform API token", asy
   assert.equal(nativeHandoff.status, "local_connector_required");
   assert.equal(nativeHandoff.handoff.selected_adapter, "codex_browser");
   assert.equal(nativeHandoff.handoff.operation, "search");
-  assert.deepEqual(nativeHandoff.handoff.fallback_adapters, ["opencli"]);
+  assert.deepEqual(nativeHandoff.handoff.fallback_adapters, []);
+  assert.equal(nativeHandoff.handoff.fallback, undefined);
   assert.equal(nativeHandoff.action_required.reload_after_bridge_update, false);
 
   const legacyMessage = structuredClone(nativeMessage);

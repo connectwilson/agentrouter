@@ -1644,7 +1644,7 @@ function sameConsumerEvent(left, right) {
 }
 
 export function parseLocalFeedbackRequestId(requestId) {
-  const match = /^local_(search|post|read_user_posts)_([a-z]+)_([A-Za-z0-9_-]{4,160})$/.exec(String(requestId || ""));
+  const match = /^local_(search|post|read_user_posts|read_thread|read_trends)_([a-z]+)_([A-Za-z0-9_-]{4,160})$/.exec(String(requestId || ""));
   return match ? { operation: match[1], platform: match[2] } : null;
 }
 
@@ -1659,6 +1659,12 @@ const LOCAL_FEEDBACK_PLATFORM_CAPABILITIES = Object.freeze({
     weibo: ["social_search", "social_keyword_search", "social_user_voice_research"]
   }),
   read_user_posts: Object.freeze({
+    x: ["social_search", "social_keyword_search", "social_user_voice_research"]
+  }),
+  read_thread: Object.freeze({
+    x: ["social_search", "social_keyword_search", "social_user_voice_research"]
+  }),
+  read_trends: Object.freeze({
     x: ["social_search", "social_keyword_search", "social_user_voice_research"]
   }),
   post: Object.freeze({

@@ -8,6 +8,10 @@ import {
 import { writePersistentServiceEvent } from "../persistence.js";
 import { quoteCapabilityRequest, routeCapabilityRequest } from "../router.js";
 import { findSocialPostUrl, runSocialPostReadCapability } from "../social-post-read.js";
+import {
+  buildLocalBrowserHandoff,
+  hasNativeBrowserCapability
+} from "../local-browser-connector.js";
 import { socialProvidersForUser } from "../social-connections.js";
 import { requestPaymentRequired } from "./http-boundary.js";
 import {
@@ -70,6 +74,8 @@ export async function runRemoteAgentRouterFetch(store, args = {}, {
       return complete(structuredRoutePreflight(routePlan));
     }
     if (routePlan?.route_family === "local_browser") {
+      const nativeHandoff = nativeBrowserRouteHandoff(routePlan, args.consumer_context, task);
+      if (nativeHandoff) return complete(nativeHandoff);
       return complete(localBrowserRouteRequired(routePlan));
     }
     if (routePlan?.route_family === "external_api" && !routePlan.abstain_reason) {
@@ -214,6 +220,49 @@ export async function runRemoteAgentRouterFetch(store, args = {}, {
       ? "After using these results in the final answer, submit agentrouter_feedback for each returned request_id."
       : null)
   });
+}
+
+export function nativeBrowserRouteHandoff(routePlan, consumerContext, task) {
+  const platform = routePlan.params?.platform
+    || routePlan.candidate_sources?.[0]
+    || routePlan.source_constraint;
+  const operation = String(routePlan.params?.operation || "search").trim().toLowerCase();
+  if (!platform || !hasNativeBrowserCapability(consumerContext, operation)) return null;
+  const params = {
+    ...routePlan.params,
+    platform,
+    operation,
+    query: routePlan.params?.query || (operation === "search" ? task : undefined)
+  };
+  const target = params.url || params.target;
+  const handoff = buildLocalBrowserHandoff({
+    platform,
+    operation,
+    target,
+    params,
+    consumerContext
+  });
+  return {
+    ok: false,
+    status: "local_connector_required",
+    request: handoff.request,
+    action_required: {
+      code: "LOCAL_BROWSER_EXECUTION_REQUIRED",
+      message: "Use the AI client's built-in browser for this read-only request, then return structured public evidence through agentrouter_complete_handoff.",
+      reload_after_bridge_update: false
+    },
+    handoff,
+    fallback_allowed: true,
+    local_execution_plan: {
+      protocol_version: "agentrouter_local_social_task_v2",
+      platform,
+      operation,
+      params,
+      execution_location: "user_device",
+      permissions: { access: "read_only", write_actions: "denied" },
+      data_policy: { credentials: "never_upload", raw_results: "never_upload" }
+    }
+  };
 }
 
 export function resultReturnedUsableData(result) {

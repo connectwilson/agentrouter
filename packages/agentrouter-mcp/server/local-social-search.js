@@ -1,10 +1,14 @@
-// Keyword search across social platforms, run locally through the OpenCLI
-// browser connector. The hosted server has no browser, so search requests that
-// reach it can only fail; intercepting them in the bridge is what makes
-// "search X for crypto PM jobs" work without an X API token.
+// Keyword search across social platforms runs through the host-native browser
+// whenever the client declares that operation. This module retains the local
+// OpenCLI execution path solely for older clients without native browser
+// handoff support.
 import { spawn } from "node:child_process";
 
 import { BROWSER_CONNECTOR_SECURITY_NOTE, buildLocalCliEnvironment } from "./local-social-post.js";
+import {
+  buildLocalBrowserHandoff,
+  hasNativeBrowserCapability
+} from "./local-browser-connector.js";
 import { isExplicitXPlatformTask } from "./social-platform-language.js";
 
 const PLATFORMS = {
@@ -43,7 +47,11 @@ const LOCAL_CAPABILITY_ALIASES = Object.freeze({
   twitter_search: { capability: "social_search", platform: "x", operation: "search" },
   tweet_search: { capability: "social_search", platform: "x", operation: "search" },
   x_user_posts: { capability: "social_user_voice_research", platform: "x", operation: "read_user_posts" },
-  twitter_user_posts: { capability: "social_user_voice_research", platform: "x", operation: "read_user_posts" }
+  twitter_user_posts: { capability: "social_user_voice_research", platform: "x", operation: "read_user_posts" },
+  x_thread: { capability: "social_user_voice_research", platform: "x", operation: "read_thread" },
+  twitter_thread: { capability: "social_user_voice_research", platform: "x", operation: "read_thread" },
+  x_trends: { capability: "social_search", platform: "x", operation: "read_trends" },
+  twitter_trends: { capability: "social_search", platform: "x", operation: "read_trends" }
 });
 
 export function normalizeSearchPlatform(value) {
@@ -89,13 +97,16 @@ export function localSocialSearchRequest(message) {
     excluded_terms: params.excluded_terms
   });
   const timeRange = normalizeTimeRange({ from: params.from || params.since, to: params.to || params.until });
+  const target = String(params.url || params.target || "").trim();
   const rawQuery = String(params.query || params.keyword || params.question || params.task || "").trim();
   if (operation === "read_user_posts" && !handle) return null;
+  if (operation === "read_thread" && !target) return null;
   if (operation === "search" && !rawQuery && !entity.required_terms.length) return null;
   return {
     platform,
     operation,
     handle,
+    target,
     query: platform === "x" && operation === "search"
       ? buildXSearchQuery(rawQuery, { entity, ...timeRange })
       : rawQuery || handle,
@@ -108,7 +119,54 @@ export function localSocialSearchRequest(message) {
 }
 
 function supportedOperation(platform, operation) {
-  return operation === "search" || (platform === "x" && operation === "read_user_posts");
+  return operation === "search" || (platform === "x" && ["read_user_posts", "read_thread", "read_trends"].includes(operation));
+}
+
+export function localBrowserSearchHandoffRequest(message, request) {
+  if (!request || message?.method !== "tools/call") return null;
+  const consumerContext = message.params?.arguments?.consumer_context || {};
+  if (!hasNativeBrowserCapability(consumerContext, request.operation)) return null;
+  const params = compactParams({
+    platform: request.platform,
+    operation: request.operation,
+    query: request.query,
+    handle: request.handle,
+    url: request.target,
+    from: request.from,
+    to: request.to,
+    entity: request.entity,
+    limit: request.limit
+  });
+  const localExecutionPlan = {
+    protocol_version: "agentrouter_local_social_task_v2",
+    platform: request.platform,
+    operation: request.operation,
+    params,
+    execution_location: "user_device",
+    permissions: { access: "read_only", write_actions: "denied" },
+    data_policy: { credentials: "never_upload", raw_results: "never_upload" }
+  };
+  const handoff = buildLocalBrowserHandoff({
+    platform: request.platform,
+    operation: request.operation,
+    target: request.target,
+    params,
+    localExecutionPlan,
+    consumerContext
+  });
+  return {
+    ok: false,
+    status: "local_connector_required",
+    request: handoff.request,
+    action_required: {
+      code: "LOCAL_BROWSER_EXECUTION_REQUIRED",
+      message: "Use the AI client's built-in browser for this read-only social request, then call agentrouter_complete_handoff with structured public evidence.",
+      reload_after_bridge_update: false
+    },
+    handoff,
+    fallback_allowed: true,
+    local_execution_plan: localExecutionPlan
+  };
 }
 
 function naturalXConstraints(task) {
@@ -243,6 +301,7 @@ export async function runLocalSocialSearch({
   platform,
   operation = "search",
   handle = "",
+  target = "",
   query,
   quality_context: qualityContext = query,
   entity = {},
@@ -265,10 +324,14 @@ export async function runLocalSocialSearch({
   }
   const runCommand = options.runCommand || spawnCommand;
   const bounded = Math.min(Math.max(Math.trunc(Number(limit) || 10), 1), 50);
-  const context = { bounded, supplementOnInsufficient, qualityContext, entity, handle, from, to, operation, capability };
+  const context = { bounded, supplementOnInsufficient, qualityContext, entity, handle, target, from, to, operation, capability };
   const commandArgs = platform === "x" && operation === "read_user_posts"
     ? ["twitter", "user-posts", handle, "--limit", String(bounded), "-f", "json"]
-    : definition.args(query, bounded);
+    : platform === "x" && operation === "read_thread"
+      ? ["twitter", "thread", target, "--limit", String(bounded), "-f", "json"]
+      : platform === "x" && operation === "read_trends"
+        ? ["twitter", "trends", "--limit", String(bounded), "-f", "json"]
+        : definition.args(query, bounded);
   const result = await runCommand("opencli", commandArgs, { timeout: definition.timeout });
   const attempts = [{ backend_id: `opencli-${platform}`, status: result.status, error: result.error || null }];
 
@@ -400,6 +463,7 @@ function completed(platform, query, rows, attempts, {
   qualityContext = query,
   entity = {},
   handle = "",
+  target = "",
   from,
   to,
   operation = "search",
@@ -414,6 +478,7 @@ function completed(platform, query, rows, attempts, {
     operation,
     ...(query ? { query } : {}),
     ...(handle ? { handle } : {}),
+    ...(target ? { url: target } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
     ...((entity.required_terms?.length || entity.excluded_terms?.length) ? { entity } : {})
@@ -527,6 +592,7 @@ function socialRequest(platform, query, {
   capability = "social_search",
   operation = "search",
   handle = "",
+  target = "",
   from,
   to,
   entity = {}
@@ -536,6 +602,7 @@ function socialRequest(platform, query, {
     operation,
     ...(query ? { query } : {}),
     ...(handle ? { handle } : {}),
+    ...(target ? { url: target } : {}),
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
     ...((entity.required_terms?.length || entity.excluded_terms?.length) ? { entity } : {})
@@ -612,6 +679,15 @@ function safeJson(value) {
   } catch {
     return null;
   }
+}
+
+function compactParams(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => {
+    if (item === undefined || item === null || item === "") return false;
+    if (Array.isArray(item)) return item.length > 0;
+    if (typeof item === "object") return Object.keys(item).length > 0;
+    return true;
+  }));
 }
 
 function spawnCommand(command, args, options = {}) {

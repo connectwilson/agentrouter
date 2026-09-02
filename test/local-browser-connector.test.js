@@ -27,7 +27,8 @@ test("local browser handoff prefers a declared Codex native browser over OpenCLI
   assert.equal(handoff.handoff_version, "agentrouter_local_browser_handoff_v2");
   assert.equal(handoff.kind, "local_browser_execution");
   assert.equal(handoff.selected_adapter, "codex_browser");
-  assert.deepEqual(handoff.fallback_adapters, ["opencli"]);
+  assert.deepEqual(handoff.fallback_adapters, []);
+  assert.equal(handoff.fallback, undefined);
   assert.deepEqual(handoff.allowed_origins, ["https://x.com", "https://www.x.com", "https://twitter.com", "https://www.twitter.com"]);
   assert.match(handoff.handoff_token, /^arh1\./);
   assert.ok(handoff.expires_at);
@@ -56,6 +57,7 @@ test("local browser handoff supports Claude in Chrome and falls back to OpenCLI"
   const fallback = buildLocalBrowserHandoff({ platform: "x", operation: "read_post", target });
   assert.equal(fallback.selected_adapter, "opencli");
   assert.deepEqual(fallback.fallback_adapters, []);
+  assert.equal(fallback.compatibility_mode, "legacy_client_opencli");
 });
 
 test("native browser handoff supports social search before the OpenCLI fallback", () => {
@@ -83,8 +85,7 @@ test("native browser handoff supports social search before the OpenCLI fallback"
     from: "2026-09-01",
     to: "2026-09-02"
   });
-  assert.equal(handoff.fallback.execution_adapter, "opencli");
-  assert.equal(handoff.fallback.arguments.capability, "social_search");
+  assert.equal(handoff.fallback, undefined);
   assert.deepEqual(handoff.completion.result_fields, ["canonical_url", "items"]);
 });
 
@@ -176,6 +177,15 @@ test("native account completion rejects posts from a different handle", () => {
 
   assert.equal(completed.ok, false);
   assert.equal(completed.error.code, "HANDOFF_ITEM_IDENTITY_MISMATCH");
+
+  const corrected = connector.completeHandoff({
+    handoff,
+    result: {
+      canonical_url: "https://x.com/lookonchain",
+      items: [{ id: "124", url: "https://x.com/lookonchain/status/124", text: "correct account", author: "lookonchain" }]
+    }
+  });
+  assert.equal(corrected.ok, true, "invalid caller evidence must not consume the signed handoff");
 });
 
 test("legacy clients only select OpenCLI when no native operation is declared", () => {

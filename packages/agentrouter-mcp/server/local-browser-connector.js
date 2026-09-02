@@ -8,6 +8,7 @@ import {
 
 const NATIVE_ADAPTERS = new Set(["codex_browser", "claude_in_chrome"]);
 const SUPPORTED_ADAPTERS = new Set([...NATIVE_ADAPTERS, "opencli"]);
+const SUPPORTED_OPERATIONS = new Set(["read_post", "search", "read_user_posts", "read_thread", "read_trends"]);
 const DEFAULT_TTL_MS = 5 * 60_000;
 
 const PLATFORM_HOSTS = Object.freeze({
@@ -33,20 +34,20 @@ export function createLocalBrowserConnector({
   function buildHandoff(input = {}) {
     const platform = clean(input.platform, 40).toLowerCase();
     const operation = clean(input.operation, 40).toLowerCase();
-    const target = clean(input.target || input.localExecutionPlan?.params?.target, 2000);
-    if (operation !== "read_post") throw protocolError("HANDOFF_OPERATION_UNSUPPORTED", `Unsupported browser operation: ${operation || "(missing)"}.`);
-    const targetIdentity = normalizeSocialPostUrl(platform, target);
-    if (!targetIdentity) throw protocolError("HANDOFF_TARGET_INVALID", `Unsupported ${platform || "social"} post URL.`);
+    if (!SUPPORTED_OPERATIONS.has(operation)) throw protocolError("HANDOFF_OPERATION_UNSUPPORTED", `Unsupported browser operation: ${operation || "(missing)"}.`);
+    const browserRequest = normalizeBrowserRequest({ ...input, platform, operation });
+    const target = browserRequest.target;
     const selectedAdapter = selectBrowserAdapter(input.consumerContext, operation);
     const issuedAt = now();
     const expiresAt = issuedAt + Math.max(5_000, Math.min(15 * 60_000, Number(ttlMs) || DEFAULT_TTL_MS));
     const payload = {
-      v: 1,
+      v: 2,
       id: `lbh_${randomUUID()}`,
       platform,
       operation,
       target,
-      post_id: targetIdentity.postId,
+      request: browserRequest.request,
+      target_identity: browserRequest.targetIdentity,
       adapter: selectedAdapter,
       origins: allowedOrigins(platform),
       issued_at: issuedAt,
@@ -66,21 +67,29 @@ export function createLocalBrowserConnector({
     if (consumed.has(payload.id)) return invalidCompletion("HANDOFF_ALREADY_CONSUMED", "This browser handoff was already completed.");
 
     const sourceUrl = clean(result?.canonical_url, 2000) || payload.target;
-    const sourceIdentity = normalizeSocialPostUrl(payload.platform, sourceUrl);
+    const sourceIdentity = normalizeCompletionSource(payload, sourceUrl);
     if (!sourceIdentity || !payload.origins.includes(sourceIdentity.origin)) {
       return invalidCompletion("HANDOFF_SOURCE_NOT_ALLOWED", "The returned source is outside the signed platform allowlist.");
     }
-    if (sourceIdentity.postId !== payload.post_id) {
+    if (["read_post", "read_thread"].includes(payload.operation) && sourceIdentity.postId !== payload.target_identity?.post_id) {
       return invalidCompletion("HANDOFF_SOURCE_MISMATCH", "The returned post does not match the signed target.");
     }
+    if (payload.operation === "read_user_posts" && sourceIdentity.handle !== payload.target_identity?.handle) {
+      return invalidCompletion("HANDOFF_SOURCE_MISMATCH", "The returned account does not match the signed target.");
+    }
 
+    if (payload.operation !== "read_post") {
+      const completed = completeCollectionHandoff({ payload, result, sourceUrl, currentTime });
+      if (completed.ok) consumed.set(payload.id, payload.expires_at);
+      return completed;
+    }
     consumed.set(payload.id, payload.expires_at);
     const requestId = `local_post_${payload.platform}_${randomUUID()}`;
     const serviceId = `local_social_${payload.platform}`;
     const extractedAt = new Date(currentTime).toISOString();
     const post = {
       platform: payload.platform,
-      post_id: payload.post_id,
+      post_id: payload.target_identity?.post_id,
       canonical_url: payload.target,
       text: clean(result?.text || result?.content, 20000) || null,
       author_handle: clean(result?.author_handle || result?.author, 120) || null,
@@ -103,7 +112,7 @@ export function createLocalBrowserConnector({
       },
       request: {
         capability: "social_post_read",
-        params: { platform: payload.platform, operation: payload.operation, url: payload.target }
+        params: payload.request.params
       },
       result: { post },
       source: {
@@ -136,6 +145,66 @@ export function createLocalBrowserConnector({
   }
 
   return { buildHandoff, completeHandoff };
+
+  function completeCollectionHandoff({ payload, result, sourceUrl, currentTime }) {
+    const bounded = payload.request.params.limit || 10;
+    const rawItems = Array.isArray(result?.items) ? result.items.slice(0, bounded) : [];
+    const items = [];
+    for (const row of rawItems) {
+      const normalized = normalizeBrowserItem(row, payload);
+      if (!normalized.ok) return invalidCompletion(normalized.code, normalized.message);
+      items.push(normalized.item);
+    }
+    if (payload.operation === "read_thread" && items.length && !items.some((item) => item.id === payload.target_identity?.post_id)) {
+      return invalidCompletion("HANDOFF_ITEM_IDENTITY_MISMATCH", "The returned thread does not contain the signed root post.");
+    }
+    const requestId = `local_${payload.operation}_${payload.platform}_${randomUUID()}`;
+    const serviceId = `local_social_${payload.platform}`;
+    const extractedAt = new Date(currentTime).toISOString();
+    const evidenceHash = createHash("sha256").update(JSON.stringify({ items, source_url: sourceUrl, extracted_at: extractedAt })).digest("hex");
+    return {
+      ok: true,
+      status: items.length ? "completed" : "no_results",
+      request_id: requestId,
+      service_id: serviceId,
+      protocol: {
+        protocol_version: "agentrouter_local_browser_result_v3",
+        execution_location: "user_device",
+        access: "read_only",
+        credential_policy: "never_return",
+        raw_result_policy: "local_only"
+      },
+      request: payload.request,
+      result: { items, item_count: items.length },
+      coverage: {
+        status: items.length ? "sufficient" : "insufficient",
+        item_count: items.length,
+        requested_limit: bounded,
+        operation: payload.operation
+      },
+      source: {
+        backend_id: payload.adapter,
+        handoff_id: payload.id,
+        handoff_expires_at: new Date(payload.expires_at).toISOString(),
+        returned_url: sourceUrl,
+        fallback_used: payload.adapter === "opencli"
+      },
+      evidence: {
+        evidence_version: "agentrouter_browser_evidence_v1",
+        sha256: evidenceHash,
+        extracted_at: extractedAt,
+        attestation: "caller_supplied_public_page_fields"
+      },
+      verification: {
+        source_url_matched: true,
+        platform_identity_matched: true,
+        origin_allowlist_passed: true,
+        content_verified: false,
+        item_count: items.length
+      },
+      consumer_feedback_request: feedbackRequest(requestId, serviceId, payload)
+    };
+  }
 }
 
 const defaultConnector = createLocalBrowserConnector();
@@ -169,6 +238,7 @@ export function normalizeSocialPostUrl(platform, value) {
 }
 
 function publicHandoff(payload, token) {
+  const collection = payload.operation !== "read_post";
   return {
     handoff_version: "agentrouter_local_browser_handoff_v2",
     handoff_id: payload.id,
@@ -178,11 +248,13 @@ function publicHandoff(payload, token) {
     kind: "local_browser_execution",
     backend: "agentrouter_mcp_local_connector",
     selected_adapter: payload.adapter,
-    fallback_adapters: payload.adapter === "opencli" ? [] : ["opencli"],
+    fallback_adapters: [],
+    ...(payload.adapter === "opencli" ? { compatibility_mode: "legacy_client_opencli" } : {}),
     execution_location: "user_device",
     platform: payload.platform,
     operation: payload.operation,
     target: payload.target,
+    request: payload.request,
     allowed_origins: [...payload.origins],
     permissions: {
       access: "read_only",
@@ -194,12 +266,9 @@ function publicHandoff(payload, token) {
     completion: {
       tool: "agentrouter_complete_handoff",
       required_fields: ["handoff", "result"],
-      result_fields: ["canonical_url", "post_id", "text", "author_handle", "published_at", "engagement"]
-    },
-    fallback: {
-      tool: "agentrouter_request",
-      execution_adapter: "opencli",
-      arguments: { capability: "social_post_read", params: { url: payload.target, platform: payload.platform } }
+      result_fields: collection
+        ? ["canonical_url", "items"]
+        : ["canonical_url", "post_id", "text", "author_handle", "published_at", "engagement"]
     },
     preserve_route_context: true
   };
@@ -220,7 +289,11 @@ function verifyToken(token, secret) {
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return { ok: false, code: "HANDOFF_TOKEN_INVALID", message: "Browser handoff signature validation failed." };
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
-    if (payload.v !== 1 || !payload.id || !payload.platform || !payload.target) throw new Error("shape");
+    if (![1, 2].includes(payload.v) || !payload.id || !payload.platform || !payload.target) throw new Error("shape");
+    if (payload.v === 1) {
+      payload.target_identity = { post_id: payload.post_id };
+      payload.request = { capability: "social_post_read", params: { platform: payload.platform, operation: "read_post", url: payload.target } };
+    }
     return { ok: true, payload };
   } catch {
     return { ok: false, code: "HANDOFF_TOKEN_INVALID", message: "Browser handoff payload is invalid." };
@@ -253,8 +326,117 @@ function feedbackRequest(requestId, serviceId, payload) {
     service_id: serviceId,
     tool: "agentrouter_feedback",
     required_fields: ["intent_fit", "answer_useful", "reason"],
-    context: { platform: payload.platform, url: payload.target, capability: "social_post_read", browser_adapter: payload.adapter }
+    context: {
+      platform: payload.platform,
+      operation: payload.operation,
+      url: payload.target,
+      capability: payload.request?.capability || "social_post_read",
+      browser_adapter: payload.adapter
+    }
   };
+}
+
+function normalizeBrowserRequest(input) {
+  const { platform, operation } = input;
+  if (!PLATFORM_HOSTS[platform]) throw protocolError("HANDOFF_PLATFORM_UNSUPPORTED", `Unsupported browser platform: ${platform || "(missing)"}.`);
+  const rawParams = input.params && typeof input.params === "object"
+    ? input.params
+    : input.localExecutionPlan?.params && typeof input.localExecutionPlan.params === "object"
+      ? input.localExecutionPlan.params
+      : {};
+  const limit = Math.min(Math.max(Math.trunc(Number(rawParams.limit) || (operation === "read_post" ? 1 : 10)), 1), 50);
+  if (["read_post", "read_thread"].includes(operation)) {
+    const target = clean(input.target || rawParams.url || rawParams.target, 2000);
+    const identity = normalizeSocialPostUrl(platform, target);
+    if (!identity) throw protocolError("HANDOFF_TARGET_INVALID", `Unsupported ${platform} post URL.`);
+    const capability = operation === "read_post" ? "social_post_read" : "social_user_voice_research";
+    return {
+      target,
+      targetIdentity: { post_id: identity.postId },
+      request: { capability, params: { platform, operation, url: target, limit } }
+    };
+  }
+  if (operation === "read_user_posts") {
+    if (platform !== "x") throw protocolError("HANDOFF_OPERATION_UNSUPPORTED", "Account-history browser reads currently support X only.");
+    const handle = normalizeHandle(rawParams.handle || rawParams.username || rawParams.account);
+    if (!handle) throw protocolError("HANDOFF_TARGET_INVALID", "A valid public X account handle is required.");
+    return {
+      target: `https://x.com/${handle}`,
+      targetIdentity: { handle: handle.toLowerCase() },
+      request: { capability: "social_user_voice_research", params: compactParams({ ...rawParams, platform, operation, handle, limit }) }
+    };
+  }
+  if (operation === "read_trends") {
+    if (platform !== "x") throw protocolError("HANDOFF_OPERATION_UNSUPPORTED", "Trending browser reads currently support X only.");
+    return {
+      target: "https://x.com/explore/tabs/trending",
+      targetIdentity: { page: "trending" },
+      request: { capability: "social_search", params: compactParams({ ...rawParams, platform, operation, limit }) }
+    };
+  }
+  const query = clean(rawParams.query || rawParams.keyword || rawParams.question || rawParams.task, 1000);
+  if (!query) throw protocolError("HANDOFF_TARGET_INVALID", "A non-empty social search query is required.");
+  return {
+    target: `${canonicalOrigin(platform)}/search`,
+    targetIdentity: { query_hash: createHash("sha256").update(query).digest("hex") },
+    request: { capability: rawParams.capability || "social_search", params: compactParams({ ...rawParams, platform, operation, query, limit }) }
+  };
+}
+
+function normalizeCompletionSource(payload, value) {
+  if (["read_post", "read_thread"].includes(payload.operation)) {
+    const identity = normalizeSocialPostUrl(payload.platform, value);
+    return identity ? { origin: identity.origin, postId: identity.postId } : null;
+  }
+  const url = safeUrl(value);
+  if (!url || !PLATFORM_HOSTS[payload.platform]?.includes(url.hostname.toLowerCase())) return null;
+  if (payload.operation === "read_user_posts") {
+    const handle = normalizeHandle(url.pathname.split("/").filter(Boolean)[0]).toLowerCase();
+    return handle ? { origin: canonicalOrigin(payload.platform), handle } : null;
+  }
+  return { origin: canonicalOrigin(payload.platform) };
+}
+
+function normalizeBrowserItem(row, payload) {
+  const url = clean(row?.url || row?.canonical_url || row?.permalink, 2000) || null;
+  let itemIdentity = null;
+  if (url) {
+    const parsed = safeUrl(url);
+    if (!parsed || !PLATFORM_HOSTS[payload.platform]?.includes(parsed.hostname.toLowerCase())) {
+      return { ok: false, code: "HANDOFF_ITEM_SOURCE_NOT_ALLOWED", message: "A returned item is outside the signed platform allowlist." };
+    }
+    itemIdentity = normalizeSocialPostUrl(payload.platform, url);
+  }
+  const author = clean(row?.author_handle || row?.author?.username || row?.author || row?.username, 120) || null;
+  if (payload.operation === "read_user_posts") {
+    const requested = payload.target_identity?.handle;
+    const actual = normalizeHandle(author || safeUrl(url)?.pathname.split("/").filter(Boolean)[0]).toLowerCase();
+    if (!actual || actual !== requested) {
+      return { ok: false, code: "HANDOFF_ITEM_IDENTITY_MISMATCH", message: "A returned post belongs to a different account than the signed target." };
+    }
+  }
+  const id = clean(row?.id || row?.post_id || row?.tweet_id || itemIdentity?.postId, 160) || null;
+  return {
+    ok: true,
+    item: {
+      id,
+      title: clean(row?.title, 400) || null,
+      text: clean(row?.text || row?.content || row?.description, 20000) || null,
+      author,
+      url,
+      published_at: isoTimestamp(row?.published_at || row?.created_at),
+      engagement: normalizeEngagement(row?.engagement || row?.public_metrics || row)
+    }
+  };
+}
+
+function normalizeHandle(value) {
+  const handle = clean(value, 120).replace(/^@/, "");
+  return /^[A-Za-z0-9_]{1,30}$/.test(handle) ? handle : "";
+}
+
+function compactParams(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ""));
 }
 
 function allowedOrigins(platform) {

@@ -6,7 +6,11 @@ import {
   localSocialPostRequest,
   runLocalSocialPostRead
 } from "./local-social-post.js";
-import { localSocialSearchRequest, runLocalSocialSearch } from "./local-social-search.js";
+import {
+  localBrowserSearchHandoffRequest,
+  localSocialSearchRequest,
+  runLocalSocialSearch
+} from "./local-social-search.js";
 import { readStoredCredential, writeStoredCredential } from "./credential-store.js";
 import { submitSponsoredFeedback } from "./bsc-feedback.js";
 import { readOrCreateFeedbackSigner } from "./feedback-wallet.js";
@@ -148,6 +152,19 @@ async function forwardRequest(message) {
     // Keyword search only works where a browser is: the hosted server has none.
     const localSearch = localSocialSearchRequest(message);
     if (localSearch) {
+      const nativeHandoff = localBrowserSearchHandoffRequest(message, localSearch);
+      if (nativeHandoff) {
+        const result = decorateStandaloneLocalResult(nativeHandoff);
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            isError: false
+          }
+        });
+        return;
+      }
       const result = decorateStandaloneLocalResult(await runLocalSocialSearch(localSearch));
       await attachLocalFeedbackGrant(result);
       send({
@@ -363,7 +380,7 @@ function handleLocalControlPlane(message) {
     return {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "AgentRouter", version: "0.13.2" }
+      serverInfo: { name: "AgentRouter", version: "0.14.0" }
     };
   }
   if (message?.method === "ping") return {};

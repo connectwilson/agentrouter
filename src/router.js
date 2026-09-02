@@ -81,8 +81,9 @@ const CAPABILITY_ALIASES = [
         question: { type: "string" },
         platforms: { type: "array", items: { type: "string", enum: ["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"] } },
         platform: { type: "string", enum: ["x", "reddit", "xiaohongshu", "bilibili", "youtube", "facebook", "other"] },
-        operation: { type: "string", enum: ["search", "read_user_posts"] },
+        operation: { type: "string", enum: ["search", "read_user_posts", "read_thread", "read_trends"] },
         handle: { type: "string", description: "Exact public account handle for read_user_posts; omit the leading @ when possible." },
+        url: { type: "string", description: "Canonical public post URL for read_thread." },
         from: { type: "string", description: "Inclusive YYYY-MM-DD lower time bound." },
         to: { type: "string", description: "Inclusive YYYY-MM-DD upper time bound." },
         entity: {

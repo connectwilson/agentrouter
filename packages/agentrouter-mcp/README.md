@@ -12,18 +12,18 @@ Native-browser reads use signed, five-minute, single-use handoffs. Hosted
 deployments must share `ADN_BROWSER_HANDOFF_SECRET` (at least 32 characters)
 across instances so a completion can be verified after load balancing.
 
-For a public X status URL, `agentrouter_fetch` and the structured
-`social_post_read` capability execute through a negotiated read-only connector
-on the user's device. A caller can declare `consumer_context.local_browser`
-with `adapter: codex_browser` or `claude_in_chrome`; AgentRouter then returns a
-`local_browser_execution` handoff and the caller returns structured public
-evidence with `agentrouter_complete_handoff`. When no host-native browser is
-declared, OpenCLI remains the default portable connector. Browser login state
-stays local in every mode; credentials, cookies, and raw browser state are never
-returned to AgentRouter.
+Public social reads execute through a negotiated read-only connector on the
+user's device. A caller declares `consumer_context.local_browser` with
+`adapter: codex_browser` or `claude_in_chrome` and any operations it can execute:
+`read_post`, `search`, `read_user_posts`, `read_thread`, and `read_trends`.
+AgentRouter returns a signed `local_browser_execution` handoff, and the caller
+returns structured public evidence with `agentrouter_complete_handoff`. OpenCLI
+is used only when an older client does not declare the required native operation.
+Browser login state stays local in every mode; credentials, cookies, and raw
+browser state are never returned to AgentRouter.
 
-Entity-scoped X research supports typed `search` and `read_user_posts`
-operations. Use an exact `handle` plus `from`/`to` for account history, or
+Entity-scoped X research supports typed `search`, `read_user_posts`,
+`read_thread`, and `read_trends` operations. Use an exact `handle` plus `from`/`to` for account history, or
 `entity.required_terms` and `entity.excluded_terms` for discovery. The bridge
 filters lookalike entities locally and returns machine-readable route ownership,
 so another acquisition skill cannot silently replace AgentRouter without an

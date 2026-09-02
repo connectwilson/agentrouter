@@ -72,6 +72,29 @@ test("a hydrated feedback grant rotates its opaque token after restart", async (
   assert.notEqual(store.feedbackGrants.get(requestId).token_hash, "old-hash");
 });
 
+test("native browser thread and trend results can receive scoped feedback grants", async () => {
+  for (const entry of [
+    { operation: "read_thread", capability: "social_user_voice_research" },
+    { operation: "read_trends", capability: "social_search" }
+  ]) {
+    const store = createMemoryStore();
+    const result = await issueLocalFeedbackGrant(store, {
+      request_id: `local_${entry.operation}_x_feedbackcase`,
+      service_id: "local_social_x",
+      operation: entry.operation,
+      capability: entry.capability,
+      result_status: "completed"
+    }, {
+      actorKey: "actor:owner",
+      writeEvents: async () => true,
+      randomBytes: () => Buffer.alloc(32, 9)
+    });
+
+    assert.equal(result.status, "feedback_grant_issued");
+    assert.match(result.feedback_token, /^[A-Za-z0-9_-]{32,}$/);
+  }
+});
+
 test("issuing a local feedback grant can durably materialize a privacy-minimized v2 routing observation", async () => {
   const store = createMemoryStore();
   const writes = [];

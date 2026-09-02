@@ -555,7 +555,7 @@ test("AgentRouter publishes social user voice research as a first-class capabili
   assert.ok(capability);
   assert.deepEqual(capability.input_schema.required, ["question"]);
   assert.ok(capability.input_schema.properties.platforms);
-  assert.deepEqual(capability.input_schema.properties.operation.enum, ["search", "read_user_posts"]);
+  assert.deepEqual(capability.input_schema.properties.operation.enum, ["search", "read_user_posts", "read_thread", "read_trends"]);
   assert.ok(capability.input_schema.properties.handle);
   assert.ok(capability.input_schema.properties.from);
   assert.ok(capability.input_schema.properties.to);

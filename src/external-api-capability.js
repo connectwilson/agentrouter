@@ -703,7 +703,7 @@ export function freeLocalAlternative(sourceId, params = {}) {
     call,
     must_not_execute_via_shell: true,
     do_not_fallback_outside_agentrouter: true,
-    requires: "The AgentRouter MCP bridge (local stdio), with the OpenCLI browser extension connected."
+    requires: "The AgentRouter MCP bridge with a declared host-native browser operation; OpenCLI is used only for legacy clients without that operation."
   };
 }
 

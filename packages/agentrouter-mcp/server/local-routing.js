@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
-import { runLocalSocialSearch } from "./local-social-search.js";
+import {
+  localBrowserSearchHandoffRequest,
+  runLocalSocialSearch
+} from "./local-social-search.js";
 
 export async function handleLocalStructuredSocialBatchRequest(message, {
   runLocalSearch = runLocalSocialSearch,
@@ -67,10 +70,11 @@ export async function handleLocalStructuredSocialBatchRequest(message, {
   }
   const routePlan = localStructuredSocialRoutePlan(request, platforms);
   const results = [];
+  const operation = String(params.operation || "search").trim().toLowerCase() || "search";
   for (const platform of platforms) {
-    results.push(decorateStandaloneLocalResult(await runLocalSearch({
+    const localRequest = {
       platform,
-      operation: String(params.operation || "search").trim().toLowerCase() || "search",
+      operation,
       query,
       quality_context: query,
       capability: "social_user_voice_research",
@@ -83,7 +87,12 @@ export async function handleLocalStructuredSocialBatchRequest(message, {
         excluded_terms: params.excluded_terms
       },
       supplement_on_insufficient: true
-    }), { maxPrice: localRequestMaxPrice(request) }));
+    };
+    const nativeHandoff = localBrowserSearchHandoffRequest(message, localRequest);
+    results.push(decorateStandaloneLocalResult(
+      nativeHandoff || await runLocalSearch(localRequest),
+      { maxPrice: localRequestMaxPrice(request) }
+    ));
   }
   const succeeded = results.filter((item) => item?.ok !== false && item?.status !== "auth_required" && item?.status !== "browser_connector_offline" && item?.status !== "local_connector_unavailable");
   const failed = results.filter((item) =>

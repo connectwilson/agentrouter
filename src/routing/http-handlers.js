@@ -13,7 +13,7 @@ import {
   canonicalStructuredRoutePlan,
   structuredRoutePreflight
 } from "./runtime.js";
-import { runRemoteAgentRouterFetch } from "./fetch.js";
+import { nativeBrowserRouteHandoff, runRemoteAgentRouterFetch } from "./fetch.js";
 import {
   externalApiStatusCode,
   paymentBoundaryStatusCode,
@@ -58,6 +58,12 @@ export async function executeAgentRouterRequest(store, body, {
   }
 
   if (body.capability === "social_user_voice_research") {
+    const nativeHandoff = nativeBrowserRouteHandoff(
+      routePlan,
+      body.consumer_context,
+      body.params?.query || body.params?.question || ""
+    );
+    if (nativeHandoff) return response(200, await complete(nativeHandoff));
     const preflight = structuredRoutePreflight(routePlan);
     if (preflight && !allowHostedSocialResearchRunner) {
       return response(externalApiStatusCode(preflight), await complete(preflight));

@@ -41,8 +41,8 @@ test("browser handoffs are signed, expiring, immutable and single-use", () => {
   assert.match(handoff.handoff_token, /^arh1\./);
   assert.equal(handoff.issued_at, "2026-08-28T00:00:00.000Z");
   assert.equal(handoff.expires_at, "2026-08-28T00:01:00.000Z");
-  assert.equal(handoff.fallback.tool, "agentrouter_request");
-  assert.equal(handoff.fallback.arguments.capability, "social_post_read");
+  assert.deepEqual(handoff.fallback_adapters, []);
+  assert.equal(handoff.fallback, undefined);
 
   const forged = {
     ...handoff,

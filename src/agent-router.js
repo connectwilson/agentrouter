@@ -29,7 +29,7 @@ function suggestAlternativeRoute(task) {
     return {
       reason: "This question is answered by reading the platform through your own signed-in browser, at no cost.",
       capability: "social_search",
-      requires: "The AgentRouter MCP bridge (local stdio) with the OpenCLI browser extension connected.",
+      requires: "The AgentRouter MCP bridge with a declared host-native browser operation; OpenCLI is used only for legacy clients without that operation.",
       call: { capability: "social_search", params: { platform, query: task } }
     };
   }

@@ -34,7 +34,7 @@ If AgentRouter cannot be reached from the current environment, say that the Agen
 
 Generic words such as `research`, `研究`, `调研`, or `实证` do not by themselves mean scholarly literature. Route broad product, market, competitor, and public-web research to the general research source. Route to a scholarly source only when the request explicitly asks for papers, publications, DOI, citations, authors, journals, peer review, arXiv, 论文, or 文献. When the user asks to research only “this thing” or another unresolved reference, ask what the research subject is before invoking any source.
 
-When the user explicitly names Reddit, Xiaohongshu, X, YouTube, Bilibili, Zhihu, or Weibo in a keyword-research task, the local MCP bridge currently uses the platform's read-only OpenCLI connector for multi-result search. For a single public post read, a host with a callable built-in browser should pass `consumer_context.local_browser` with its adapter (`codex_browser` or `claude_in_chrome`), availability, and `read_post` operation; AgentRouter prefers it and keeps OpenCLI as the portable fallback. If the returned `coverage.status` is `insufficient`, follow the returned `supplemental_request` for general-web context while keeping platform-native evidence separately attributed. A returned `research_plan` likewise describes ordered multi-source requirements; do not collapse it into its first source or silently add OpenAlex.
+When the user explicitly names Reddit, Xiaohongshu, X, YouTube, Bilibili, Zhihu, or Weibo, declare every callable host-native browser operation in `consumer_context.local_browser`: `read_post`, `search`, `read_user_posts`, `read_thread`, and `read_trends`. Use adapter `codex_browser` or `claude_in_chrome`, set `available: true`, and list only operations the host can actually execute. AgentRouter prefers that built-in browser for single posts, keyword search, account history, threads, and trends, returning a signed `local_browser_execution` handoff whose public evidence must be completed with `agentrouter_complete_handoff`. OpenCLI is only the compatibility fallback when the client does not expose the required native operation. If the returned `coverage.status` is `insufficient`, follow the returned `supplemental_request` for general-web context while keeping platform-native evidence separately attributed. A returned `research_plan` likewise describes ordered multi-source requirements; do not collapse it into its first source or silently add OpenAlex.
 
 For entity-scoped X research, do not collapse an account history into one broad keyword search. Resolve and preserve the canonical domain or exact public handle, use `operation: read_user_posts` with `handle`, `from`, and `to` for an identified account, and include `entity.required_terms` / `entity.excluded_terms` for keyword discovery. Treat lookalike names as contamination, not supporting evidence.
 
@@ -82,7 +82,7 @@ When the user asks for external information, a data/API result, research, search
    - `agentrouter_ask`: compatibility alias for natural-language fetch; prefer `agentrouter_fetch`.
    - `agentrouter_feedback`: submit post-call consumer feedback after you have judged whether the AgentRouter result answered the user's request. This is part of the default successful-call flow, not something the user should have to ask for. For local connector results, reuse the returned request exactly; the MCP bridge registers and supplies its one-time feedback grant automatically, so never invent or rewrite a local `request_id`.
    - `agentrouter_complete_handoff`: return structured public evidence after executing a `local_browser_execution` handoff in the host's built-in browser. Return the handoff unchanged. Never include cookies, tokens, credentials, headers, or raw browser state.
-   - Public X status URLs are handled as `social_post_read`. Pass the original URL to `agentrouter_fetch` and declare a host-native browser in `consumer_context.local_browser` when one is actually callable. The installed MCP bridge otherwise uses OpenCLI. Both paths keep browser credentials and cookies on the user's device.
+   - Public X status URLs use `read_post`; searches use `search`; account timelines use `read_user_posts`; conversations use `read_thread`; and Explore trends use `read_trends`. Pass the original task or URL to `agentrouter_fetch` and declare the corresponding host-native operation in `consumer_context.local_browser` when callable. The installed MCP bridge uses OpenCLI only for clients that do not declare that operation. Both paths keep browser credentials and cookies on the user's device.
 2. If MCP tools are not available, use the hosted HTTP runtime below. MCP is an optional enhancement, not a prerequisite for using an installed AgentRouter Skill. Do not fetch or execute the private AgentRouter source repository.
 
 Generic hosted fallback for a user who has an AgentRouter prepaid-credit API key:
@@ -188,12 +188,13 @@ Setup flow:
 For `social_post_read`, never replace the local connector with a generic web
 scrape when AgentRouter reports `local_connector_required`,
 `browser_connector_offline`, `auth_required`, or
-`local_connector_unavailable`. The default local connector is the read-only
-OpenCLI browser extension, which uses the browser-managed X session without
-exporting or decrypting cookies. When it is offline, ask the user only to open
-Chrome, enable the OpenCLI extension, and reconnect it. Do not ask for a system
+`local_connector_unavailable`. A declared host-native browser is the default
+connector and uses the browser-managed session without exporting cookies. For
+an older client that cannot declare the required browser operation, OpenCLI is
+the compatibility fallback; only then may the user be asked to open Chrome,
+enable the OpenCLI extension, and reconnect it. Do not ask for a system
 password, Keychain access, cookie values, `auth_token`, or `ct0`. The legacy
-Twitter CLI is an explicit opt-in fallback and must not be recommended by
+Twitter CLI is an explicit opt-in last resort and must not be recommended by
 default.
 
 If the current client cannot be identified, the command exits with an actionable error. Do not modify multiple client configurations as a fallback. For Skill plus HTTP verification without changing an MCP configuration, use `npx @agentrouternetwork/agentrouter --http-only`.

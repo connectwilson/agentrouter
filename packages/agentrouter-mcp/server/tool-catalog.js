@@ -7,7 +7,7 @@ const localBrowserContextSchema = {
       properties: {
         adapter: { enum: ["codex_browser", "claude_in_chrome", "opencli"] },
         available: { type: "boolean" },
-        operations: { type: "array", items: { enum: ["read_post"] } },
+        operations: { type: "array", items: { enum: ["read_post", "search", "read_user_posts", "read_thread", "read_trends"] } },
         session_mode: { enum: ["existing_user_session", "isolated_session", "shared_profile", "isolated_profile"] }
       },
       additionalProperties: false
@@ -166,6 +166,23 @@ export const agentRouterCompleteHandoffTool = {
           author_handle: { type: "string" },
           published_at: { type: "string" },
           engagement: { type: "object" }
+        },
+        items: {
+          type: "array",
+          description: "Public result rows for search, account history, thread, or trends handoffs.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              title: { type: "string" },
+              text: { type: "string" },
+              author: { type: "string" },
+              author_handle: { type: "string" },
+              url: { type: "string" },
+              published_at: { type: "string" },
+              engagement: { type: "object" }
+            }
+          }
         }
       }
     }

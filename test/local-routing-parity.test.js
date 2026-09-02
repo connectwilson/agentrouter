@@ -830,6 +830,34 @@ test("built-in browser post handoff and completion both return canonical route p
   });
 });
 
+test("structured social batches prefer native browser handoffs per platform", async () => {
+  const routed = await handleLocalStructuredSocialBatchRequest({
+    method: "tools/call",
+    params: {
+      name: "agentrouter_request",
+      arguments: {
+        capability: "social_user_voice_research",
+        params: { query: "AgentRouter feedback", platforms: ["x", "reddit"], limit: 5 },
+        consumer_context: {
+          local_browser: {
+            adapter: "codex_browser",
+            available: true,
+            operations: ["search"]
+          }
+        }
+      }
+    }
+  }, {
+    runLocalSearch: async () => assert.fail("OpenCLI fallback must not run when native search is declared")
+  });
+
+  assert.equal(routed.status, "local_connector_required");
+  assert.equal(routed.results.length, 2);
+  assert.deepEqual(routed.results.map((item) => item.handoff.selected_adapter), ["codex_browser", "codex_browser"]);
+  assert.deepEqual(routed.results.map((item) => item.handoff.operation), ["search", "search"]);
+  assert.equal(routed.routing_observation.action, "browser_handoff");
+});
+
 test("local structured social explicit zero budget stays zero in plan and feedback telemetry", async () => {
   for (const maxPrice of ["0", 0]) {
     const routed = await handleLocalStructuredSocialBatchRequest({
