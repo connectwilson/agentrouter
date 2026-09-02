@@ -161,7 +161,7 @@ function localConnectorRequired(parsed, attempts, consumerContext = {}) {
       reload_after_bridge_update: !nativeBrowser
     },
     handoff: { ...handoff, capability: "social_post_read" },
-    fallback_allowed: nativeBrowser,
+    fallback_allowed: false,
     local_execution_plan: localExecutionPlan,
     attempts
   };

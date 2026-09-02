@@ -164,7 +164,7 @@ export function localBrowserSearchHandoffRequest(message, request) {
       reload_after_bridge_update: false
     },
     handoff,
-    fallback_allowed: true,
+    fallback_allowed: false,
     local_execution_plan: localExecutionPlan
   };
 }

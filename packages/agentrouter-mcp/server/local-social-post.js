@@ -127,7 +127,7 @@ export function localBrowserHandoffRequest(message, parsed) {
       reload_after_bridge_update: false
     },
     handoff: { ...handoff, capability: "social_post_read" },
-    fallback_allowed: true,
+    fallback_allowed: false,
     local_execution_plan: localExecutionPlan
   };
 }

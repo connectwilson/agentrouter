@@ -252,7 +252,7 @@ export function nativeBrowserRouteHandoff(routePlan, consumerContext, task) {
       reload_after_bridge_update: false
     },
     handoff,
-    fallback_allowed: true,
+    fallback_allowed: false,
     local_execution_plan: {
       protocol_version: "agentrouter_local_social_task_v2",
       platform,
