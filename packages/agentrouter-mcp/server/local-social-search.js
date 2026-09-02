@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 
 import { BROWSER_CONNECTOR_SECURITY_NOTE, buildLocalCliEnvironment } from "./local-social-post.js";
+import { isExplicitXPlatformTask } from "./social-platform-language.js";
 
 const PLATFORMS = {
   x: { label: "X (x.com)", args: (query, limit) => ["twitter", "search", query, "--limit", String(limit), "-f", "json"], timeout: 60000 },
@@ -34,6 +35,17 @@ const PLATFORM_ALIASES = {
 // plan instead of allowing this bridge to grab the first platform word.
 const EXPLICIT_SOCIAL_VENDOR = /\b(?:xpoz|social\s*data\s*x|socialdatax|social\s*crawl|socialcrawl|largit\s*data|largitdata)\b/i;
 
+const LOCAL_CAPABILITY_ALIASES = Object.freeze({
+  social_search: { capability: "social_search" },
+  social_keyword_search: { capability: "social_search" },
+  social_user_voice_research: { capability: "social_user_voice_research" },
+  x_search: { capability: "social_search", platform: "x", operation: "search" },
+  twitter_search: { capability: "social_search", platform: "x", operation: "search" },
+  tweet_search: { capability: "social_search", platform: "x", operation: "search" },
+  x_user_posts: { capability: "social_user_voice_research", platform: "x", operation: "read_user_posts" },
+  twitter_user_posts: { capability: "social_user_voice_research", platform: "x", operation: "read_user_posts" }
+});
+
 export function normalizeSearchPlatform(value) {
   const key = String(value || "").trim().toLowerCase();
   return PLATFORM_ALIASES[key] || null;
@@ -62,12 +74,14 @@ export function localSocialSearchRequest(message) {
   }
   if (message.params?.name !== "agentrouter_request") return null;
   const args = message.params?.arguments || {};
-  const capability = String(args.capability || "");
-  if (!["social_search", "social_user_voice_research", "social_keyword_search"].includes(capability)) return null;
+  const requestedCapability = String(args.capability || "").trim().toLowerCase();
+  const alias = LOCAL_CAPABILITY_ALIASES[requestedCapability];
+  if (!alias) return null;
+  const capability = alias.capability;
   const params = args.params || {};
-  const platform = normalizeSearchPlatform(params.platform || params.source);
+  const platform = normalizeSearchPlatform(params.platform || params.source || alias.platform);
   if (!platform) return null;
-  const operation = String(params.operation || "search").trim().toLowerCase();
+  const operation = String(params.operation || alias.operation || "search").trim().toLowerCase();
   if (!supportedOperation(platform, operation)) return null;
   const handle = normalizeHandle(params.handle || params.username || params.account);
   const entity = normalizeEntityConstraint(params.entity || {
@@ -196,9 +210,9 @@ function explicitPlatformInTask(task) {
     [/\bbilibili\b|哔哩哔哩/i, "bilibili"],
     [/知乎|\bzhihu\b/i, "zhihu"],
     [/微博|\bweibo\b/i, "weibo"],
-    [/(?:在\s*x\s*上|\bsearch\s+x\s+for\b|\bx\.com\b|\btwitter\b)/i, "x"]
+    [isExplicitXPlatformTask, "x"]
   ];
-  return patterns.find(([pattern]) => pattern.test(task))?.[1] || null;
+  return patterns.find(([pattern]) => typeof pattern === "function" ? pattern(task) : pattern.test(task))?.[1] || null;
 }
 
 function socialQuery(task, platform) {
@@ -209,7 +223,7 @@ function socialQuery(task, platform) {
     bilibili: /(?:在|搜索)?\s*(?:bilibili|哔哩哔哩)(?:上)?[，,:：]?/ig,
     zhihu: /(?:在|搜索)?\s*(?:知乎|zhihu)(?:上)?[，,:：]?/ig,
     weibo: /(?:在|搜索)?\s*(?:微博|weibo)(?:上)?[，,:：]?/ig,
-    x: /(?:在\s*x\s*上|search\s+x\s+for|x\.com|twitter)[，,:：]?/ig
+    x: /(?:(?:请|請)?\s*(?:帮我|幫我)?\s*(?:去|到|从|從|在|搜索|搜尋|搜寻|搜尋|检索|檢索|查找|查询|查詢|查查|查看|找|看看|浏览|瀏覽)\s*x\s*(?:上|里|裡|中|平台(?:上|里|裡|中)?)|(?:find|search|check|research|read|browse|look\s+up)(?:\s+posts?)?\s+(?:on\s+)?x(?:\s+(?:for|about))?|x\.com|twitter)[，,:：]?/ig
   };
   const cleaned = task
     .replace(labels[platform], " ")

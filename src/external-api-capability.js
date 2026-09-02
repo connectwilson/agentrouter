@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isExplicitXPlatformTask } from "../packages/agentrouter-mcp/server/social-platform-language.js";
 import dns from "node:dns";
 import { readProviderSecret } from "./provider-secrets.js";
 import { writePersistentServiceEvent } from "./persistence.js";
@@ -2147,13 +2148,7 @@ function sourceMentioned(text, definition) {
 }
 
 function xSocialSourceMentioned(text) {
-  const value = String(text || "");
-  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i.test(value)
-    || /\btwitter\b|推特/i.test(value)
-    || /(?:在|从)\s*[Xx]\s*(?:上|平台)/.test(value)
-    || /[Xx]\s*(?:帖子|推文|账号|帳號|用户|用戶|平台|讨论|討論)/.test(value)
-    || /\b(?:search|find|read|research)\s+(?:on\s+)?x\s+(?:for|posts?|tweets?|accounts?|discussion)\b/i.test(value)
-    || /\bon\s+x\b/i.test(value);
+  return isExplicitXPlatformTask(text);
 }
 
 function extractSearchQuery(text) {
