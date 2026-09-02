@@ -705,7 +705,7 @@ test("connector guidance states that AgentRouter never asks for a Keychain passw
 });
 
 test("keyword search runs locally so it works without a platform API token", async () => {
-  const { localSocialSearchRequest, runLocalSocialSearch, normalizeSearchPlatform } =
+  const { localBrowserSearchHandoffRequest, localSocialSearchRequest, runLocalSocialSearch, normalizeSearchPlatform } =
     await import("../packages/agentrouter-mcp/server/local-social-search.js");
 
   // Structured searches and natural-language tasks that explicitly name a
@@ -728,6 +728,35 @@ test("keyword search runs locally so it works without a platform API token", asy
     method: "tools/call",
     params: { name: "agentrouter_fetch", arguments: { task: "research crypto pm jobs" } }
   }), null);
+
+  const nativeMessage = {
+    method: "tools/call",
+    params: {
+      name: "agentrouter_request",
+      arguments: {
+        capability: "social_search",
+        params: { platform: "x", query: "crypto pm jobs", limit: 5 },
+        consumer_context: {
+          local_browser: {
+            adapter: "codex_browser",
+            available: true,
+            operations: ["search"]
+          }
+        }
+      }
+    }
+  };
+  const nativeRequest = localSocialSearchRequest(nativeMessage);
+  const nativeHandoff = localBrowserSearchHandoffRequest(nativeMessage, nativeRequest);
+  assert.equal(nativeHandoff.status, "local_connector_required");
+  assert.equal(nativeHandoff.handoff.selected_adapter, "codex_browser");
+  assert.equal(nativeHandoff.handoff.operation, "search");
+  assert.deepEqual(nativeHandoff.handoff.fallback_adapters, ["opencli"]);
+  assert.equal(nativeHandoff.action_required.reload_after_bridge_update, false);
+
+  const legacyMessage = structuredClone(nativeMessage);
+  delete legacyMessage.params.arguments.consumer_context;
+  assert.equal(localBrowserSearchHandoffRequest(legacyMessage, localSocialSearchRequest(legacyMessage)), null);
 
   assert.equal(normalizeSearchPlatform("twitter"), "x");
   assert.equal(normalizeSearchPlatform("小红书"), "xiaohongshu");
