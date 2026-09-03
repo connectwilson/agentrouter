@@ -129,6 +129,28 @@ test("registry seeds and validates demo service", async () => {
   });
 });
 
+test("BNB judge mode and golden-task API are public and expose four first-class categories", async () => {
+  await withServer(async ({ baseUrl, rawFetch }) => {
+    const pageResponse = await rawFetch(`${baseUrl}/bnb`);
+    const page = await pageResponse.text();
+    assert.equal(pageResponse.status, 200);
+    assert.match(page, /Discover and hire trusted BSC agents/);
+
+    const response = await rawFetch(`${baseUrl}/agent-router/bnb/golden-tasks`);
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.golden_task_list_version, "agent_router_bnb_golden_tasks_v1");
+    assert.equal(payload.total, 4);
+    assert.deepEqual(payload.tasks.map((task) => task.id), [
+      "rebalancing",
+      "grid-trading",
+      "yield-optimization",
+      "health-factor-monitoring"
+    ]);
+    assert.match(response.headers.get("cache-control"), /no-store/);
+  });
+});
+
 test("home page and Provider Studio render separately", async () => {
   await withServer(async ({ baseUrl, authCookie, rawFetch }) => {
     const home = await fetch(`${baseUrl}/`);

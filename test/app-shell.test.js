@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentHtml, homeHtml, serviceDetailHtml } from "../src/home.js";
+import { agentHtml, bnbMarketplaceHtml, homeHtml, serviceDetailHtml } from "../src/home.js";
 import { researchHtml } from "../src/research.js";
 import { studioHtml } from "../src/studio.js";
 
@@ -86,6 +86,24 @@ test("agent hub leads with productized capability packs that filter the live ser
   assert.match(hub, /erc8004\/discover\?q=/);
   assert.match(hub, /data-execution-result/);
   assert.match(hub, /hired\.status === "completed"/);
+  assert.match(hub, /"Idempotency-Key"/);
+  assert.match(hub, /capability: selectedPack\?\.golden_task\?\.capability/);
+});
+
+test("BNB judge mode presents four equal golden tasks and one legible hire journey", () => {
+  const page = bnbMarketplaceHtml({});
+
+  assert.match(page, /Discover and hire trusted BSC agents/);
+  assert.match(page, /Rebalancing/);
+  assert.match(page, /Grid Trading/);
+  assert.match(page, /Yield Optimisation/);
+  assert.match(page, /Health Factor Monitoring/);
+  assert.match(page, /agent-router\/bnb\/golden-tasks/);
+  assert.match(page, /Price/);
+  assert.match(page, /Trust Score/);
+  assert.match(page, /Track Record/);
+  assert.match(page, /View and hire agents/);
+  assert.doesNotMatch(page, /OpenCLI|MCP connector|API Hub for agents/);
 });
 
 test("agent hub exposes callable AI Search API sources as one category", () => {

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getCapabilityPack,
+  listBnbGoldenTasks,
   listCapabilityPacks,
   resolveCapabilityPackCall,
   serviceMatchesCapabilityPack
@@ -171,4 +172,44 @@ test("canonical contracts reject an empty task before any paid service can be se
   assert.equal(invalid.status, "invalid_request");
   assert.equal(invalid.error, "MISSING_TASK");
   assert.equal(invalid.resolved_capability, undefined);
+});
+
+test("BNB judge mode exposes four equally deep read-only golden tasks", () => {
+  const tasks = listBnbGoldenTasks([]);
+
+  assert.deepEqual(tasks.map((task) => task.id), [
+    "rebalancing",
+    "grid-trading",
+    "yield-optimization",
+    "health-factor-monitoring"
+  ]);
+  assert.deepEqual(tasks.map((task) => task.capability), [
+    "lp_range_rebalancing",
+    "grid_trading",
+    "yield_optimization",
+    "health_factor_monitoring"
+  ]);
+  for (const task of tasks) {
+    assert.equal(task.chain_id, 56);
+    assert.equal(task.execution_mode, "read_only_simulation");
+    assert.ok(task.task.length > 40);
+    assert.ok(task.required_outputs.includes("data_sources"));
+    assert.ok(task.required_outputs.includes("feedback_status"));
+    assert.equal(task.contract, getCapabilityPack(task.id, []).contract);
+  }
+});
+
+test("BNB golden tasks derive live service counts without inventing availability", () => {
+  const tasks = listBnbGoldenTasks([
+    record({ serviceId: "lp_manager", capabilities: ["lp_range_rebalancing"], price: "0.02" }),
+    record({ serviceId: "pending_grid", capabilities: ["grid_trading"], price: "0.01", verified: false })
+  ]);
+
+  assert.equal(tasks[0].service_count, 1);
+  assert.equal(tasks[0].verified_service_count, 1);
+  assert.equal(tasks[0].starting_price_usdc, "0.02");
+  assert.equal(tasks[1].service_count, 1);
+  assert.equal(tasks[1].verified_service_count, 0);
+  assert.equal(tasks[2].service_count, 0);
+  assert.equal(tasks[2].starting_price_usdc, null);
 });
