@@ -38,7 +38,7 @@ test("publishable MCP behavior ships under one new consistent version", async ()
   const manifest = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package.json", "utf8"));
   const lock = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package-lock.json", "utf8"));
   const server = await fs.readFile("packages/agentrouter-mcp/server/index.js", "utf8");
-  assert.equal(manifest.version, "0.14.0");
+  assert.equal(manifest.version, "0.14.1");
   assert.equal(lock.version, manifest.version);
   assert.equal(lock.packages[""].version, manifest.version);
   assert.match(server, new RegExp(`serverInfo: \\{ name: "AgentRouter", version: "${manifest.version.replaceAll(".", "\\.")}" \\}`));
