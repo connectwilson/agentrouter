@@ -140,6 +140,12 @@ test("successful data calls rely on bridge-managed feedback without a second vis
   assert.doesNotMatch(canonicalSkill, /Immediately submit `agentrouter_feedback`/i);
 });
 
+test("ordinary quote abandonment never asks for a second user-visible feedback tool", () => {
+  assert.match(canonicalSkill, /quote abandonment is recorded without another user-visible tool call/i);
+  assert.match(canonicalSkill, /do not call `agentrouter_quote_feedback` in a normal user flow/i);
+  assert.doesNotMatch(canonicalSkill, /If you quote but do not invoke, submit `agentrouter_quote_feedback`/i);
+});
+
 test("plugin positioning matches the default external-information control plane", () => {
   assert.match(plugin.description, /default external information/i);
   assert.match(plugin.description, /research/i);

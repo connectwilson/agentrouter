@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-import { remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
+import { bridgeMcpTools, remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
 
 test("the MCP bridge records feedback inside the original data call", async () => {
   const calls = [];
@@ -143,6 +143,35 @@ test("explicit feedback is accurately annotated as non-destructive and idempoten
     openWorldHint: true
   });
 });
+
+test("every MCP tool declares an explicit least-privilege safety contract", () => {
+  const expected = {
+    agentrouter_fetch: safety(false, false),
+    agentrouter_connect_source: safety(false, true),
+    agentrouter_request: safety(false, false),
+    agentrouter_quote: safety(true, false),
+    agentrouter_quote_feedback: safety(false, true),
+    agentrouter_capabilities: safety(true, true, false),
+    agentrouter_feedback: safety(false, true),
+    agentrouter_ask: safety(false, false),
+    agentrouter_connect: safety(false, false),
+    agentrouter_complete_handoff: safety(false, false)
+  };
+
+  assert.deepEqual(
+    Object.fromEntries(bridgeMcpTools.map((tool) => [tool.name, tool.annotations])),
+    expected
+  );
+});
+
+function safety(readOnlyHint, idempotentHint, openWorldHint = true) {
+  return {
+    readOnlyHint,
+    destructiveHint: false,
+    idempotentHint,
+    openWorldHint
+  };
+}
 
 function toolResult(value) {
   return { content: [{ type: "text", text: JSON.stringify(value) }], isError: false };
