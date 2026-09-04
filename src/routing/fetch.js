@@ -71,7 +71,7 @@ export async function runRemoteAgentRouterFetch(store, args = {}, {
         { providers, consumerContext: args.consumer_context }
       ));
     }
-    if (routePlan?.abstain_reason === "source_not_callable") {
+    if (["source_not_callable", "capability_not_available"].includes(routePlan?.abstain_reason)) {
       return complete(structuredRoutePreflight(routePlan));
     }
     if (routePlan?.route_family === "local_browser") {

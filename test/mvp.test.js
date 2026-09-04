@@ -3731,6 +3731,25 @@ test("AgentRouter blocks ambiguous token symbol substitutions before target paym
       });
       assert.equal(resolverResponse.status, 201);
 
+      const flowResponse = await fetch(`${baseUrl}/studio/providers`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "static-json",
+          service_id: "ambiguous_token_flow",
+          title: "Token Flow Intelligence",
+          provider_name: "Ambiguous Token Flow Lab",
+          description_for_agent: "Use this service for token-level smart money activity and token flow intelligence.",
+          capabilities: "data_service,token_god_mode,token_data,flow_intelligence,token_flow,buyer_seller_flow,smart_money",
+          price: "0.01",
+          sample_request: "{\"chain\":\"ethereum\",\"token_address\":\"0x0000000000000000000000000000000000000000\",\"timeframe\":\"1d\"}",
+          sample_data: "{\"smart_money_netflow_usd\":0}",
+          live_data: "{\"smart_money_netflow_usd\":0}",
+          summary: "Token-level smart money flow intelligence."
+        })
+      });
+      assert.equal(flowResponse.status, 201);
+
       const cli = await runAgentRouterCli(["ask", "查 GENIUS 近 24 小时聪明钱动向"], {
         ADN_REGISTRY_URL: baseUrl
       });
@@ -3749,7 +3768,9 @@ test("AgentRouter blocks ambiguous token symbol substitutions before target paym
       assert.match(payload.timing.trace_id, /^trace_/);
       assert.equal(payload.timing.quote_route_attempt_1_ms, undefined);
     } finally {
-      await fs.rm(path.join(process.env.ADN_PROVIDER_DIR, "ambiguous_token_search_resolver.json"), { force: true });
+      await Promise.all(["ambiguous_token_search_resolver", "ambiguous_token_flow"].map((serviceId) =>
+        fs.rm(path.join(process.env.ADN_PROVIDER_DIR, `${serviceId}.json`), { force: true })
+      ));
     }
   });
 });
@@ -4784,10 +4805,11 @@ test("AgentRouter refuses to publish unreachable direct endpoint services", asyn
         max_price: "0.05"
       })
     });
-    assert.equal(askResponse.status, 200);
+    assert.equal(askResponse.status, 422);
     const routed = await askResponse.json();
     assert.equal(routed.ok, false);
-    assert.equal(routed.status, "no_match");
+    assert.equal(routed.status, "capability_not_available");
+    assert.equal(routed.must_not_request_payment_authorization, true);
   });
 });
 

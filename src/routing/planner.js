@@ -557,15 +557,45 @@ function routePlan({
 }
 
 function finalizePlan(plan, context) {
-  const budgetGated = applyBudgetGate(plan, {
+  const implementationGated = applyImplementationGate(plan, context);
+  if (implementationGated.abstain_reason) {
+    return {
+      ...implementationGated,
+      budget_gate: {
+        max_price_usdc: implementationGated.budget_gate?.max_price_usdc ?? "0",
+        paid_calls_allowed: false,
+        status: "blocked"
+      }
+    };
+  }
+  const budgetGated = applyBudgetGate(implementationGated, {
     requirePriceUpperBound: context?.require_price_upper_bound === true
   });
-  const gated = applyImplementationGate(budgetGated);
-  if (gated.abstain_reason) return gated;
-  return { ...gated, auth_requirement: authRequirement(gated, context) };
+  if (budgetGated.abstain_reason) return budgetGated;
+  return { ...budgetGated, auth_requirement: authRequirement(budgetGated, context) };
 }
 
-function applyImplementationGate(plan) {
+function applyImplementationGate(plan, context = {}) {
+  if (plan.route_family === "registered_service") {
+    const explicitlyAvailable = Array.isArray(context.registered_capabilities)
+      ? normalizedSet(context.registered_capabilities).has(plan.capability)
+      : null;
+    const runtimeAvailable = typeof context.registered_capability_available === "function"
+      ? context.registered_capability_available(plan.capability, plan.params)
+      : null;
+    if (runtimeAvailable === false || (runtimeAvailable == null && explicitlyAvailable === false)) {
+      return {
+        ...plan,
+        route_family: "none",
+        candidate_sources: [],
+        candidate_scores: [],
+        estimated_price_usdc: null,
+        auth_requirement: noAuth(),
+        abstain_reason: "capability_not_available",
+        must_not_fallback: true
+      };
+    }
+  }
   if (plan.route_family !== "external_api") return plan;
   const unavailableSource = (plan.candidate_sources || []).find((source) => {
     const status = SOURCE_METADATA.get(source)?.implementation_status;
@@ -675,6 +705,8 @@ function inferRegisteredServiceRoute(text) {
     const capability = structured.capability;
     const dataFamily = capability === "perp_liquidation_max_pain"
       ? "crypto_derivatives"
+      : capability === "wallet_pnl_leaderboard"
+        ? "wallet_performance"
       : capability === "smart_money_holdings"
         ? "onchain_portfolio"
         : capability === "token_smart_money_activity"
@@ -690,7 +722,7 @@ function inferRegisteredServiceRoute(text) {
     };
   }
 
-  if (legacyIntent.wants_address) {
+  if (legacyIntent.wants_address && (legacyIntent.address || legacyIntent.tag || isWalletProfileIntent(text))) {
     return {
       task_family: "wallet_intelligence",
       data_family: "onchain_identity",
@@ -716,6 +748,10 @@ function inferRegisteredServiceRoute(text) {
   }
 
   return null;
+}
+
+function isWalletProfileIntent(text) {
+  return /(?:钱包|地址).{0,8}(?:标签|画像|归属|身份|实体|详情|信息|关联)|(?:label|profile|identity|owner|entity|details?).{0,12}(?:wallet|address)|(?:wallet|address).{0,12}(?:label|profile|identity|owner|entity|details?)/i.test(text);
 }
 
 function isInsufficientContext(text) {

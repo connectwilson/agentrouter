@@ -4,7 +4,7 @@ import { currentPaymentBackend } from "../payment-adapter.js";
 export function externalApiStatusCode(result) {
   if (result?.ok !== false) return 200;
   if (result.status === "local_browser_handoff_required") return 200;
-  if (["invalid_request", "unsupported_source", "unsupported_operation", "source_not_callable"].includes(result.status)) return 422;
+  if (["invalid_request", "unsupported_source", "unsupported_operation", "source_not_callable", "capability_not_available"].includes(result.status)) return 422;
   if (result.status === "connection_required" || result.status === "auth_required") return 401;
   if (result.status === "quote_required") return 402;
   if (result.status === "rate_limited") return 429;
@@ -37,7 +37,7 @@ export function paymentRequiredNextStep(result) {
 }
 
 export function paymentBoundaryStatusCode(payload) {
-  if (payload?.status === "invalid_request") return 422;
+  if (["invalid_request", "capability_not_available"].includes(payload?.status)) return 422;
   if (payload?.status === "connection_required") return 401;
   if (["payment_required", "quote_required", "quote_blocked"].includes(payload?.status)) return 402;
   if (payload?.status === "no_data_returned") {

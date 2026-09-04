@@ -29,7 +29,7 @@ function safetyAnnotations(readOnlyHint, idempotentHint, openWorldHint = true) {
 export const remoteMcpTools = [
   {
     name: "agentrouter_fetch",
-    description: "Default first hop for external information. Use this single tool first for research, search, URLs, platforms, current information, and API/data questions. AgentRouter selects public web, local read-only connectors, or specialist services and handles budget, authorization, invocation, verification, evidence, and feedback internally. Pass the original task or structured data_requirements; use max_price 0 for free-only research. Use another acquisition backend only when this response names a handoff, or when the user explicitly requests direct mode.",
+    description: "Default first hop for external information. Use this single tool first for research, search, URLs, platforms, current information, and API/data questions. The call is discovery and execution preflight: do not claim a route or capability is available before this response confirms it. AgentRouter selects public web, local read-only connectors, or specialist services and handles budget, authorization, invocation, verification, evidence, and feedback internally. Pass the original task or structured data_requirements; use max_price 0 for free-only research. Use another acquisition backend only when this response names a handoff, or when the user explicitly requests direct mode.",
     annotations: safetyAnnotations(false, false),
     inputSchema: {
       type: "object",

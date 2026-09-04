@@ -229,6 +229,22 @@ export async function askAgentRouter(store, {
 
 function plannedNaturalLanguageRoute(task, plan) {
   if (!plan || typeof plan !== "object") return null;
+  if (plan.abstain_reason === "capability_not_available") {
+    return {
+      ok: false,
+      status: "capability_not_available",
+      task,
+      capability: plan.capability || null,
+      execution_available: false,
+      must_not_execute: true,
+      must_not_request_payment_authorization: true,
+      fallback_allowed: false,
+      error: {
+        code: "CAPABILITY_NOT_AVAILABLE",
+        message: `${plan.capability || "The requested capability"} has no verified callable AgentRouter service yet.`
+      }
+    };
+  }
   if (plan.abstain_reason === "source_not_callable") {
     const source = plan.source_constraint || plan.provider_constraint || plan.candidate_sources?.[0] || null;
     return {
@@ -420,14 +436,22 @@ export function inferIntent(task) {
   const dynamicTerms = extractDynamicSearchTerms(task);
   const wantsSingle = /一个|一条|任意|first|\bone\b|single/i.test(task);
   const wantsAddress = /地址|钱包|address|wallet/i.test(task);
+  const wantsWalletPnlLeaderboard = wantsAddress && (
+    /(?:盈利|收益|利润|賺錢|赚钱).{0,8}(?:榜|排行|排名|最多)/i.test(task)
+    || /(?:榜|排行|排名|前\s*\d+).{0,8}(?:盈利|收益|利润|賺錢|赚钱)/i.test(task)
+    || /\b(?:pnl|profit(?:able)?|profitability).{0,24}(?:leaderboard|ranking|rank|wallets?|addresses?)\b/i.test(task)
+    || /\b(?:top\s*\d*).{0,24}(?:profitable|pnl).{0,24}(?:wallets?|addresses?)\b/i.test(task)
+  );
   const wantsRelatedWallets = /related[\s_-]?wallets?|关联钱包|相关钱包|wallet[\s_-]?cluster|cluster/i.test(task);
   const wantsLiquidation = /爆仓|清算|liquidation|max[\s-]?pain/i.test(task);
   const wantsSmartMoneyHoldings = /smart[\s_-]?money/i.test(task) && /holdings?|持仓/i.test(task);
   const wantsSmartMoneyNetflow = /smart[\s_-]?money/i.test(task) && /net[\s_-]?flow|netflow|净流入|净流出|资金流/i.test(task);
   const wantsSmartMoneyActivity = Boolean(token) && /smart[\s_-]?money|聪明钱/i.test(task) && /动向|动态|activity|flow|flows|买|卖|bought|sold|movement|近|过去|24\s*h|24\s*小时/i.test(task);
   const wantsNetflow = !wantsSmartMoneyNetflow && /net[\s_-]?flow|netflow|净流入|净流出/i.test(task);
-  const hasKnownIntent = wantsAddress || wantsLiquidation || wantsSmartMoneyHoldings || wantsSmartMoneyNetflow || wantsSmartMoneyActivity || wantsNetflow;
-  const limit = detectLimit(task, wantsSingle);
+  const hasKnownIntent = wantsAddress || wantsWalletPnlLeaderboard || wantsLiquidation || wantsSmartMoneyHoldings || wantsSmartMoneyNetflow || wantsSmartMoneyActivity || wantsNetflow;
+  const limit = wantsWalletPnlLeaderboard
+    ? detectRankLimit(task, wantsSingle)
+    : detectLimit(task, wantsSingle);
   const input = {
     limit,
     offset: 0
@@ -490,6 +514,7 @@ export function inferIntent(task) {
   return {
     task,
     wants_address: wantsAddress,
+    wants_wallet_pnl_leaderboard: wantsWalletPnlLeaderboard,
     wants_related_wallets: wantsRelatedWallets,
     wants_liquidation: wantsLiquidation,
     wants_smart_money_holdings: wantsSmartMoneyHoldings,
@@ -1092,6 +1117,22 @@ function discoverServiceOptions(store, task, maxPrice) {
 }
 
 export function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
+  if (intent.wants_wallet_pnl_leaderboard) {
+    return {
+      capability: "wallet_pnl_leaderboard",
+      params: {
+        venue: /hyperliquid/i.test(intent.task) ? "hyperliquid" : undefined,
+        chain: intent.chain,
+        window: detectWindow(intent.task) || "24h",
+        limit: intent.input?.limit || 5,
+        asset_universe: /ro(?:n)?binhood/i.test(intent.task) ? "robinhood_listed" : undefined
+      },
+      constraints: {
+        max_price_usdc: maxPrice ?? "0.05",
+        freshness_seconds: 300
+      }
+    };
+  }
   if (intent.wants_smart_money_activity) {
     return {
       capability: "token_smart_money_activity",
@@ -1156,6 +1197,15 @@ function detectLimit(task, wantsSingle) {
   if (wantsSingle) return 1;
   const text = String(task || "").replace(/0x[a-fA-F0-9]{40}/g, " ");
   const match = text.match(/(?:前|top\s*)?(\d{1,3})\s*(?:条|个|rows?|records?|data)?/i);
+  if (!match) return 5;
+  return Math.max(1, Math.min(100, Number(match[1])));
+}
+
+function detectRankLimit(task, wantsSingle) {
+  if (wantsSingle) return 1;
+  const text = String(task || "").replace(/0x[a-fA-F0-9]{40}/g, " ");
+  const match = text.match(/(?:前\s*|\btop\s+)(\d{1,3})(?=\s*(?:条|个|名|位|rows?|records?|wallets?|addresses?|$|[^小时天hd]))/i)
+    || text.match(/(\d{1,3})\s*(?:条|个|名|位|rows?|records?|wallets?|addresses?)/i);
   if (!match) return 5;
   return Math.max(1, Math.min(100, Number(match[1])));
 }

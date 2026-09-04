@@ -3,6 +3,7 @@ import { getExternalApiCatalog } from "../external-api-capability.js";
 import { writePersistentServiceEvent } from "../persistence.js";
 import { recordRouteObservationV2 } from "./metrics.js";
 import { inferRoutePlan, inferStructuredBatchRoutePlan, inferStructuredRoutePlan } from "./planner.js";
+import { rankCandidates } from "../router.js";
 
 export function canonicalRoutePlan(store, task, {
   ownerKey = "",
@@ -24,6 +25,7 @@ export function canonicalRoutePlan(store, task, {
     connected_sources: connectedSources,
     local_browser_sessions: localBrowserSessions,
     source_signals: sourceSignals,
+    registered_capability_available: registeredCapabilityAvailable(store),
     constraints: { max_price_usdc: maxPrice },
     require_price_upper_bound: budgetExplicit
   });
@@ -70,6 +72,7 @@ function canonicalStructuredRouteContext(store, request, ownerKey, { budgetExpli
     agentrouter_authenticated: Boolean(ownerKey),
     connected_sources: connectedSources,
     local_browser_sessions: localBrowserSessions,
+    registered_capability_available: registeredCapabilityAvailable(store),
     require_price_upper_bound: budgetExplicit,
     constraints: {
       max_price_usdc: request.constraints?.max_price_usdc
@@ -79,7 +82,29 @@ function canonicalStructuredRouteContext(store, request, ownerKey, { budgetExpli
   };
 }
 
+function registeredCapabilityAvailable(store) {
+  return (capability, params = {}) => rankCandidates(store, {
+    capability,
+    ...(params && typeof params === "object" ? params : {})
+  }).length > 0;
+}
+
 export function structuredRoutePreflight(plan) {
+  if (plan?.abstain_reason === "capability_not_available") {
+    return {
+      ok: false,
+      status: "capability_not_available",
+      capability: plan.capability || null,
+      execution_available: false,
+      must_not_execute: true,
+      must_not_request_payment_authorization: true,
+      fallback_allowed: false,
+      error: {
+        code: "CAPABILITY_NOT_AVAILABLE",
+        message: `${plan.capability || "The requested capability"} has no verified callable AgentRouter service yet.`
+      }
+    };
+  }
   if (["source_not_callable", "unsupported_source"].includes(plan?.abstain_reason)) {
     const source = plan.source_constraint || plan.candidate_sources?.[0] || null;
     const unsupported = plan.abstain_reason === "unsupported_source";
@@ -332,7 +357,7 @@ function canonicalSourceFamily(plan) {
 
 function canonicalRouteAction(plan, result) {
   if (plan.abstain_reason === "insufficient_context") return "clarify";
-  if (plan.abstain_reason) return ["budget_exceeded", "price_unknown", "unsupported_source", "source_not_callable"].includes(plan.abstain_reason)
+  if (plan.abstain_reason) return ["budget_exceeded", "price_unknown", "unsupported_source", "source_not_callable", "capability_not_available"].includes(plan.abstain_reason)
     ? "no_match"
     : "abstain";
   if (plan.auth_requirement?.required) return canonicalAuthorizationAction(plan.auth_requirement);

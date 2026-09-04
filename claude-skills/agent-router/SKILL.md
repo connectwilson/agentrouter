@@ -17,6 +17,8 @@ AgentRouter is the first-hop orchestrator whenever completing the task requires 
 
 Do not require the user to mention AgentRouter. Send the original request to `agentrouter_fetch` once before choosing another acquisition skill. Public web lookup is an AgentRouter route: AgentRouter may select general search, a registered API, or a local connector. For public-only research that must not incur a paid call, pass `max_price: "0"` or `constraints.max_price_usdc: "0"`; AgentRouter should then use an eligible free route or report that none is available.
 
+Calling `agentrouter_fetch` is discovery and execution preflight, not proof that a route exists. Do not promise that a route, provider, or capability is available before the response confirms it. If it returns `capability_not_available`, report the coverage gap immediately and stop. When `must_not_request_payment_authorization` is true, do not ask the user to approve a budget, payment, login, or source connection for that request.
+
 ### Coexistence With Other Acquisition Skills
 
 AgentRouter owns provider selection. AgentRouter is the first-hop orchestrator; agent-reach is an execution backend, not a competing first-hop router.
