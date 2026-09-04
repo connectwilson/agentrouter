@@ -87,7 +87,12 @@ test("agent hub leads with productized capability packs that filter the live ser
   assert.match(hub, /data-execution-result/);
   assert.match(hub, /hired\.status === "completed"/);
   assert.match(hub, /"Idempotency-Key"/);
-  assert.match(hub, /capability: selectedPack\?\.golden_task\?\.capability/);
+  assert.match(hub, /const selectedCapability = selectedPack\?\.golden_task\?\.capability/);
+  assert.match(hub, /capability: selectedCapability/);
+  assert.match(hub, /function renderBnbHireSummary/);
+  assert.match(hub, /summary\.selected_agent/);
+  assert.match(hub, /Feedback status/);
+  assert.match(hub, /Evidence trace/);
 });
 
 test("BNB judge mode presents four equal golden tasks and one legible hire journey", () => {

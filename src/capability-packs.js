@@ -7,6 +7,11 @@ const CAPABILITY_PACKS = Object.freeze([
     description: "Manage LP ranges and rebalance positions when price, inventory, or risk moves outside policy.",
     sample_task: "Find and activate a BNB Chain agent that can rebalance a concentrated-liquidity position.",
     discovery_query: "BNB Chain liquidity rebalancing LP range management agent",
+    golden_task: {
+      capability: "lp_range_rebalancing",
+      execution_mode: "read_only_simulation",
+      task: "Analyze a PancakeSwap concentrated-liquidity position on BNB Chain and simulate a safer replacement price range without moving funds."
+    },
     signals: [
       "lp_range_rebalancing", "liquidity_rebalancing", "position_rebalancing",
       "automated_rebalancing", "lp_range_management", "concentrated_liquidity_management"
@@ -20,6 +25,11 @@ const CAPABILITY_PACKS = Object.freeze([
     description: "Create and manage bounded grid strategies with explicit market, price-range, and risk constraints.",
     sample_task: "Find and activate a BNB Chain agent that can manage a constrained grid-trading strategy.",
     discovery_query: "BNB Chain grid trading order management agent",
+    golden_task: {
+      capability: "grid_trading",
+      execution_mode: "read_only_simulation",
+      task: "Build a read-only BNB/USDT grid-trading plan from an explicit price range, grid count, and loss limit without placing any orders."
+    },
     signals: [
       "grid_trading", "grid_strategy", "grid_order_management", "automated_grid_orders",
       "spot_grid", "futures_grid"
@@ -33,6 +43,11 @@ const CAPABILITY_PACKS = Object.freeze([
     description: "Compare risk-adjusted yields and route liquidity under protocol, asset, and exposure constraints.",
     sample_task: "Find and activate a BNB Chain agent that can optimize yield without exceeding a risk policy.",
     discovery_query: "BNB Chain yield optimisation liquidity routing APR agent",
+    golden_task: {
+      capability: "yield_optimization",
+      execution_mode: "read_only_simulation",
+      task: "Compare live BNB Chain yield opportunities for USDC and return a risk-adjusted recommendation without depositing or moving funds."
+    },
     signals: [
       "yield_optimization", "yield_optimisation", "yield_routing", "apr_optimization",
       "risk_adjusted_yield", "liquidity_yield_management"
@@ -46,6 +61,11 @@ const CAPABILITY_PACKS = Object.freeze([
     description: "Monitor lending positions and trigger bounded protective actions before liquidation risk breaches policy.",
     sample_task: "Find and activate a BNB Chain agent that monitors lending health factor and liquidation risk.",
     discovery_query: "BNB Chain lending health factor liquidation protection agent",
+    golden_task: {
+      capability: "health_factor_monitoring",
+      execution_mode: "read_only_simulation",
+      task: "Inspect a user-provided Venus lending position and report health factor, liquidation distance, and protective actions without submitting transactions."
+    },
     signals: [
       "health_factor_monitoring", "liquidation_protection", "lending_position_monitoring",
       "collateral_risk_monitoring", "health_factor_alert", "lending_risk_guard"
@@ -178,6 +198,19 @@ const CAPABILITY_PACK_INPUT_SCHEMA = Object.freeze({
   additionalProperties: true
 });
 
+const BNB_GOLDEN_TASK_OUTPUTS = Object.freeze([
+  "selected_agent",
+  "selection_reason",
+  "agent_identity",
+  "price_usdc",
+  "trust_score",
+  "latency_ms",
+  "actual_cost_usdc",
+  "structured_result",
+  "data_sources",
+  "feedback_status"
+]);
+
 function normalizedManifestText(manifest = {}) {
   return [
     manifest.service_id,
@@ -222,6 +255,7 @@ function publicPack(pack, records) {
     description: pack.description,
     sample_task: pack.sample_task,
     discovery_query: pack.discovery_query || null,
+    golden_task: pack.golden_task ? { ...pack.golden_task } : null,
     input_schema: CAPABILITY_PACK_INPUT_SCHEMA,
     service_count: matches.length,
     verified_service_count: matches.filter((record) => record.verification_status === "verified").length,
@@ -232,6 +266,25 @@ function publicPack(pack, records) {
 export function listCapabilityPacks(records = []) {
   const safeRecords = Array.isArray(records) ? records : [];
   return CAPABILITY_PACKS.map((pack) => publicPack(pack, safeRecords));
+}
+
+export function listBnbGoldenTasks(records = []) {
+  return listCapabilityPacks(records)
+    .filter((pack) => pack.group === "smart_money_jobs" && pack.golden_task)
+    .map((pack) => ({
+      id: pack.id,
+      category: pack.title,
+      contract: pack.contract,
+      chain_id: 56,
+      capability: pack.golden_task.capability,
+      execution_mode: pack.golden_task.execution_mode,
+      task: pack.golden_task.task,
+      discovery_query: pack.discovery_query,
+      required_outputs: [...BNB_GOLDEN_TASK_OUTPUTS],
+      service_count: pack.service_count,
+      verified_service_count: pack.verified_service_count,
+      starting_price_usdc: pack.starting_price_usdc
+    }));
 }
 
 export function getCapabilityPack(packId, records = []) {

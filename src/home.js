@@ -1,5 +1,6 @@
 import { authModalHtml, authModalStyles } from "./auth-modal.js";
 import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
+import { listBnbGoldenTasks } from "./capability-packs.js";
 
 const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
@@ -497,6 +498,97 @@ function humanGuestHtml({ auth = {} } = {}) {
   });
 }
 
+export function bnbMarketplaceHtml({ auth = {} } = {}) {
+  const tasks = listBnbGoldenTasks([]);
+  const taskCards = tasks.map((task) => `
+    <article class="bnb-task-card" data-golden-task="${html(task.id)}">
+      <div class="bnb-task-top">
+        <span class="type-badge">Read-only simulation</span>
+        <span class="bnb-chain">BSC</span>
+      </div>
+      <h2>${html(task.category)}</h2>
+      <p>${html(task.task)}</p>
+      <div class="bnb-task-metrics" aria-label="Agent comparison criteria">
+        <span><small>Price</small><strong data-task-price>Live quote</strong></span>
+        <span><small>Trust Score</small><strong>Verified signals</strong></span>
+        <span><small>Track Record</small><strong data-task-availability>Checking agents…</strong></span>
+      </div>
+      <a class="button primary" href="/agent?pack=${encodeURIComponent(task.id)}&amp;q=${encodeURIComponent(task.task)}">View and hire agents</a>
+    </article>
+  `).join("");
+  return appPage({
+    title: "BNB Agent Marketplace",
+    subtitle: "Discover and hire trusted BSC agents.",
+    active: "bnb",
+    auth,
+    showHeader: false,
+    body: `
+      <main class="bnb-judge-mode">
+        <section class="shell wide-shell bnb-hero">
+          <span class="eyebrow">BNB Agent Marketplace</span>
+          <h1>Discover and hire trusted BSC agents.</h1>
+          <p>Choose a job, compare live identity, price, trust, and track record, then run one safe read-only task. Sign-in is requested only when you hire.</p>
+          <div class="bnb-flow" aria-label="Marketplace journey">
+            <span>1 · Choose a job</span><span>2 · Compare agents</span><span>3 · Hire safely</span><span>4 · Verify evidence</span>
+          </div>
+        </section>
+        <section class="shell wide-shell bnb-task-section" aria-labelledby="bnb-task-heading">
+          <div class="bnb-section-heading">
+            <div><span class="eyebrow">Four first-class categories</span><h2 id="bnb-task-heading">Run a Golden Task</h2></div>
+            <p>Every task uses the same selection and evidence contract, without moving funds or placing orders.</p>
+          </div>
+          <div class="bnb-task-grid">${taskCards}</div>
+        </section>
+        <section class="shell wide-shell bnb-proof-strip">
+          <div><small>Identity</small><strong>BSC Agent ID + 8004scan</strong></div>
+          <div><small>Selection</small><strong>Price + Trust Score</strong></div>
+          <div><small>Execution</small><strong>Latency + actual cost</strong></div>
+          <div><small>Proof</small><strong>Evidence + Feedback status</strong></div>
+        </section>
+      </main>
+      <style>
+        .bnb-judge-mode{padding:72px 0 96px;background:#000;color:#fff;min-height:75vh}
+        .bnb-hero{padding-bottom:48px;border-bottom:1px solid var(--ar-border)}
+        .bnb-hero h1{max-width:900px;margin:14px 0 18px;font-size:clamp(44px,7vw,88px);line-height:.94;letter-spacing:-.055em}
+        .bnb-hero>p{max-width:760px;color:var(--ar-muted);font-size:18px;line-height:1.6}
+        .bnb-flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin-top:34px;background:var(--ar-border);border:1px solid var(--ar-border)}
+        .bnb-flow span{padding:18px;background:#0b0b0b;font-size:13px;text-transform:uppercase;letter-spacing:.08em}
+        .bnb-task-section{padding-top:52px}
+        .bnb-section-heading{display:flex;justify-content:space-between;gap:28px;align-items:end;margin-bottom:24px}
+        .bnb-section-heading h2{margin:8px 0 0;font-size:36px}.bnb-section-heading>p{max-width:520px;color:var(--ar-muted)}
+        .bnb-task-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+        .bnb-task-card{display:flex;flex-direction:column;min-height:390px;padding:26px;border:1px solid var(--ar-border);border-radius:18px;background:var(--ar-card)}
+        .bnb-task-top{display:flex;justify-content:space-between;align-items:center}.bnb-chain{font-size:12px;color:var(--ar-muted)}
+        .bnb-task-card h2{margin:34px 0 12px;font-size:30px}.bnb-task-card>p{color:var(--ar-muted);line-height:1.55}
+        .bnb-task-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;margin:auto 0 22px;background:var(--ar-border);border:1px solid var(--ar-border)}
+        .bnb-task-metrics span{display:flex;min-height:82px;padding:12px;background:#101010;flex-direction:column;justify-content:space-between}.bnb-task-metrics small{color:var(--ar-muted)}.bnb-task-metrics strong{font-size:13px}
+        .bnb-task-card .button{text-align:center}.bnb-proof-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:42px}
+        .bnb-proof-strip div{padding-top:16px;border-top:1px solid var(--ar-border)}.bnb-proof-strip small,.bnb-proof-strip strong{display:block}.bnb-proof-strip small{color:var(--ar-muted);margin-bottom:8px}
+        @media(max-width:760px){.bnb-flow,.bnb-proof-strip{grid-template-columns:1fr 1fr}.bnb-task-grid{grid-template-columns:1fr}.bnb-section-heading{align-items:start;flex-direction:column}.bnb-task-metrics{grid-template-columns:1fr}.bnb-task-card{min-height:auto}}
+      </style>
+      <script>
+        fetch("/agent-router/bnb/golden-tasks", { cache: "no-store" })
+          .then((response) => response.ok ? response.json() : Promise.reject(new Error("unavailable")))
+          .then((payload) => {
+            for (const task of payload.tasks || []) {
+              const card = document.querySelector('[data-golden-task="' + CSS.escape(task.id) + '"]');
+              if (!card) continue;
+              const availability = card.querySelector("[data-task-availability]");
+              const price = card.querySelector("[data-task-price]");
+              availability.textContent = task.verified_service_count
+                ? task.verified_service_count + " verified callable"
+                : task.service_count ? task.service_count + " awaiting verification" : "Discover on 8004scan";
+              price.textContent = task.starting_price_usdc == null ? "Quoted before hire" : "From $" + task.starting_price_usdc;
+            }
+          })
+          .catch(() => {
+            document.querySelectorAll("[data-task-availability]").forEach((node) => { node.textContent = "Retry on agent list"; });
+          });
+      </script>
+    `
+  });
+}
+
 export function agentHtml({ auth = {} } = {}) {
   return appPage({
     title: "For agent",
@@ -743,7 +835,7 @@ export function agentHtml({ auth = {} } = {}) {
             const serviceResponse = await fetch("/agent-router/services?" + params.toString());
             servicePage = await serviceResponse.json();
             const selectedPack = capabilityPacks.find((pack) => pack.id === activePack);
-            const discoveryQuery = query || selectedPack?.discovery_query || "";
+            const discoveryQuery = selectedPack?.discovery_query || query || "";
             const discoveryResponse = discoveryQuery.length >= 2 && Number(servicePage.total || 0) === 0
               ? await fetch("/agent-router/erc8004/discover?q=" + encodeURIComponent(discoveryQuery) + "&limit=6")
               : null;
@@ -837,6 +929,46 @@ export function agentHtml({ auth = {} } = {}) {
             '<button type="button" class="button ' + (verified ? "primary" : "ghost") + '" onclick="hireErc8004Agent(this,\'' + escapeAttr(agent.agent_id) + '\')">Hire / call</button></div>' +
           '</article>';
         }
+        function renderBnbHireSummary(target, summary) {
+          if (!target || !summary || typeof summary !== "object") return false;
+          const selected = summary.selected_agent || {};
+          const price = summary.price || {};
+          const trust = summary.trust_score || {};
+          const actualCost = summary.actual_cost || {};
+          const feedback = summary.feedback || {};
+          const evidence = summary.evidence || {};
+          const sources = Array.isArray(summary.data_sources) ? summary.data_sources : [];
+          const displayAmount = (value, currency, status) => value == null
+            ? "Not reported"
+            : String(value) + " " + String(currency || "USDC") + (status === "declared" ? " declared" : "");
+          const displayTrust = trust.score == null ? "Not rated" : String(Math.round(Number(trust.score))) + "/100";
+          const displayLatency = summary.latency_ms == null ? "Not reported" : String(summary.latency_ms) + " ms";
+          const displayFeedback = String(feedback.status || "not_requested").replace(/_/g, " ");
+          const explorer = selected.explorer_url
+            ? '<a href="' + escapeAttr(selected.explorer_url) + '" target="_blank" rel="noopener noreferrer">#' + escapeHtml(selected.agent_id || "unknown") + ' on 8004scan ↗</a>'
+            : '#' + escapeHtml(selected.agent_id || "unknown") + ' on BSC';
+          const sourceItems = sources.length
+            ? sources.map((source) => '<li>' + escapeHtml(typeof source === "string" ? source : JSON.stringify(source)) + '</li>').join("")
+            : '<li>Not reported by agent</li>';
+          target.innerHTML =
+            '<div class="hire-summary">' +
+              '<div class="hire-summary-head"><span>Completed</span><strong>' + escapeHtml(selected.name || "Selected agent") + '</strong></div>' +
+              '<p class="hire-selection-reason">' + escapeHtml(summary.selection_reason || "Selected for the requested capability.") + '</p>' +
+              '<dl class="hire-summary-grid">' +
+                '<div><dt>Agent ID</dt><dd>' + explorer + '</dd></div>' +
+                '<div><dt>Price</dt><dd>' + escapeHtml(displayAmount(price.amount, price.currency, price.status)) + '</dd></div>' +
+                '<div><dt>Trust Score</dt><dd>' + escapeHtml(displayTrust) + '</dd></div>' +
+                '<div><dt>Track Record</dt><dd>' + escapeHtml(String(trust.total_feedbacks || 0)) + ' feedback · ' + escapeHtml(String(trust.total_validations || 0)) + ' validations</dd></div>' +
+                '<div><dt>Latency</dt><dd>' + escapeHtml(displayLatency) + '</dd></div>' +
+                '<div><dt>Actual cost</dt><dd>' + escapeHtml(displayAmount(actualCost.amount, actualCost.currency, actualCost.status)) + '</dd></div>' +
+                '<div><dt>Feedback status</dt><dd>' + escapeHtml(displayFeedback) + '</dd></div>' +
+                '<div><dt>Evidence trace</dt><dd><code>' + escapeHtml(evidence.trace_hash || "Not reported") + '</code></dd></div>' +
+              '</dl>' +
+              '<details><summary>Data sources (' + sources.length + ')</summary><ul>' + sourceItems + '</ul></details>' +
+              '<details><summary>Structured result</summary><pre>' + escapeHtml(JSON.stringify(summary.structured_result, null, 2)) + '</pre></details>' +
+            '</div>';
+          return true;
+        }
         async function hireErc8004Agent(button, agentId) {
           const original = button.textContent;
           const task = document.getElementById("service-search").value.trim();
@@ -868,9 +1000,22 @@ export function agentHtml({ auth = {} } = {}) {
             }
             if (!importedResponse.ok) throw new Error(imported.error?.message || "Sign in to verify and hire this agent.");
             if (!imported.agent?.callable) throw new Error(imported.agent?.verification_error || "Registered on-chain, not verified callable.");
+            const selectedPack = capabilityPacks.find((pack) => pack.id === activePack);
+            const selectedCapability = selectedPack?.golden_task?.capability
+              || imported.agent?.execution_policy?.allowed_capabilities?.[0]
+              || "";
+            const idempotencyKey = globalThis.crypto?.randomUUID?.()
+              || "hire-" + Date.now() + "-" + Math.random().toString(16).slice(2);
             const hireResponse = await fetch("/agent-router/erc8004/hire", {
-              method: "POST", headers: { "content-type": "application/json" },
-              body: JSON.stringify({ chain_id: 56, agent_id: agentId, execute: true, input: { task } })
+              method: "POST",
+              headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+              body: JSON.stringify({
+                chain_id: 56,
+                agent_id: agentId,
+                execute: true,
+                capability: selectedCapability,
+                input: { task, execution_mode: selectedPack?.golden_task?.execution_mode || "read_only" }
+              })
             });
             const hired = await hireResponse.json();
             if (hireResponse.status === 401) {
@@ -881,7 +1026,9 @@ export function agentHtml({ auth = {} } = {}) {
             if (hired.status === "completed") {
               if (result) {
                 result.hidden = false;
-                result.textContent = truncate(JSON.stringify(hired.result), 240);
+                if (!renderBnbHireSummary(result, hired.judge_summary)) {
+                  result.textContent = truncate(JSON.stringify(hired.result), 240);
+                }
               }
               button.textContent = "Completed";
               button.title = "Agent returned a verified JSON response.";
@@ -1770,6 +1917,7 @@ function page({ title, auth = {}, body }) {
       <a class="brand" href="/" aria-label="AgentRouter home">${brandLogo()}</a>
       <nav class="nav-links" aria-label="Primary">
         <a href="/">Home</a>
+        <a href="/bnb">BNB Agents</a>
         <a href="/research">Research</a>
         <div class="nav-has-menu">
           <a href="/agent" class="nav-trigger">Services <span class="nav-caret">▾</span></a>

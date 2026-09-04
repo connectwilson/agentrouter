@@ -20,7 +20,7 @@ import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js"
 import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, createErc8004RegistrationTransaction, ERC8004_REPUTATION_ABI, verifyErc8004FeedbackTransaction, verifyErc8004IdentityRegistrationTransaction } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
-import { accountHtml, agentHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
+import { accountHtml, agentHtml, bnbMarketplaceHtml, homeHtml, humanHtml, publicApisHtml, serviceDetailHtml } from "./home.js";
 import { readProviderConfig } from "./provider-config.js";
 import { authProviders, authUserKey, beginOAuth, clearOAuthStateCookie, completeOAuth, createDevSession, currentUser, devLoginAvailable, logout } from "./auth.js";
 import { accountSpendLimit, authenticateCreditRequest, bindDepositAddress, createCreditApiKey, creditApiKeyFromRequest, ensureCreditAccount, findAccountByDepositAddress, getCreditBalance, listCreditApiKeys, listCreditLedger, revokeCreditApiKey, setAccountSpendLimit } from "./credits.js";
@@ -42,7 +42,7 @@ import { getExternalApiCatalog,
   externalSourceAccessAction, getExternalApiServiceDetail, runExternalApiQuery } from "./external-api-capability.js";
 import { runSocialPostReadCapability } from "./social-post-read.js";
 import { getBuiltinCapabilities } from "./builtin-capabilities.js";
-import { listCapabilityPacks, serviceMatchesCapabilityPack } from "./capability-packs.js";
+import { listBnbGoldenTasks, listCapabilityPacks, serviceMatchesCapabilityPack } from "./capability-packs.js";
 import { publicEvidenceEvent, publicFeedbackEvent, publicManifestProjection, publicRouteObservation } from "./public-projections.js";
 import { issueCompletionGrant, verifyCompletionGrant } from "./completion-grant.js";
 import {
@@ -60,6 +60,7 @@ import { compactAgentFacingResult } from "./compact-result.js";
 import { relaySponsoredErc8004Registration } from "./bsc-registration-paymaster.js";
 import { createErc8004Discovery, executeErc8004HttpAgent, normalizeErc8004Agent, normalizeErc8004DiscoveryRequest } from "./erc8004-discovery.js";
 import { createErc8004HireArtifacts, erc8004HireClaim, erc8004HireServiceId, executeErc8004HireOnce, requireReadOnlyErc8004ExecutionPolicy } from "./erc8004-hire.js";
+import { createBnbHireSummary } from "./bnb-marketplace.js";
 import { loadRemoteMcpSession, persistRemoteMcpSession } from "./remote-mcp-session.js";
 import { isInternalProviderValidationRequest } from "./provider-validation-auth.js";
 import { aggregateRoutingMetrics, createRouteObservationV2, recordRoutingFeedback } from "./routing/metrics.js";
@@ -102,6 +103,7 @@ const REMOTE_MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 function routeUsesLiveServiceState(pathname) {
   if (["/agent-router/ready", "/agent-router/health"].includes(pathname)) return false;
   if (pathname === "/" || pathname === "/human" || pathname === "/mcp") return true;
+  if (pathname === "/bnb" || pathname === "/agent-router/bnb/golden-tasks") return true;
   if (pathname.startsWith("/services")) return true;
   if (pathname.startsWith("/connector/")) return true;
   if (pathname.startsWith("/provider/")) return true;
@@ -704,7 +706,19 @@ async function routeRequest(req, res, store, baseUrl, {
               },
               result,
               evidence: artifacts.evidence,
-              consumer_feedback_request: consumerFeedbackRequest
+              consumer_feedback_request: consumerFeedbackRequest,
+              judge_summary: createBnbHireSummary({
+                agent,
+                capability: policy.capability,
+                dispatch: {
+                  adapter: protocol,
+                  payment: "none_declared",
+                  execution: "direct_http"
+                },
+                result,
+                evidence: artifacts.evidence,
+                feedbackRequest: consumerFeedbackRequest
+              })
             },
             invocation: artifacts.invocation
           };
@@ -1274,6 +1288,20 @@ async function routeRequest(req, res, store, baseUrl, {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/agent-router/bnb/golden-tasks") {
+    await loadProviderConfigs(store, baseUrl, { validate: false });
+    const tasks = listBnbGoldenTasks([...store.services.values()]);
+    sendJson(res, 200, {
+      golden_task_list_version: "agent_router_bnb_golden_tasks_v1",
+      chain_id: 56,
+      total: tasks.length,
+      tasks
+    }, {
+      "cache-control": "no-store"
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/agent-router/service-categories") {
     await loadProviderConfigs(store, baseUrl, { validate: false });
     sendJson(res, 200, {
@@ -1327,6 +1355,11 @@ async function routeRequest(req, res, store, baseUrl, {
 
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
     sendHtml(res, 200, homeHtml({ auth }));
+    return;
+  }
+
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/bnb") {
+    sendHtml(res, 200, bnbMarketplaceHtml({ auth }));
     return;
   }
 

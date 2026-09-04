@@ -186,6 +186,13 @@ test("successful ERC-8004 direct hire durably records invocation/evidence and re
     assert.match(payload.evidence.trace_hash, /^0x[0-9a-f]{64}$/);
     assert.equal(payload.consumer_feedback_request.request_id, payload.request_id);
     assert.ok(payload.consumer_feedback_request.feedback_token);
+    assert.equal(payload.judge_summary.summary_version, "agent_router_bnb_hire_summary_v1");
+    assert.equal(payload.judge_summary.selected_agent.agent_id, "42");
+    assert.equal(payload.judge_summary.agent_identity.agent_id, "42");
+    assert.equal(payload.judge_summary.capability, "account_health");
+    assert.equal(payload.judge_summary.feedback.status, "consumer_feedback_requested");
+    assert.equal(payload.judge_summary.feedback_status, "consumer_feedback_requested");
+    assert.equal(payload.judge_summary.evidence.trace_hash, payload.evidence.trace_hash);
 
     assert.equal(store.evidenceEvents.some((event) => event.request_id === payload.request_id), true);
     assert.equal(store.feedbackEvents.some((event) => event.request_id === payload.request_id), true);
