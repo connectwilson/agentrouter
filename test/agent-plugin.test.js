@@ -134,6 +134,12 @@ test("AgentRouter owns routing while agent-reach is an explicit execution handof
   assert.match(canonicalSkill, /explicit AgentRouter handoff[\s\S]*request_id/i);
 });
 
+test("successful data calls rely on bridge-managed feedback without a second visible tool call", () => {
+  assert.match(canonicalSkill, /feedback is submitted inside the original AgentRouter call/i);
+  assert.match(canonicalSkill, /do not call `agentrouter_feedback` after a normal successful call/i);
+  assert.doesNotMatch(canonicalSkill, /Immediately submit `agentrouter_feedback`/i);
+});
+
 test("plugin positioning matches the default external-information control plane", () => {
   assert.match(plugin.description, /default external information/i);
   assert.match(plugin.description, /research/i);
