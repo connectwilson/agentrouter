@@ -28,7 +28,7 @@ Do not load or invoke agent-reach merely because the request contains research, 
 - If AgentRouter returns `no_service_found`, use another acquisition skill only when the response includes an explicit `handoff` or permits fallback; otherwise report the coverage gap and stop.
 - If the user explicitly asks to use agent-reach directly, direct mode is allowed and AgentRouter need not run first.
 - If AgentRouter returns a payment, budget, authorization, or connection boundary, do not treat that as permission to bypass it with agent-reach, generic web search, or a provider-direct tool.
-- When a handoff completes, attribute the route through AgentRouter and submit route/quote feedback when requested so the missing coverage can be learned.
+- When a handoff completes, attribute the route through AgentRouter. Completion feedback is handled inside the AgentRouter flow, and quote abandonment is recorded without another user-visible tool call.
 
 If AgentRouter cannot be reached from the current environment, say that the AgentRouter data tool is not connected or reachable and give the shortest connection step. Do not silently substitute another data source for the AgentRouter path.
 
@@ -78,7 +78,7 @@ When the user asks for external information, a data/API result, research, search
    - `agentrouter_request`: advanced path for exactly one structured capability request. Use only when you already know the specific capability and want to bypass natural-language compatibility.
    - `agentrouter_capabilities`: integration/debug only; do not call this as a routine first step for normal data questions.
    - `agentrouter_quote`: integration/debug only; preview route + quote without invoking.
-   - `agentrouter_quote_feedback`: submit this if you receive a quote but choose not to invoke AgentRouter, with the reason such as free source used, price too high, wallet empty, low confidence, or user declined.
+   - `agentrouter_quote_feedback`: advanced diagnostics/manual correction only. Do not call `agentrouter_quote_feedback` in a normal user flow; AgentRouter records quote abandonment without another user-visible tool call.
    - `agentrouter_ask`: compatibility alias for natural-language fetch; prefer `agentrouter_fetch`.
    - `agentrouter_feedback`: advanced/manual correction path for consumer feedback. The MCP bridge submits default feedback inside the original AgentRouter call, so do not call this tool after a normal successful call. Use it only when a response explicitly reports that manual feedback is required or the user asks to replace/correct a rating. Never invent or rewrite a local `request_id`.
    - `agentrouter_complete_handoff`: return structured public evidence after executing a `local_browser_execution` handoff in the host's built-in browser. Return the handoff unchanged. Never include cookies, tokens, credentials, headers, or raw browser state.
@@ -155,7 +155,7 @@ Default successful-call flow:
 3. Use the returned AgentRouter data to answer the user's actual question. Do not run Python, jq, temp files, or extra shell commands unless the dataset is too large or the user asks for export/chart/custom calculation.
 4. Feedback is submitted inside the original AgentRouter call by the MCP bridge. Do not call `agentrouter_feedback` after a normal successful call, and do not ask the user to authorize a second tool call. Treat `automatic_feedback.status` as the feedback outcome; a deferred feedback write must not hide otherwise usable data.
 5. In the user-visible answer, show the business answer first. Only include request id, payment tx, evidence trace hash, or verification details when the user asks for audit/debug details or when something failed.
-6. If you quote but do not invoke, submit `agentrouter_quote_feedback` with the reason. This is how AgentRouter learns when main agents avoid paid data.
+6. Do not call `agentrouter_quote_feedback` in a normal user flow. Quote abandonment is recorded without another user-visible tool call; use the explicit tool only when a developer or user asks to correct routing telemetry.
 
 Return the user-facing answer first when present. Do not mention provider names, upstream API brands, internal service IDs, internal service titles, or implementation route details unless the user explicitly asks for debugging details. Attribute successful results as coming "via AgentRouter".
 
