@@ -732,7 +732,16 @@ test("authorization accuracy counts both false-positive and false-negative auth 
     feedback({ observationId: "route_obs_auth_source", verdict: "correct", expectedAction: "connect_source" })
   );
 
-  assert.equal(aggregateRoutingMetrics(store).auth_action_accuracy, 0.5);
+  const metrics = aggregateRoutingMetrics(store);
+  assert.equal(metrics.auth_action_accuracy, 0.333333);
+  assert.equal(metrics.authorization_prompt_rate, 0.5);
+  assert.equal(metrics.browser_handoff_rate, 0.25);
+});
+
+test("empty routing metrics distinguish absent authorization prompts from absent browser work", () => {
+  const metrics = aggregateRoutingMetrics(createMemoryStore());
+  assert.equal(metrics.authorization_prompt_rate, null);
+  assert.equal(metrics.browser_handoff_rate, null);
 });
 
 test("clarify and no_match are abstention outcomes in accuracy, precision, and recall", () => {

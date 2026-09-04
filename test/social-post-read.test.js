@@ -169,6 +169,15 @@ test("hosted fetch selects a declared native browser without requiring OpenCLI",
     assert.deepEqual(payload.handoff.fallback_adapters, []);
     assert.equal(payload.handoff.fallback, undefined);
     assert.equal(payload.fallback_allowed, false);
+    assert.deepEqual(payload.route_plan.auth_requirement, {
+      required: false,
+      kind: "none",
+      source: null
+    });
+    assert.equal(payload.action_required.interaction_kind, "browser_execution");
+    assert.equal(payload.action_required.authorization_kind, "none");
+    assert.equal(payload.action_required.requires_user_authorization, false);
+    assert.equal(payload.action_required.uses_existing_browser_session, true);
     assert.match(payload.action_required.message, /built-in browser/i);
     assert.doesNotMatch(payload.action_required.message, /install|restart/i);
   } finally {
