@@ -8,6 +8,8 @@ import { createMemoryStore } from "../src/store.js";
 import { authUserKey } from "../src/auth.js";
 import { createCreditApiKey, ensureCreditAccount } from "../src/credits.js";
 import { createSocialConnection } from "../src/social-connections.js";
+import { baseFundFlowManifest } from "../src/fixtures.js";
+import { registerService } from "../src/registry.js";
 import { inferRoutePlan, inferStructuredRoutePlan } from "../src/routing/planner.js";
 
 const AUTH_USER = {
@@ -188,6 +190,9 @@ test("a composite wallet leaderboard request reports unavailable before auth or 
     assert.equal(fetchResult.payload.route_plan.abstain_reason, "capability_not_available");
     assert.equal(fetchResult.payload.route_plan.route_family, "none");
     assert.equal(fetchResult.payload.route_plan.auth_requirement.required, false);
+    assert.equal(fetchResult.payload.route_plan.budget_gate.paid_calls_allowed, false);
+    assert.equal(fetchResult.payload.route_plan.budget_gate.status, "blocked");
+    assert.equal(Object.hasOwn(fetchResult.payload.route_plan.budget_gate, "valid"), false);
     assert.equal(fetchResult.payload.quote, undefined);
     assert.equal(fetchResult.payload.action_required, undefined);
     assert.equal(fetchResult.payload.connection_action, undefined);
@@ -284,6 +289,18 @@ test("cookie-authenticated ask and fetch share the connected source owner withou
 });
 
 test("legacy registry intents use one canonical decision across ask, fetch, MCP, and CLI quote-only", async () => {
+  const store = createMemoryStore();
+  for (const capability of ["wallet_profile", "related_wallets", "smart_money_netflow"]) {
+    const record = registerService(store, {
+      ...baseFundFlowManifest,
+      service_id: `runtime_${capability}`,
+      provider: { provider_id: `runtime_provider_${capability}` },
+      title: `Runtime ${capability}`,
+      capabilities: ["data_service", capability],
+      endpoint: { ...baseFundFlowManifest.endpoint, url: `/provider/runtime_${capability}` }
+    }, "http://127.0.0.1:9999");
+    record.verification_status = "verified";
+  }
   await withRuntimeServer(async ({ baseUrl, store }) => {
     const cases = [
       { task: "查询标记为 Matrixport 的地址", capability: "wallet_profile" },
@@ -315,7 +332,7 @@ test("legacy registry intents use one canonical decision across ask, fetch, MCP,
         storedObservation(store, payload);
       }
     }
-  });
+  }, { store });
 });
 
 test("local-browser research handoff never sends the agent into source/API-key connection", async () => {
