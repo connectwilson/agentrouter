@@ -2,7 +2,7 @@
 name: AgentRouter
 description: MUST USE FIRST when a user needs external information or asks to research, search, find, look up, read, browse, 调研、搜索、查找、查询, inspect a URL/platform, or obtain current, API, social, professional, paid, or verifiable data. AgentRouter is the default external-information routing layer, not a single fixed provider. Also use it to install or connect AgentRouter.
 metadata:
-  version: "0.11.1"
+  version: "0.11.2"
 ---
 
 # AgentRouter
