@@ -38,10 +38,17 @@ test("publishable MCP behavior ships under one new consistent version", async ()
   const manifest = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package.json", "utf8"));
   const lock = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package-lock.json", "utf8"));
   const server = await fs.readFile("packages/agentrouter-mcp/server/index.js", "utf8");
-  assert.equal(manifest.version, "0.14.1");
+  assert.equal(manifest.version, "0.14.2");
   assert.equal(lock.version, manifest.version);
   assert.equal(lock.packages[""].version, manifest.version);
   assert.match(server, new RegExp(`serverInfo: \\{ name: "AgentRouter", version: "${manifest.version.replaceAll(".", "\\.")}" \\}`));
+});
+
+test("published AgentRouter skill advertises the capability-preflight release", async () => {
+  const canonical = await fs.readFile("claude-skills/agent-router/SKILL.md", "utf8");
+  const plugin = await fs.readFile("plugin/skills/agentrouter/SKILL.md", "utf8");
+  assert.match(canonical, /version: ["']?0\.11\.2["']?/);
+  assert.equal(plugin, canonical);
 });
 
 test("Render explicitly configures ERC-8004 rollout and verification lifetime", async () => {
