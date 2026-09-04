@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createPaymentQuote } from "../src/payment-adapter.js";
-import { inferIntent } from "../src/agent-router.js";
+import { inferIntent, intentToCapabilityRequest } from "../src/agent-router.js";
 import { buildInput, quoteCapabilityRequest, normalizeTaskIntent, summarizeCandidates } from "../src/router.js";
 import { createMemoryStore } from "../src/store.js";
 
@@ -34,6 +34,29 @@ test("natural-language fetch intent preserves a compact perpetual trading pair",
   assert.equal(intent.input.asset, "HFT");
   assert.equal(intent.input.trading_pair, "HFTUSDT");
   assert.equal(intent.input.quote_asset, "USDT");
+});
+
+test("wallet leaderboard result count is not stolen by the time-window number", () => {
+  const cases = [
+    {
+      task: "hyperliquid现在上了哪些ronbinhood的代币，这些代币里，最近48小时盈利榜前5的地址是什么",
+      limit: 5,
+      window: "48h"
+    },
+    {
+      task: "Show the top 10 profitable Hyperliquid wallets over the last 24 hours",
+      limit: 10,
+      window: "24h"
+    }
+  ];
+
+  for (const entry of cases) {
+    const intent = inferIntent(entry.task);
+    const request = intentToCapabilityRequest(intent);
+    assert.equal(request.capability, "wallet_pnl_leaderboard");
+    assert.equal(request.params.limit, entry.limit, entry.task);
+    assert.equal(request.params.window, entry.window, entry.task);
+  }
 });
 
 test("a quote distinguishes budget authorization from an available payment executor", () => {
