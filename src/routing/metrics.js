@@ -17,7 +17,7 @@ const ROUTING_ACTIONS = new Set([
 
 const ROUTING_VERDICTS = new Set(["correct", "incorrect"]);
 const ABSTENTION_ACTIONS = new Set(["abstain", "clarify", "no_match"]);
-const AUTHORIZATION_ACTIONS = new Set(["connect_account", "connect_source", "browser_handoff"]);
+const AUTHORIZATION_ACTIONS = new Set(["connect_account", "connect_source"]);
 const BUDGET_OUTCOMES = new Set(["route", "blocked", "quote_required"]);
 const routingFeedbackQueues = new WeakMap();
 
@@ -164,6 +164,14 @@ export function aggregateRoutingMetrics(store, {
       observation.action === feedback.expected_action
       && (!feedback.expected_source_family || observation.source_family === feedback.expected_source_family)
     )),
+    authorization_prompt_rate: ratio(
+      observations.filter((observation) => AUTHORIZATION_ACTIONS.has(observation.action)).length,
+      observations.length
+    ),
+    browser_handoff_rate: ratio(
+      observations.filter((observation) => observation.action === "browser_handoff").length,
+      observations.length
+    ),
     budget_violation_rate: rate(executedBudgetPairs.map((observation) => budgetExceeded(observation.budget))),
     budget_guard_accuracy: rate(budgetGuardPairs.map(({ observation, feedback }) =>
       observedBudgetOutcome(observation) === feedback.expected_budget_outcome

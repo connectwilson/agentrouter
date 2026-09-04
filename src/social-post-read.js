@@ -155,6 +155,12 @@ function localConnectorRequired(parsed, attempts, consumerContext = {}) {
     },
     action_required: {
       code: "LOCAL_CONNECTOR_REQUIRED",
+      ...(nativeBrowser ? {
+        interaction_kind: "browser_execution",
+        authorization_kind: "none",
+        requires_user_authorization: false,
+        uses_existing_browser_session: true
+      } : {}),
       message: nativeBrowser
         ? "Read this X post with the AI client's built-in browser, then return the structured result through agentrouter_complete_handoff. Browser login remains local."
         : "Read this X post through the AgentRouter MCP bridge on the user's device, where the browser login remains local.",

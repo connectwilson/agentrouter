@@ -45,6 +45,7 @@ export async function runRemoteAgentRouterFetch(store, args = {}, {
   let routePlan = !requirements.length && task
     ? canonicalRoutePlan(store, task, { ownerKey, maxPrice, budgetExplicit: outerBudgetExplicit })
     : null;
+  routePlan = withDeclaredNativeBrowserSession(routePlan, args.consumer_context);
   if (requirements.length) {
     const structuredRequests = requirements.map((requirement) =>
       requirementToCapabilityRequest(requirement, args, { maxPrice, currency })
@@ -248,6 +249,10 @@ export function nativeBrowserRouteHandoff(routePlan, consumerContext, task) {
     request: handoff.request,
     action_required: {
       code: "LOCAL_BROWSER_EXECUTION_REQUIRED",
+      interaction_kind: "browser_execution",
+      authorization_kind: "none",
+      requires_user_authorization: false,
+      uses_existing_browser_session: true,
       message: "Use the AI client's built-in browser for this read-only request, then return structured public evidence through agentrouter_complete_handoff.",
       reload_after_bridge_update: false
     },
@@ -262,6 +267,16 @@ export function nativeBrowserRouteHandoff(routePlan, consumerContext, task) {
       permissions: { access: "read_only", write_actions: "denied" },
       data_policy: { credentials: "never_upload", raw_results: "never_upload" }
     }
+  };
+}
+
+function withDeclaredNativeBrowserSession(routePlan, consumerContext) {
+  if (routePlan?.route_family !== "local_browser") return routePlan;
+  const operation = String(routePlan.params?.operation || (routePlan.task_family === "social_post_read" ? "read_post" : "search"));
+  if (!hasNativeBrowserCapability(consumerContext, operation)) return routePlan;
+  return {
+    ...routePlan,
+    auth_requirement: { required: false, kind: "none", source: null }
   };
 }
 
