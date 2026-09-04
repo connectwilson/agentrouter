@@ -174,6 +174,27 @@ test("anonymous ask and fetch agree on the real connect-account action and obser
   });
 });
 
+test("a composite wallet leaderboard request reports unavailable before auth or payment", async () => {
+  await withRuntimeServer(async ({ baseUrl, store }) => {
+    const task = "hyperliquid现在上了哪些ronbinhood的代币，这些代币里，最近48小时盈利榜前5的地址是什么";
+    const fetchResult = await postJson(baseUrl, "/agent-router/fetch", { task, max_price: "0.05" });
+
+    assert.equal(fetchResult.response.status, 422);
+    assert.equal(fetchResult.payload.status, "capability_not_available");
+    assert.equal(fetchResult.payload.capability, "wallet_pnl_leaderboard");
+    assert.equal(fetchResult.payload.execution_available, false);
+    assert.equal(fetchResult.payload.must_not_execute, true);
+    assert.equal(fetchResult.payload.must_not_request_payment_authorization, true);
+    assert.equal(fetchResult.payload.route_plan.abstain_reason, "capability_not_available");
+    assert.equal(fetchResult.payload.route_plan.route_family, "none");
+    assert.equal(fetchResult.payload.route_plan.auth_requirement.required, false);
+    assert.equal(fetchResult.payload.quote, undefined);
+    assert.equal(fetchResult.payload.action_required, undefined);
+    assert.equal(fetchResult.payload.connection_action, undefined);
+    assert.equal(storedObservation(store, fetchResult.payload).action, "no_match");
+  });
+});
+
 test("CLI quote-only uses the canonical ask entrypoint instead of legacy agent-reach routing", async () => {
   await withRuntimeServer(async ({ baseUrl }) => {
     const task = "使用 Bright Data 搜索 AgentRouter";

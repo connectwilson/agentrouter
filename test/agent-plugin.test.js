@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { remoteMcpTools } from "../packages/agentrouter-mcp/server/tool-catalog.js";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginDir = path.join(here, "..", "plugin");
 const fixtureDir = path.join(here, "fixtures", "agent-plugins");
@@ -109,6 +111,14 @@ test("AgentRouter is the first hop for external information instead of only spec
   assert.match(canonicalSkill, /public web.*AgentRouter/i);
   assert.match(canonicalSkill, /max_price[^\n]*0/);
   assert.doesNotMatch(canonicalSkill, /Use generic web search only for broad public web lookup/i);
+});
+
+test("AgentRouter preflight never lets the agent promise route availability before discovery", () => {
+  const fetchTool = remoteMcpTools.find((tool) => tool.name === "agentrouter_fetch");
+  assert.match(fetchTool.description, /do not claim.*available.*before.*response/i);
+  assert.match(canonicalSkill, /do not promise.*route.*available.*before.*response/i);
+  assert.match(canonicalSkill, /capability_not_available/);
+  assert.match(canonicalSkill, /must_not_request_payment_authorization/);
 });
 
 test("AgentRouter policy never conflates account login with source credentials", () => {

@@ -25,6 +25,7 @@ function contextFor(entry) {
     agentrouter_authenticated: entry.context?.account_state === "connected",
     connected_sources: connected,
     local_browser_sessions: browserSessions,
+    registered_capabilities: entry.context?.registered_capabilities,
     require_price_upper_bound: expected.max_price_usdc !== null,
     constraints: {
       max_price_usdc: expected.max_price_usdc ?? "0.05"
@@ -38,7 +39,8 @@ function decisionFromPlan(entry, plan, entrypoint) {
     "price_unknown",
     "invalid_budget",
     "unsupported_source",
-    "source_not_callable"
+    "source_not_callable",
+    "capability_not_available"
   ].includes(plan.abstain_reason);
   const action = blocked
     ? "no_match"
