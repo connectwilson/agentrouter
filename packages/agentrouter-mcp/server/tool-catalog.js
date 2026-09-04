@@ -109,6 +109,12 @@ export const remoteMcpTools = [
   {
     name: "agentrouter_feedback",
     description: "Submit post-call consumer feedback after deciding whether an AgentRouter result helped answer the user's task.",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    },
     inputSchema: {
       type: "object",
       required: ["request_id", "feedback"],

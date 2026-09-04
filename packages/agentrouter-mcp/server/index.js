@@ -124,8 +124,9 @@ async function forwardRequest(message) {
     }
     const browserCompletion = localBrowserCompletionRequest(message);
     if (browserCompletion) {
-      const result = decorateStandaloneLocalResult(completeLocalBrowserHandoff(browserCompletion));
+      let result = decorateStandaloneLocalResult(completeLocalBrowserHandoff(browserCompletion));
       await attachLocalFeedbackGrant(result);
+      result = await autoSubmitStandaloneFeedback(message, result);
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -139,12 +140,13 @@ async function forwardRequest(message) {
     const localStructuredSocial = await handleLocalStructuredSocialBatchRequest(message);
     if (localStructuredSocial) {
       await attachLocalFeedbackGrant(localStructuredSocial);
+      const result = await autoSubmitStandaloneFeedback(message, localStructuredSocial);
       send({
         jsonrpc: "2.0",
         id: message.id,
         result: {
-          content: [{ type: "text", text: JSON.stringify(localStructuredSocial, null, 2) }],
-          isError: localStructuredSocial.ok === false
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          isError: result.ok === false
         }
       });
       return;
@@ -165,8 +167,9 @@ async function forwardRequest(message) {
         });
         return;
       }
-      const result = decorateStandaloneLocalResult(await runLocalSocialSearch(localSearch));
+      let result = decorateStandaloneLocalResult(await runLocalSocialSearch(localSearch));
       await attachLocalFeedbackGrant(result);
+      result = await autoSubmitStandaloneFeedback(message, result);
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -192,8 +195,9 @@ async function forwardRequest(message) {
         });
         return;
       }
-      const result = decorateStandaloneLocalResult(await runLocalSocialPostRead(localSocialPost.canonical_url));
+      let result = decorateStandaloneLocalResult(await runLocalSocialPostRead(localSocialPost.canonical_url));
       await attachLocalFeedbackGrant(result);
+      result = await autoSubmitStandaloneFeedback(message, result);
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -262,6 +266,7 @@ async function forwardRequest(message) {
       });
       return;
     }
+    await autoSubmitConsumerFeedback(message, payload);
     await completeSponsoredFeedback(message, payload);
     if (attachedFeedbackRequestId && !payload.error && payload.result?.isError !== true) {
       localFeedbackTokens.delete(attachedFeedbackRequestId);
@@ -285,6 +290,149 @@ async function forwardRequest(message) {
       }
     });
   }
+}
+
+async function autoSubmitStandaloneFeedback(message, result) {
+  const payload = {
+    result: {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      isError: result?.ok === false
+    }
+  };
+  await autoSubmitConsumerFeedback(message, payload);
+  return safeJson(payload.result.content[0].text) || result;
+}
+
+async function autoSubmitConsumerFeedback(message, payload) {
+  const toolName = message?.params?.name;
+  if (message?.method !== "tools/call" || !automaticFeedbackSourceTools.has(toolName)) return;
+  const block = payload?.result?.content?.find((item) => item?.type === "text" && item.text);
+  if (!block) return;
+  const value = safeJson(block.text);
+  if (!value || typeof value !== "object") return;
+  const targets = feedbackTargets(value);
+  if (!targets.length) return;
+
+  for (let index = 0; index < targets.length; index += 1) {
+    const target = targets[index];
+    const request = target.consumer_feedback_request;
+    if (!request || request.must_submit === false || target.automatic_feedback?.ok === true) continue;
+    const feedbackMessage = {
+      jsonrpc: "2.0",
+      id: `${message.id}:automatic-feedback:${index + 1}`,
+      method: "tools/call",
+      params: {
+        name: "agentrouter_feedback",
+        arguments: automaticFeedbackArguments(target, request)
+      }
+    };
+    try {
+      const response = await postRemote(feedbackMessage);
+      const feedbackPayload = safeJson(await response.text());
+      if (!response.ok || feedbackPayload?.error || feedbackPayload?.result?.isError === true) {
+        throw new Error(feedbackPayload?.error?.message || `HTTP ${response.status}`);
+      }
+      await completeSponsoredFeedback(feedbackMessage, feedbackPayload);
+      const feedbackBlock = feedbackPayload?.result?.content?.find((item) => item?.type === "text" && item.text);
+      const recorded = safeJson(feedbackBlock?.text || "");
+      if (!recorded || recorded.ok === false) throw new Error(recorded?.error?.message || recorded?.status || "feedback_not_recorded");
+      target.automatic_feedback = recorded;
+      target.consumer_feedback_request = completedFeedbackRequest(request, "auto_submitted");
+    } catch (error) {
+      target.automatic_feedback = {
+        ok: false,
+        status: "auto_feedback_deferred",
+        recorded_offchain: false,
+        retryable: true,
+        error: String(error?.message || error).slice(0, 240)
+      };
+      target.consumer_feedback_request = completedFeedbackRequest(request, "auto_deferred");
+    }
+  }
+
+  const settled = targets.every((target) => target.consumer_feedback_request?.must_submit === false);
+  if (settled) {
+    if (Object.hasOwn(value, "feedback_required")) value.feedback_required = false;
+    if (typeof value.next_required_action === "string" && /agentrouter_feedback/i.test(value.next_required_action)) {
+      value.next_required_action = null;
+    }
+  }
+  block.text = JSON.stringify(value, null, 2);
+}
+
+const automaticFeedbackSourceTools = new Set([
+  "agentrouter_fetch",
+  "agentrouter_request",
+  "agentrouter_ask",
+  "agentrouter_complete_handoff"
+]);
+
+function feedbackTargets(value) {
+  const targets = [];
+  const seen = new Set();
+  const visit = (candidate) => {
+    if (!candidate || typeof candidate !== "object") return;
+    const requestId = candidate.consumer_feedback_request?.request_id || candidate.request_id;
+    if (candidate.consumer_feedback_request && requestId && !seen.has(requestId)) {
+      seen.add(requestId);
+      targets.push(candidate);
+    }
+    for (const [key, nested] of Object.entries(candidate)) {
+      if (["consumer_feedback_request", "automatic_feedback"].includes(key)) continue;
+      if (Array.isArray(nested)) nested.forEach(visit);
+      else if (nested && typeof nested === "object") visit(nested);
+    }
+  };
+  visit(value);
+  return targets;
+}
+
+function automaticFeedbackArguments(target, request) {
+  const usable = automaticResultUsable(target);
+  const verification = target.verification || {};
+  const qualityScore = Number(verification.overall_quality_score);
+  return {
+    request_id: request.request_id || target.request_id,
+    service_id: request.service_id || target.service_id,
+    ...(request.feedback_token ? { feedback_token: request.feedback_token } : {}),
+    feedback: {
+      intent_fit: verification.coverage_valid === false ? "partial" : usable ? "yes" : "no",
+      answer_useful: usable ? "yes" : "no",
+      ...(Number.isFinite(qualityScore) ? { data_quality_score: qualityScore } : {}),
+      used_in_final_answer: null,
+      confidence: Number.isFinite(qualityScore) ? 0.85 : 0.7,
+      reason: usable
+        ? "Automatic post-call assessment found usable data for the routed request."
+        : "Automatic post-call assessment found no usable data for the routed request."
+    }
+  };
+}
+
+function automaticResultUsable(target) {
+  if (target?.ok === false || ["no_results", "no_data_returned", "invoke_failed", "route_failed"].includes(target?.status)) return false;
+  const result = target?.result;
+  if (result === undefined || result === null) return false;
+  if (Array.isArray(result)) return result.length > 0;
+  if (typeof result !== "object") return true;
+  if (Array.isArray(result.items)) return result.items.length > 0;
+  if (Number.isFinite(Number(result.count))) return Number(result.count) > 0;
+  if (Number.isFinite(Number(result.item_count))) return Number(result.item_count) > 0;
+  if (Object.hasOwn(result, "data")) return Array.isArray(result.data) ? result.data.length > 0 : result.data != null;
+  return Object.keys(result).length > 0;
+}
+
+function completedFeedbackRequest(request, status) {
+  const completed = {
+    ...request,
+    must_submit: false,
+    timing: "submitted_with_original_call",
+    status
+  };
+  delete completed.tool;
+  delete completed.instructions;
+  delete completed.example;
+  delete completed.submit_to;
+  return completed;
 }
 
 async function openSourceAccessPage(clientAction, originalRequest) {
