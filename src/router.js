@@ -931,7 +931,8 @@ export function quoteCapabilityRequest(store, {
   if (capability === "token_holders") {
     const planned = planHolderWorkflow(store, intent, normalizedConstraints);
     if (planned.quote) recordIssuedQuote(store, planned.quote, actorKey, writeEvent);
-    return { ...planned, request: { capability, params, constraints: normalizedConstraints }, selected_service: planned.selected,
+    const { resolver, selected, holder_price: holderPrice, ...publicPlan } = planned;
+    return { ...publicPlan, request: { capability, params, constraints: normalizedConstraints }, selected_service: selected,
       input: holderInput(intent), ...(planned.resolver ? { token_resolution: { status: "required", resolver_service_id: planned.resolver.service_id, exact_chain_required: true } } : {}) };
   }
   const candidateConstraints = constraintsWithoutBudgetGuard(normalizedConstraints);

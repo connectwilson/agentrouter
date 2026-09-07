@@ -28,6 +28,7 @@ export function parseHolderTask(text) {
 
 export function validateHolderParams(params) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return { ok: false, error: "INVALID_PARAMS" };
+  if (["date", "from", "to", "window", "timeframe", "snapshot_required"].some(key => params[key] != null && params[key] !== "current")) return { ok: false, error: "HISTORICAL_HOLDERS_NOT_SUPPORTED", message: "This holder contract provides current balances, not historical snapshots." };
   const chain = holderChain(params.chain);
   if (!chain) return { ok: false, error: "MISSING_REQUIRED_PARAM", missing: ["chain"] };
   if (!HOLDER_CHAINS.includes(chain)) return { ok: false, error: "CHAIN_NOT_SUPPORTED", chain, supported_chains: HOLDER_CHAINS };
