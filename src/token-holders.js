@@ -23,7 +23,8 @@ export function parseHolderTask(text) {
   const chineseCount = chinese === "一百" || chinese === "百" ? 100 : chinese?.includes("十")
     ? (digits.indexOf(chinese.split("十")[0]) || 1) * 10 + digits.indexOf(chinese.split("十")[1])
     : chinese ? digits.indexOf(chinese) : 10;
-  return { query: text, chain: chains.length === 1 ? chains[0] : "", ...(tokenAddress ? { token_address: tokenAddress } : { token_symbol: symbol?.toUpperCase() }), limit: count ? Number(count) : chineseCount };
+  const historical = /去年|昨天|昨日|历史|歷史|快照|\b(?:historical|snapshot|yesterday|last year)\b|\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/i.test(text);
+  return { query: text, chain: chains.length === 1 ? chains[0] : "", ...(tokenAddress ? { token_address: tokenAddress } : { token_symbol: symbol?.toUpperCase() }), limit: count ? Number(count) : chineseCount, ...(historical ? { snapshot_required: true } : {}) };
 }
 
 export function validateHolderParams(params) {

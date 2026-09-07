@@ -9,6 +9,7 @@ import { writePersistentServiceEvent } from "./persistence.js";
 import { createCompactResult } from "./compact-result.js";
 import { validateJsonSchema } from "./schema.js";
 import { HOLDER_CHAINS, holderChain, holderInput, matchHolderToken, validateHolderParams } from "./token-holders.js";
+import { creditsToAtomic, atomicToCredits } from "./credits.js";
 
 export const ROUTER_STATUSES = {
   READY: "ready_to_route",
@@ -715,6 +716,7 @@ export async function routeCapabilityRequest(store, {
       ok: false,
       status: "route_failed",
       request,
+      ...(holderWorkflow ? { token_resolution: tokenResolution, workflow_quote: holderWorkflow.quote } : {}),
       selected_service: selected,
       input,
       quote,
@@ -1917,6 +1919,14 @@ function planHolderWorkflow(store, intent, constraints) {
   const selected = rankCandidates(store, intent, constraintsWithoutBudgetGuard(constraints))[0];
   if (!selected) return { ok: false, status: "no_match", message: "No verified holder endpoint covers the requested chain." };
   const manifest = store.services.get(selected.service_id).manifest;
+  const inputSchema = manifest.input_schema || {};
+  // Before paying for symbol resolution, validate all fields that are already
+  // known. Only the not-yet-resolved contract may be absent at this stage.
+  const preflightManifest = intent.token_address ? manifest : {
+    ...manifest, input_schema: { ...inputSchema, required: (inputSchema.required || []).filter(key => key !== "token_address") }
+  };
+  const preflight = validateManifestInput(preflightManifest, holderInput(intent));
+  if (!preflight.ok) return { ok: false, status: "preflight_validation_failed", preflight_validation: preflight, selected };
   const holderPrice = effectivePricing(manifest);
   let resolver = null;
   if (!intent.token_address) {
@@ -1934,7 +1944,12 @@ function planHolderWorkflow(store, intent, constraints) {
   const prices = [holderPrice, resolverPrice].filter(Boolean);
   if (manifest.pricing.currency !== "USDC" || (resolver && store.services.get(resolver.service_id).manifest.pricing.currency !== "USDC")
       || prices.some(price => !Number.isFinite(Number(price.amount)) || Number(price.amount) < 0)) return { ok: false, status: "price_unknown" };
-  const total = String(Number(prices.reduce((sum, price) => sum + Number(price.amount), 0).toFixed(8)));
+  let total;
+  try {
+    total = atomicToCredits(prices.reduce((sum, price) => sum + creditsToAtomic(price.amount, { allowZero: true }), 0));
+  } catch {
+    return { ok: false, status: "price_unknown", message: "Prices must be exact, bounded USDC amounts with at most six decimal places." };
+  }
   const quote = createPaymentQuote({ manifest: { ...manifest, pricing: { ...holderPrice, amount: total } }, constraints, selectedService: selected });
   quote.steps = [
     ...(resolver ? [{ service_id: resolver.service_id, operation: "resolve_token", amount: resolverPrice.amount }] : []),
