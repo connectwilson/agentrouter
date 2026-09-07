@@ -277,12 +277,14 @@ test("registered Nansen holder tasks share exact-chain quotes through HTTP and M
     store.services.clear();
     for (const [id, capabilities, input] of [
       ["nansen_tgm_holders", ["nansen", "token_holders"], { chain: "ethereum", token_address: `0x${"2".repeat(40)}` }],
+      ["nansen_prediction_market_top_holders", ["nansen", "token_holders", "holder_distribution", "prediction_market"], { market_id: "sample-market" }],
       ["nansen_search_general", ["nansen", "token_search", "entity_search"], { chain: "ethereum", search_query: "PEPE", result_type: "token", limit: 25 }]
     ]) {
       const manifest = structuredClone(baseFundFlowManifest);
-      Object.assign(manifest, { service_id: id, title: id, description_for_agent: id, capabilities, sample_request: input, input_schema: { type: "object" } });
+      Object.assign(manifest, { service_id: id, title: id, description_for_agent: id, capabilities, sample_request: input,
+        input_schema: { type: "object", properties: Object.fromEntries(Object.keys(input).map(key => [key, { type: typeof input[key] }])) } });
       manifest.provider.provider_id = "provider_nansen_api";
-      manifest.pricing.amount = "0.01";
+      manifest.pricing.amount = id === "nansen_prediction_market_top_holders" ? "0.0001" : "0.01";
       registerService(store, manifest, baseUrl).verification_status = "verified";
     }
     const task = "查robinhood链上PONS代币的前10大 token holder的地址";

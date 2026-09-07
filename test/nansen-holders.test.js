@@ -72,7 +72,7 @@ for (const [label, properties, capabilities] of [
     const manifest = structuredClone(store.services.get("nansen_tgm_holders").manifest);
     Object.assign(manifest, { service_id: "incompatible_top_holders", title: label, input_schema: { type: "object", properties },
       capabilities: [...manifest.capabilities, ...capabilities], endpoint: { method: "POST", url: "http://127.0.0.1/provider/incompatible_top_holders" } });
-    manifest.pricing.amount = "0";
+    manifest.pricing.amount = "0.0001";
     registerService(store, manifest, "http://127.0.0.1").verification_status = "verified";
     assert.deepEqual(rankCandidates(store, { capability: "token_holders", ...request().params }).map(x => x.service_id), ["nansen_tgm_holders"]);
     assert.equal(quoteCapabilityRequest(store, request()).selected_service.service_id, "nansen_tgm_holders");
