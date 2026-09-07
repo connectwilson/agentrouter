@@ -2,7 +2,8 @@ import { invokePaidService, searchServices } from "./registry.js";
 import { quoteCapabilityRequest, routeCapabilityRequest } from "./router.js";
 import { createPaymentQuote } from "./payment-adapter.js";
 import { agentRouterConnectionRequired, isAgentRouterCreditsQuote } from "./agentrouter-connection.js";
-import { inferExternalApiRequest } from "./external-api-capability.js";
+import { inferExternalApiRequest, isTokenHoldersQuery } from "./external-api-capability.js";
+import { parseHolderTask } from "./token-holders.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { deriveLiquidationHeatmapInsight, liquidationInsightSummary } from "./compact-result.js";
 
@@ -427,6 +428,7 @@ async function postAgentRouterDecision(baseUrl, path, body) {
 }
 
 export function inferIntent(task) {
+  if (isTokenHoldersQuery(task)) return { task, wants_token_holders: true, has_known_intent: true, input: parseHolderTask(task), search_queries: [task] };
   const tagMatch = task.match(/matrixport|binance|jump|wintermute|amber|okx|bybit/i);
   const tradingPair = detectTradingPair(task);
   const token = tradingPair?.base_asset || detectTokenSymbol(task);
@@ -1117,6 +1119,7 @@ function discoverServiceOptions(store, task, maxPrice) {
 }
 
 export function intentToCapabilityRequest(intent, { max_price: maxPrice } = {}) {
+  if (intent.wants_token_holders) return { capability: "token_holders", params: intent.input, constraints: { max_price_usdc: maxPrice ?? "0.05" } };
   if (intent.wants_wallet_pnl_leaderboard) {
     return {
       capability: "wallet_pnl_leaderboard",

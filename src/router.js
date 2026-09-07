@@ -8,6 +8,7 @@ import { summarizeHealth, summarizeProvenance, summarizeTrust } from "./store.js
 import { writePersistentServiceEvent } from "./persistence.js";
 import { createCompactResult } from "./compact-result.js";
 import { validateJsonSchema } from "./schema.js";
+import { HOLDER_CHAINS, holderChain, holderInput, matchHolderToken, validateHolderParams } from "./token-holders.js";
 
 export const ROUTER_STATUSES = {
   READY: "ready_to_route",
@@ -17,6 +18,15 @@ export const ROUTER_STATUSES = {
 };
 
 const CAPABILITY_ALIASES = [
+  {
+    capability: "token_holders", capabilities: ["token_holders", "holder_distribution"],
+    keywords: ["token holders", "持有人", "持币地址"],
+    agent_description: "Return the largest token-holder addresses by token balance on an explicit chain. Nansen Holders supports Robinhood. A symbol needs exact-chain contract resolution first; quote both calls before payment. Chain support does not guarantee any particular token is indexed.",
+    not_for: ["DEX pools", "profitable trader rankings", "wallet portfolio", "historical holder snapshots"],
+    input_schema: { type: "object", required: ["chain"], properties: { chain: { type: "string" }, token_symbol: { type: "string" }, token_address: { type: "string" }, limit: { type: "number" } } },
+    examples: [{ user_query: "查robinhood链上PONS代币的前10大 token holder的地址", request: { capability: "token_holders", params: { chain: "robinhood", token_symbol: "PONS", limit: 10 } } }],
+    defaultInput: holderInput
+  },
   {
     capability: "social_post_read",
     capabilities: ["social_post_read", "social_content", "data_service"],
@@ -544,7 +554,11 @@ export async function routeCapabilityRequest(store, {
     }, budgetValidation);
   }
   if (budgetValidation.present) normalizedConstraints.max_price_usdc = String(budgetValidation.amount);
-  const tokenResolution = await resolveStructuredTokenIfNeeded(store, intent, normalizedConstraints, budget, options);
+  const holderWorkflow = capability === "token_holders" ? planHolderWorkflow(store, intent, normalizedConstraints) : null;
+  if (holderWorkflow?.ok === false) return { ...holderWorkflow, request: { capability, params, constraints: normalizedConstraints } };
+  const tokenResolution = holderWorkflow?.resolver
+    ? await resolveHolderToken(store, intent, holderWorkflow, options)
+    : await resolveStructuredTokenIfNeeded(store, intent, normalizedConstraints, budget, options);
   if (tokenResolution?.ok === false) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
     const observation = await recordRouteObservation(store, {
@@ -567,7 +581,7 @@ export async function routeCapabilityRequest(store, {
     };
   }
   if (tokenResolution?.intent) intent = tokenResolution.intent;
-  const candidates = rankCandidates(store, intent, normalizedConstraints);
+  const candidates = holderWorkflow ? [holderWorkflow.selected] : rankCandidates(store, intent, normalizedConstraints);
   if (!candidates.length) {
     const request = { capability, params, constraints: normalizedConstraints, consumer_context: consumerContext };
     const diagnostics = diagnoseNoMatch(store, { capability, params, constraints: normalizedConstraints });
@@ -681,7 +695,7 @@ export async function routeCapabilityRequest(store, {
     store,
     selected.service_id,
     input,
-    { max_amount: normalizedConstraints.max_price_usdc ?? "0.05", currency: budget.currency || "USDC" },
+    { max_amount: holderWorkflow?.holder_price ?? normalizedConstraints.max_price_usdc ?? "0.05", currency: budget.currency || "USDC" },
     options
   );
   if (invocation.statusCode >= 400) {
@@ -813,6 +827,7 @@ export async function routeCapabilityRequest(store, {
   return {
     ok: !qualityFailure,
     status: routeStatus,
+    ...(holderWorkflow ? { workflow_quote: holderWorkflow.quote } : {}),
     protocol: {
       protocol_version: "agent_router_request_v1",
       semantic_parser: "external_main_agent",
@@ -913,6 +928,12 @@ export function quoteCapabilityRequest(store, {
     }, budgetValidation);
   }
   if (budgetValidation.present) normalizedConstraints.max_price_usdc = String(budgetValidation.amount);
+  if (capability === "token_holders") {
+    const planned = planHolderWorkflow(store, intent, normalizedConstraints);
+    if (planned.quote) recordIssuedQuote(store, planned.quote, actorKey, writeEvent);
+    return { ...planned, request: { capability, params, constraints: normalizedConstraints }, selected_service: planned.selected,
+      input: holderInput(intent), ...(planned.resolver ? { token_resolution: { status: "required", resolver_service_id: planned.resolver.service_id, exact_chain_required: true } } : {}) };
+  }
   const candidateConstraints = constraintsWithoutBudgetGuard(normalizedConstraints);
   const candidates = rankCandidates(store, intent, candidateConstraints);
   if (!candidates.length) {
@@ -1283,6 +1304,11 @@ export function intentMismatchPenalty(trust, { weight = 0.35, cap = 0.45 } = {})
 
 function scoreCandidate(record, intent, requiredCapabilities, constraints, matchScore) {
   const manifest = record.manifest;
+  if (intent.capability === "token_holders") {
+    const chain = holderChain(intent.chain);
+    const declared = manifest.input_schema?.properties?.chain?.enum;
+    if (chain && (!HOLDER_CHAINS.includes(chain) || (declared && !declared.map(holderChain).includes(chain)))) return { service_id: manifest.service_id, routing_score: 0 };
+  }
   const capabilityHits = requiredCapabilities.filter((capability) => manifest.capabilities.includes(capability)).length;
   if (!capabilityHits) return { service_id: manifest.service_id, routing_score: 0 };
 
@@ -1699,6 +1725,7 @@ async function persistRouterArtifact(writeEvent, entry) {
 }
 
 export function buildInput(manifest, intent) {
+  if (intent.capability === "token_holders") return holderInput(intent);
   const entry = CAPABILITY_ALIASES.find((item) => item.capability === intent.capability);
   if (!entry) {
     return {
@@ -1885,6 +1912,56 @@ async function resolveStructuredTokenIfNeeded(store, intent, constraints = {}, b
   };
 }
 
+function planHolderWorkflow(store, intent, constraints) {
+  const selected = rankCandidates(store, intent, constraintsWithoutBudgetGuard(constraints))[0];
+  if (!selected) return { ok: false, status: "no_match", message: "No verified holder endpoint covers the requested chain." };
+  const manifest = store.services.get(selected.service_id).manifest;
+  const holderPrice = effectivePricing(manifest);
+  let resolver = null;
+  if (!intent.token_address) {
+    // Prefer a resolver owned by the chosen data provider. Never substitute a
+    // broad web/news search for a token identity lookup.
+    resolver = pickTokenResolver(searchServices(store, { query: "token search", verifiedOnly: true }).filter(service => {
+      const candidate = store.services.get(service.service_id).manifest;
+      const chainEnum = candidate.input_schema?.properties?.chain?.enum;
+      return candidate.provider.provider_id === manifest.provider.provider_id
+        && (!chainEnum || chainEnum.map(holderChain).includes(holderChain(intent.chain)));
+    }));
+    if (!resolver) return { ok: false, status: "token_resolver_not_found", message: "No verified same-provider token resolver is available; supply the exact contract address." };
+  }
+  const resolverPrice = resolver ? effectivePricing(store.services.get(resolver.service_id).manifest) : null;
+  const prices = [holderPrice, resolverPrice].filter(Boolean);
+  if (manifest.pricing.currency !== "USDC" || (resolver && store.services.get(resolver.service_id).manifest.pricing.currency !== "USDC")
+      || prices.some(price => !Number.isFinite(Number(price.amount)) || Number(price.amount) < 0)) return { ok: false, status: "price_unknown" };
+  const total = String(Number(prices.reduce((sum, price) => sum + Number(price.amount), 0).toFixed(8)));
+  const quote = createPaymentQuote({ manifest: { ...manifest, pricing: { ...holderPrice, amount: total } }, constraints, selectedService: selected });
+  quote.steps = [
+    ...(resolver ? [{ service_id: resolver.service_id, operation: "resolve_token", amount: resolverPrice.amount }] : []),
+    { service_id: selected.service_id, operation: "token_holders", amount: holderPrice.amount }
+  ];
+  quote.prerequisites = resolver ? ["Exact chain + symbol must resolve to one contract; indexed holder availability is not guaranteed."] : [];
+  if (resolver) {
+    quote.agent_decision.can_answer = false;
+    quote.agent_decision.can_attempt = quote.would_pay;
+  }
+  return { ok: quote.would_pay, status: quote.would_pay ? "quoted" : "quote_blocked", quote, selected, resolver, holder_price: holderPrice.amount };
+}
+
+async function resolveHolderToken(store, intent, workflow, options) {
+  const resolver = workflow.resolver;
+  const resolverInput = { search_query: intent.token_symbol, result_type: "token", chain: holderChain(intent.chain), limit: 50 };
+  const record = store.services.get(resolver.service_id);
+  const preflight = validateManifestInput(record.manifest, resolverInput);
+  if (!preflight.ok) return { ok: false, status: "token_resolution_failed", preflight_validation: preflight };
+  const invocation = await invokePaidService(store, resolver.service_id, resolverInput, { max_amount: workflow.quote.steps[0].amount, currency: "USDC" }, options);
+  const evidence = { resolver_service_id: resolver.service_id, resolver_input: resolverInput, request_id: invocation.body.result?.request_id, billing: invocation.body.result?.metadata?.billing || null };
+  if (invocation.statusCode >= 400 || invocation.body.result?.status !== "success") return { ok: false, status: "token_resolution_failed", ...evidence, error: invocation.body.error };
+  const match = matchHolderToken(invocation.body.result?.data, intent);
+  if (!match.ok) return { ...match, ...evidence };
+  return { ok: true, status: "resolved", ...evidence, resolution_type: "exact_symbol_and_chain", token_address: match.address,
+    intent: { ...intent, chain: holderChain(intent.chain), token_address: match.address } };
+}
+
 function pickTokenResolver(services) {
   return services.map((service) => ({
     service,
@@ -2002,6 +2079,7 @@ function normalizeProviderChain(chain) {
 }
 
 function validateCapabilityRequest({ capability, params }) {
+  if (capability === "token_holders") return validateHolderParams(params);
   const entry = CAPABILITY_ALIASES.find((item) => item.capability === capability);
   if (!entry) {
     if (isSafeDynamicCapability(capability) && params && typeof params === "object" && !Array.isArray(params)) {

@@ -1,4 +1,5 @@
 import { validateEnvelope, validateJsonSchema } from "./schema.js";
+import { holderCoverageIssues } from "./token-holders.js";
 
 export function verifyServiceResult({ result, manifest, intent = {}, constraints = {} }) {
   const schemaErrors = validateJsonSchema(result, manifest.output_schema);
@@ -60,6 +61,7 @@ export function verifyServiceResult({ result, manifest, intent = {}, constraints
   });
   const overallScore = Number((deterministicScore * 0.8 + agentFriendlyScore * 0.2).toFixed(2));
   return {
+    ...(intent.capability === "token_holders" ? { intent_fit_valid: coverageIssues.length === 0 && result?.status === "success" && !result?.sample_type } : {}),
     schema_valid: schemaErrors.length === 0 && envelopeErrors.length === 0,
     freshness_valid: freshnessValid,
     coverage_valid: coverageIssues.length === 0,
@@ -216,6 +218,7 @@ function normalizeScore(value) {
 }
 
 function checkCoverage(result, intent) {
+  if (intent.capability === "token_holders") return holderCoverageIssues(result, intent);
   const issues = [];
   const queryText = JSON.stringify(result?.query || {}).toLowerCase();
   const dataText = JSON.stringify(result?.data || {}).toLowerCase();

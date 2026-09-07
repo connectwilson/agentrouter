@@ -64,7 +64,7 @@ for (const query of [task, "查询 Robinhood Chain 上 PONS 前十名持币地�
     assert.equal(req.params.chain, "robinhood");
     assert.equal(req.params.token_symbol, "PONS");
     assert.equal(req.params.limit, 10);
-    const plan = inferRoutePlan(query, { registered_capabilities: ["token_holders"] });
+    const plan = inferRoutePlan(query, { registered_capabilities: ["token_holders"], constraints: { max_price_usdc: "0.05" } });
     assert.equal(plan.route_family, "registered_service");
     assert.equal(plan.abstain_reason, null);
   });

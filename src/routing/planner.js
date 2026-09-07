@@ -9,6 +9,7 @@ import {
 } from "../external-api-capability.js";
 import { findSocialPostUrl } from "../social-post-read.js";
 import { inferIntent, intentToCapabilityRequest } from "../agent-router.js";
+import { parseHolderTask } from "../token-holders.js";
 
 const ROUTE_PLAN_SCHEMA_VERSION = "agentrouter_route_plan_v1";
 
@@ -97,12 +98,10 @@ export function inferRoutePlan(task, context = {}) {
 
   const connectedSources = normalizedSet(context.connected_sources);
   if (isTokenHoldersQuery(text)) {
-    // No implemented holder contract yet. Do not advertise a callable service
-    // merely because the registry contains generic on-chain APIs.
     return finalizePlan(routePlan({
-      taskFamily: "lookup", dataFamily: "token_ownership", capability: "token_holders",
-      params: { query: text }, confidence: 0.95,
-      abstainReason: "capability_not_available", mustNotFallback: true, budget
+      taskFamily: "lookup", dataFamily: "token_ownership", capability: "token_holders", routeFamily: "registered_service",
+      candidateSources: ["agentrouter_registry"], params: parseHolderTask(text), confidence: 0.95,
+      abstainReason: /geckoterminal|dexscreener/i.test(text) ? "capability_not_available" : null, mustNotFallback: true, budget
     }), context);
   }
   const inferenceText = normalizeInferenceText(text);
