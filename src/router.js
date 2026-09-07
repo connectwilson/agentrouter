@@ -1308,6 +1308,13 @@ export function intentMismatchPenalty(trust, { weight = 0.35, cap = 0.45 } = {})
 function scoreCandidate(record, intent, requiredCapabilities, constraints, matchScore) {
   const manifest = record.manifest;
   if (intent.capability === "token_holders") {
+    // Tags are discovery hints, not proof of an executable contract. Check
+    // identity fields/domain before trust ranking or paid symbol resolution.
+    const fields = manifest.input_schema?.properties || {};
+    if (fields.chain?.type !== "string" || fields.token_address?.type !== "string"
+        || fields.market_id || manifest.capabilities.some(cap => ["prediction_market", "polymarket"].includes(cap))) {
+      return { service_id: manifest.service_id, routing_score: 0 };
+    }
     const chain = holderChain(intent.chain);
     const declared = manifest.input_schema?.properties?.chain?.enum;
     if (chain && (!HOLDER_CHAINS.includes(chain) || (declared && !declared.map(holderChain).includes(chain)))) return { service_id: manifest.service_id, routing_score: 0 };
