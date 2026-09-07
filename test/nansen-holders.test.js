@@ -14,7 +14,7 @@ const originalBackend = process.env.ADN_PAYMENT_BACKEND;
 test.before(() => { process.env.ADN_PAYMENT_BACKEND = "credits"; });
 test.after(() => { if (originalBackend === undefined) delete process.env.ADN_PAYMENT_BACKEND; else process.env.ADN_PAYMENT_BACKEND = originalBackend; });
 
-function fixture({ tokens, rows, mutate, resolver = true } = {}) {
+function fixture({ tokens, rows, mutate, resolver = true, holderStatus = 200 } = {}) {
   const store = createMemoryStore();
   for (const [id, capabilities, sample] of [
     ["nansen_tgm_holders", ["nansen", "token_holders", "holder_distribution"], { chain: "ethereum", token_address: other, date: { from: "2020" } }],
@@ -48,7 +48,7 @@ function fixture({ tokens, rows, mutate, resolver = true } = {}) {
       envelope.metadata.freshness_seconds = 0;
       envelope.metadata.billing = { billing_status: "charged", amount: "0.01" };
       mutate?.(envelope, id);
-      return new Response(JSON.stringify(envelope), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(envelope), { status: id === "nansen_search_general" ? 200 : holderStatus, headers: { "content-type": "application/json" } });
     }
   } };
   return { store, calls, options };
@@ -198,6 +198,34 @@ test("current holder contract must not silently answer a historical snapshot req
   const result = await routeCapabilityRequest(store, request({ token_address: address, date: "2024-01-01" }), options);
   assert.equal(result.ok, false);
   assert.equal(calls.length, 0);
+  const historical = intentToCapabilityRequest(inferIntent("查询 Robinhood Chain 上 PONS 去年的前十名持币地址"));
+  assert.equal((await routeCapabilityRequest(store, historical, options)).ok, false);
+  assert.equal(calls.length, 0);
+});
+
+test("holder schema incompatibility is found before buying token resolution", async () => {
+  const { store, calls, options } = fixture();
+  store.services.get("nansen_tgm_holders").manifest.input_schema.required = ["chain", "token_address", "date"];
+  const result = await routeCapabilityRequest(store, request(), options);
+  assert.equal(result.status, "preflight_validation_failed");
+  assert.equal(calls.length, 0);
+});
+
+test("unrepresentable USDC prices are rejected instead of rounded down", async () => {
+  const { store, calls, options } = fixture();
+  store.services.get("nansen_tgm_holders").manifest.pricing.amount = "0.010000001";
+  const result = await routeCapabilityRequest(store, request(), options);
+  assert.equal(result.status, "price_unknown");
+  assert.equal(calls.length, 0);
+});
+
+test("second-step failure retains the already-billed resolver receipt", async () => {
+  const { store, calls, options } = fixture({ holderStatus: 502 });
+  const result = await routeCapabilityRequest(store, request(), options);
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 2);
+  assert.equal(result.token_resolution?.status, "resolved");
+  assert.equal(result.token_resolution.billing.amount, "0.01");
 });
 
 for (const [name, tokens] of [
