@@ -52,4 +52,3 @@ The proof is complete only when every link is publicly reachable from a clean br
 - Unknown price, cost, trust, latency, or sources are shown as unknown—not zero.
 - A completed call exposes a feedback action/status and evidence trace.
 - The full regression suite passes, followed by one production smoke and one real sponsored feedback transaction.
-

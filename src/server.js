@@ -3157,8 +3157,8 @@ function sendUpdateManifest(req, res, baseUrl) {
   const body = `${JSON.stringify({
     schema_version: "agentrouter_update_manifest_v1",
     channel: "stable",
-    installer_version: "0.2.0",
-    skill_version: "0.8.0",
+    installer_version: "0.10.0",
+    skill_version: "0.11.2",
     routing_policy_version: "external_information_first_v1",
     repository_access_required: false,
     remote_mcp_url: `${origin}/mcp`,
