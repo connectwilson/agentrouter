@@ -5,7 +5,7 @@ Last updated: 2026-09-07
 ## Latest local repair (not deployed)
 
 - Registered Nansen token-holder routing is implemented, including Robinhood chain, exact-chain symbol resolution, complete two-step quotes/budget reservations, no-sample input construction, and holder-specific verification. Fifty-three scoped cases pass; the new contract module has 100% line/function and 80.61% branch coverage. HTTP/MCP tests distinguish callable registered services from truly absent coverage and isolate provider configuration. See `docs/PONS_ROUTING_REGRESSION.md` for source references and live-release boundaries.
-- PONS's exact contract and indexed holder availability remain unverified by a live paid request. These local commits have not been pushed/deployed and do not create new BSC transaction evidence.
+- A subsequent user-authorized paid canary resolved Robinhood PONS to `0x39dbed3a2bd333467115de45665cc57f813c4571` and returned ten holder addresses through production AR provider billing, for 0.02 credits in 11.345 seconds. This used local repaired routing, not deployed production routing. Production feedback submissions failed (`SERVICE_NOT_FOUND`, zero stored events), so end-to-end production acceptance and BSC transaction evidence remain pending. See `docs/PONS_PAID_CANARY_2026-09-07.md` for receipts, data, and boundaries.
 
 ## Current MVP
 
