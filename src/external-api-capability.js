@@ -499,6 +499,24 @@ export function inferDataRequirement(task, { tier = "all" } = {}) {
   return null;
 }
 
+// A holders dataset is not a market/pool ranking, regardless of the ticker,
+// chain, budget, or explicitly named pool provider.
+export function isTokenHoldersQuery(text) {
+  return /\b(?:token[\s_-]*holders?|(?:largest|top\s*\d*|biggest)\s+holders?)\b|持有人|持幣地址|持币地址|持[仓倉]地址|持[币幣]大[户戶]/i.test(String(text || ""));
+}
+
+// Shared by planning and invocation so structured/direct calls cannot bypass
+// the same capability boundary that natural-language calls use.
+export function externalApiCoverageError(params = {}) {
+  const source = String(params.source || "").toLowerCase();
+  if (!["geckoterminal", "dexscreener"].includes(source)) return null;
+  if (isTokenHoldersQuery(params.query)) return "This connector returns pools/pairs, not token-holder addresses.";
+  if (source === "geckoterminal" && !geckoterminalNetwork(params.query, params.chain ?? params.network)) {
+    return "The requested chain is unsupported or ambiguous for this connector; no default chain was substituted.";
+  }
+  return null;
+}
+
 const NAMED_SOCIAL_AGGREGATORS = new Set(["xpoz", "socialcrawl", "socialdatax", "largitdata"]);
 
 function explicitSourcePriority(definition) {
@@ -757,6 +775,14 @@ export async function runExternalApiQuery(store, ownerKey, params = {}, options 
   }
   const parameterError = validateSourceParams(sourceId, operation, params);
   if (parameterError) return parameterError;
+  const coverageError = externalApiCoverageError(params);
+  if (coverageError) return {
+    ...failure("capability_not_available", coverageError),
+    execution_available: false,
+    must_not_execute: true,
+    must_not_request_payment_authorization: true,
+    fallback_allowed: false
+  };
 
   let secret = "";
   if (definition.connection_required) {
@@ -1522,13 +1548,34 @@ const GECKOTERMINAL_NETWORKS = {
   avalanche: "avax"
 };
 
-function geckoterminalNetwork(text) {
+function geckoterminalNetwork(text, explicitChain) {
   const lower = String(text || "").toLowerCase();
-  if (/bnb\s*chain|\bbsc\b|币安智能链|幣安智能鏈/.test(lower)) return "bsc";
-  for (const [name, id] of Object.entries(GECKOTERMINAL_NETWORKS)) {
-    if (lower.includes(name)) return id;
+  const resolve = (value) => {
+    const name = String(value).trim().toLowerCase().replace(/\s+(?:chain|network|blockchain)$/, "");
+    return GECKOTERMINAL_NETWORKS[name] || ({ eth: "eth", polygon_pos: "polygon_pos", avax: "avax", 以太坊: "eth", 币安智能: "bsc", 幣安智能: "bsc" })[name] || null;
+  };
+  const networks = new Set();
+  if (explicitChain != null && String(explicitChain).trim()) {
+    const network = resolve(explicitChain);
+    if (!network) return null;
+    networks.add(network);
   }
-  return "bsc";
+  // Chain qualifiers are authoritative, including names outside our mapping.
+  const declarations = [...lower.matchAll(/\b([a-z][a-z0-9_-]*)\s*(?:blockchain|chain|network)\b|([a-z][a-z0-9_-]*)\s*[链鏈]|(?:\bon\s+)([a-z][a-z0-9_-]*)/g)];
+  for (const match of declarations) {
+    const name = match[1] || match[2] || match[3];
+    if (["on", "on-", "the"].includes(name)) continue;
+    const network = resolve(name);
+    if (!network) return null;
+    networks.add(network);
+  }
+  if (/币安智能链|幣安智能鏈/.test(lower)) networks.add("bsc");
+  if (/以太坊/.test(lower)) networks.add("eth");
+  if (/[\u4e00-\u9fff]{2,}[链鏈]/.test(lower.replace(/币安智能链|幣安智能鏈|区块链|區塊鏈/g, ""))) return null;
+  for (const [name, id] of Object.entries(GECKOTERMINAL_NETWORKS)) {
+    if (new RegExp(`\\b${name}\\b`).test(lower)) networks.add(id);
+  }
+  return networks.size > 1 ? null : [...networks][0] || "bsc";
 }
 
 // Two rankings, both the provider's own.
@@ -1550,8 +1597,8 @@ function geckoterminalRanking(query, operation) {
   return /by volume|volume ranking|按交易量|交易量排序|成交量排序/.test(text) ? "volume" : "trending";
 }
 
-async function invokeGeckoTerminal({ query, limit, fetchImpl, operation }) {
-  const network = geckoterminalNetwork(query);
+async function invokeGeckoTerminal({ query, limit, fetchImpl, operation, params }) {
+  const network = geckoterminalNetwork(query, params?.chain ?? params?.network);
   const ranking = geckoterminalRanking(query, operation);
   const path = ranking === "trending" ? "trending_pools" : "pools";
   const url = new URL(`https://api.geckoterminal.com/api/v2/networks/${network}/${path}`);

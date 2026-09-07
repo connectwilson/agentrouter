@@ -3,7 +3,9 @@ import {
   freeLocalAlternative,
   getExternalApiCatalog,
   inferDataRequirement,
-  inferExternalApiRequest
+  inferExternalApiRequest,
+  isTokenHoldersQuery,
+  externalApiCoverageError
 } from "../external-api-capability.js";
 import { findSocialPostUrl } from "../social-post-read.js";
 import { inferIntent, intentToCapabilityRequest } from "../agent-router.js";
@@ -94,6 +96,15 @@ export function inferRoutePlan(task, context = {}) {
   }
 
   const connectedSources = normalizedSet(context.connected_sources);
+  if (isTokenHoldersQuery(text)) {
+    // No implemented holder contract yet. Do not advertise a callable service
+    // merely because the registry contains generic on-chain APIs.
+    return finalizePlan(routePlan({
+      taskFamily: "lookup", dataFamily: "token_ownership", capability: "token_holders",
+      params: { query: text }, confidence: 0.95,
+      abstainReason: "capability_not_available", mustNotFallback: true, budget
+    }), context);
+  }
   const inferenceText = normalizeInferenceText(text);
   const explicitRequest = inferExternalApiRequest(inferenceText, {
     connectedSources: [...connectedSources],
@@ -597,6 +608,12 @@ function applyImplementationGate(plan, context = {}) {
     }
   }
   if (plan.route_family !== "external_api") return plan;
+  const coverageError = externalApiCoverageError({ ...plan.params, source: plan.params.source || plan.candidate_sources?.[0] });
+  if (coverageError) return {
+    ...plan, route_family: "none", candidate_sources: [], candidate_scores: [],
+    estimated_price_usdc: null, auth_requirement: noAuth(),
+    abstain_reason: "capability_not_available", must_not_fallback: true
+  };
   const unavailableSource = (plan.candidate_sources || []).find((source) => {
     const status = SOURCE_METADATA.get(source)?.implementation_status;
     return status && status !== "available";

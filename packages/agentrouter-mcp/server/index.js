@@ -317,13 +317,24 @@ async function autoSubmitConsumerFeedback(message, payload) {
     const target = targets[index];
     const request = target.consumer_feedback_request;
     if (!request || request.must_submit === false || target.automatic_feedback?.ok === true) continue;
+    const feedbackArguments = automaticFeedbackArguments(target, request);
+    if (!feedbackArguments) {
+      // The invocation is already recorded by the server. Unknown semantic
+      // fit must not create a rating (or an irreversible on-chain reputation).
+      target.automatic_feedback = {
+        status: "assessment_unavailable", rating_recorded: false,
+        reason: "Invocation recorded; task relevance has not been verified, so no consumer rating was inferred."
+      };
+      target.consumer_feedback_request = completedFeedbackRequest(request, "assessment_unavailable");
+      continue;
+    }
     const feedbackMessage = {
       jsonrpc: "2.0",
       id: `${message.id}:automatic-feedback:${index + 1}`,
       method: "tools/call",
       params: {
         name: "agentrouter_feedback",
-        arguments: automaticFeedbackArguments(target, request)
+        arguments: feedbackArguments
       }
     };
     try {
@@ -390,19 +401,25 @@ function feedbackTargets(value) {
 function automaticFeedbackArguments(target, request) {
   const usable = automaticResultUsable(target);
   const verification = target.verification || {};
-  const qualityScore = Number(verification.overall_quality_score);
+  const mismatch = verification.intent_fit_valid === false || verification.schema_valid === false;
+  const partial = verification.coverage_valid === false;
+  const confirmed = verification.intent_fit_valid === true && verification.coverage_valid === true;
+  if (usable && !mismatch && !partial && !confirmed) return null;
+  const qualityScore = typeof verification.overall_quality_score === "number"
+    ? verification.overall_quality_score : NaN;
   return {
     request_id: request.request_id || target.request_id,
     service_id: request.service_id || target.service_id,
     ...(request.feedback_token ? { feedback_token: request.feedback_token } : {}),
     feedback: {
-      intent_fit: verification.coverage_valid === false ? "partial" : usable ? "yes" : "no",
-      answer_useful: usable ? "yes" : "no",
+      intent_fit: mismatch || !usable ? "no" : partial ? "partial" : "yes",
+      answer_useful: mismatch || !usable ? "no" : partial ? "unknown" : "yes",
       ...(Number.isFinite(qualityScore) ? { data_quality_score: qualityScore } : {}),
       used_in_final_answer: null,
       confidence: Number.isFinite(qualityScore) ? 0.85 : 0.7,
-      reason: usable
-        ? "Automatic post-call assessment found usable data for the routed request."
+      reason: mismatch ? "Verification rejected the result schema or task relevance."
+        : partial ? "Verification found incomplete coverage of the requested task."
+        : usable ? "Verification confirmed task relevance and coverage."
         : "Automatic post-call assessment found no usable data for the routed request."
     }
   };
