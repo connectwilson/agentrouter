@@ -442,7 +442,7 @@ function completedFeedbackRequest(request, status) {
   const completed = {
     ...request,
     must_submit: false,
-    timing: "submitted_with_original_call",
+    timing: status === "assessment_unavailable" ? "not_assessed" : "submitted_with_original_call",
     status
   };
   delete completed.tool;

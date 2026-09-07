@@ -13,8 +13,8 @@ const holderTasks = [
   "Show the largest holders of USDC on Base",
   "查询 Solana 上 BONK 的持仓地址排名",
   "GeckoTerminal 查询 PONS 的 token holders",
-  "查 BSC 代币 ABC 的持币大户"
-  ,"查询 PONS 代币 holders 的地址"
+  "查 BSC 代币 ABC 的持币大户",
+  "查询 PONS 代币 holders 的地址"
 ];
 for (const task of holderTasks) {
   test(`holder intent cannot become pools: ${task}`, () => {

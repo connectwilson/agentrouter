@@ -502,7 +502,12 @@ export function inferDataRequirement(task, { tier = "all" } = {}) {
 // A holders dataset is not a market/pool ranking, regardless of the ticker,
 // chain, budget, or explicitly named pool provider.
 export function isTokenHoldersQuery(text) {
-  return /\b(?:token[\s_-]*holders?|(?:largest|top\s*\d*|biggest)\s+holders?)\b|持有人|持幣地址|持币地址|持[仓倉]地址|持[币幣]大[户戶]/i.test(String(text || ""));
+  const query = String(text || "");
+  // Discussion, definitions and papers about holders are not a request for
+  // the underlying ownership dataset. Do not gate on "research" alone.
+  if (/\b(?:explain|define|discussions?|papers?|documentation)\b|what .{0,40} means?|讨论|討論|论文|論文|文献|文獻|含义|含義|定义|定義/i.test(query)) return false;
+  return /\b(?:token[\s_-]*holders?|(?:largest|top\s*\d*|biggest)\s+holders?)\b|持有人|持幣地址|持币地址|持[仓倉]地址|持[币幣]大[户戶]/i.test(query)
+    || (/\bholders?\b/i.test(query) && /token|[币幣链鏈]|crypto|blockchain/i.test(query));
 }
 
 // Shared by planning and invocation so structured/direct calls cannot bypass
