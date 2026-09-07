@@ -165,6 +165,7 @@ for (const verification of [{}, { source_urls_present: true }, { overall_quality
       const value = JSON.parse(response.content[0].text);
       assert.deepEqual(calls, ["agentrouter_fetch"]);
       assert.equal(value.automatic_feedback.status, "assessment_unavailable");
+      assert.notEqual(value.consumer_feedback_request.timing, "submitted_with_original_call");
       assert.equal(value.consumer_feedback_request.must_submit, false);
       assert.equal(value.result.items.length, 1);
     } finally { client.close(); await close(server); }
@@ -198,6 +199,35 @@ function safety(readOnlyHint, idempotentHint, openWorldHint = true) {
     idempotentHint,
     openWorldHint
   };
+}
+
+for (const [verification, items, fit, useful] of [
+  [{ intent_fit_valid: false }, [{ title: "wrong chain" }], "no", "no"],
+  [{ schema_valid: false }, [{ title: "pool instead of holder" }], "no", "no"],
+  [{ coverage_valid: false }, [{ title: "incomplete" }], "partial", "unknown"],
+  [{ intent_fit_valid: true, coverage_valid: true }, [], "no", "no"],
+  [{ intent_fit_valid: true, coverage_valid: true, overall_quality_score: null }, [{ title: "matched" }], "yes", "yes"]
+]) {
+  test(`automatic assessment respects verification: ${JSON.stringify(verification)}, rows=${items.length}`, async () => {
+    let submitted;
+    const server = http.createServer(async (request, response) => {
+      const body = await readJson(request);
+      const isFeedback = body.params.name === "agentrouter_feedback";
+      if (isFeedback) submitted = body.params.arguments.feedback;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: toolResult(isFeedback
+        ? { ok: true, status: "consumer_feedback_recorded" }
+        : { ok: true, result: { items }, verification, consumer_feedback_request: { request_id: "assessment_case", must_submit: true } }) }));
+    });
+    await listen(server);
+    const client = createMcpClient(serverUrl(server));
+    try {
+      await client.request("tools/call", { name: "agentrouter_fetch", arguments: { task: "test assessment" } });
+      assert.equal(submitted.intent_fit, fit);
+      assert.equal(submitted.answer_useful, useful);
+      assert.equal(submitted.data_quality_score, undefined, "missing/null quality is not numeric zero");
+    } finally { client.close(); await close(server); }
+  });
 }
 
 function toolResult(value) {

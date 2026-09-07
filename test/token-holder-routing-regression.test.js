@@ -14,6 +14,7 @@ const holderTasks = [
   "查询 Solana 上 BONK 的持仓地址排名",
   "GeckoTerminal 查询 PONS 的 token holders",
   "查 BSC 代币 ABC 的持币大户"
+  ,"查询 PONS 代币 holders 的地址"
 ];
 for (const task of holderTasks) {
   test(`holder intent cannot become pools: ${task}`, () => {
@@ -23,6 +24,12 @@ for (const task of holderTasks) {
     assert.equal(plan.auth_requirement.required, false);
     assert.equal(structuredRoutePreflight(plan).must_not_request_payment_authorization, true);
     assert.equal(plan.params.query, task);
+  });
+}
+
+for (const task of ["Explain what token holders means", "搜索 X 上关于 token holders 的讨论", "研究证券持有人权益相关的论文"]) {
+  test(`mentioning holders is not itself a holders dataset request: ${task}`, () => {
+    assert.notEqual(inferRoutePlan(task).capability, "token_holders");
   });
 }
 

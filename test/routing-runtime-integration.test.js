@@ -200,6 +200,29 @@ test("a composite wallet leaderboard request reports unavailable before auth or 
   });
 });
 
+test("PONS holder coverage rejects across HTTP and MCP before auth, cost, or feedback", async () => {
+  let providerCalls = 0;
+  await withRuntimeServer(async ({ baseUrl, store }) => {
+    const task = "查robinhood链上PONS代币的前10大 token holder的地址";
+    for (const max_price of ["0", "0.05"]) {
+      const http = await postJson(baseUrl, "/agent-router/fetch", { task, max_price });
+      assert.equal(http.response.status, 422);
+      const mcp = await callMcpFetch(baseUrl, { task, max_price });
+      for (const result of [http.payload, mcp]) {
+        assert.equal(result.status, "capability_not_available");
+        assert.equal(result.capability, "token_holders");
+        assert.equal(result.must_not_execute, true);
+        assert.equal(result.must_not_request_payment_authorization, true);
+        assert.equal(result.route_plan.auth_requirement.required, false);
+        assert.equal(result.quote, undefined);
+        assert.equal(storedObservation(store, result).action, "no_match");
+      }
+    }
+    assert.equal(providerCalls, 0);
+    assert.equal(store.feedbackEvents.length, 0);
+  }, { fetchImpl: async () => { providerCalls++; throw new Error("No provider should run"); } });
+});
+
 test("CLI quote-only uses the canonical ask entrypoint instead of legacy agent-reach routing", async () => {
   await withRuntimeServer(async ({ baseUrl }) => {
     const task = "使用 Bright Data 搜索 AgentRouter";
