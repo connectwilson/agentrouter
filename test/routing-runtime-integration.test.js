@@ -2,15 +2,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-import { createServer } from "../src/server.js";
-import { createMemoryStore } from "../src/store.js";
-import { authUserKey } from "../src/auth.js";
-import { createCreditApiKey, ensureCreditAccount } from "../src/credits.js";
-import { createSocialConnection } from "../src/social-connections.js";
-import { baseFundFlowManifest } from "../src/fixtures.js";
-import { registerService } from "../src/registry.js";
-import { inferRoutePlan, inferStructuredRoutePlan } from "../src/routing/planner.js";
 
 const AUTH_USER = {
   provider: "github",
@@ -20,6 +15,22 @@ const AUTH_USER = {
 };
 
 const AGENT_ROUTER_CLI = fileURLToPath(new URL("../bin/agent-router.js", import.meta.url));
+const previousProviderDir = process.env.ADN_PROVIDER_DIR;
+const runtimeProviderDir = await fs.mkdtemp(path.join(os.tmpdir(), "ar-routing-providers-"));
+process.env.ADN_PROVIDER_DIR = runtimeProviderDir;
+const { createServer } = await import("../src/server.js");
+const { createMemoryStore } = await import("../src/store.js");
+const { authUserKey } = await import("../src/auth.js");
+const { createCreditApiKey, ensureCreditAccount } = await import("../src/credits.js");
+const { createSocialConnection } = await import("../src/social-connections.js");
+const { baseFundFlowManifest } = await import("../src/fixtures.js");
+const { registerService } = await import("../src/registry.js");
+const { inferRoutePlan, inferStructuredRoutePlan } = await import("../src/routing/planner.js");
+test.after(async () => {
+  if (previousProviderDir === undefined) delete process.env.ADN_PROVIDER_DIR;
+  else process.env.ADN_PROVIDER_DIR = previousProviderDir;
+  await fs.rm(runtimeProviderDir, { recursive: true, force: true });
+});
 
 async function runAgentRouterCli(args, env = {}) {
   return new Promise((resolve, reject) => {
@@ -259,6 +270,45 @@ test("CLI quote-only uses the canonical ask entrypoint instead of legacy agent-r
       assert.doesNotMatch(JSON.stringify(payload), /agent-reach/i);
     }
   });
+});
+
+test("registered Nansen holder tasks share exact-chain quotes through HTTP and MCP", async () => {
+  await withRuntimeServer(async ({ baseUrl, store }) => {
+    store.services.clear();
+    for (const [id, capabilities, input] of [
+      ["nansen_tgm_holders", ["nansen", "token_holders"], { chain: "ethereum", token_address: `0x${"2".repeat(40)}` }],
+      ["nansen_search_general", ["nansen", "token_search", "entity_search"], { chain: "ethereum", search_query: "PEPE", result_type: "token", limit: 25 }]
+    ]) {
+      const manifest = structuredClone(baseFundFlowManifest);
+      Object.assign(manifest, { service_id: id, title: id, description_for_agent: id, capabilities, sample_request: input, input_schema: { type: "object" } });
+      manifest.provider.provider_id = "provider_nansen_api";
+      manifest.pricing.amount = "0.01";
+      registerService(store, manifest, baseUrl).verification_status = "verified";
+    }
+    const task = "查robinhood链上PONS代币的前10大 token holder的地址";
+    const results = [
+      (await postJson(baseUrl, "/agent-router/ask", { task, max_price: "0.05" })).payload,
+      (await postJson(baseUrl, "/agent-router/fetch", { task, max_price: "0.05" })).payload,
+      await callMcpFetch(baseUrl, { task, max_price: "0.05" })
+    ];
+    for (const result of results) {
+      assert.equal(result.route_plan.capability, "token_holders");
+      assert.equal(result.route_plan.params.chain, "robinhood");
+      assert.equal(Number(result.quote.amount), 0.02);
+      if (result.presentation_policy?.hide_provider_details) assert.equal(result.service_match.matched, true);
+      else assert.equal(result.selected_service.service_id, "nansen_tgm_holders");
+      assert.equal(storedObservation(store, result).capability, "token_holders");
+      assert.equal(result.token_resolution.status, "required");
+      assert.equal(result.quote.agent_decision.can_answer, false, "a quote must not promise indexed PONS data");
+      assert.equal(result.input.token_address, undefined);
+      assert.notEqual(result.action_required?.action, "connect_api_source");
+    }
+    const missing = (await postJson(baseUrl, "/agent-router/fetch", { task: "查PONS代币前10大持有人", max_price: "0.05" })).payload;
+    assert.equal(missing.status, "needs_clarification");
+    assert.equal(missing.route_plan.auth_requirement.required, false);
+    assert.equal(missing.quote, undefined);
+    assert.equal(store.feedbackEvents.length, 0, "quotes are not executions");
+  }, { fetchImpl: async () => { throw new Error("Quote-only test must not invoke a provider"); } });
 });
 
 test("cookie-authenticated ask and fetch share the connected source owner without another login", async () => {

@@ -84,6 +84,7 @@ test("quote includes resolver plus holders without using sample token or executi
   assert.equal(Number(quoted.quote.amount), 0.02);
   assert.equal(quoted.input.token_address, undefined);
   assert.equal(quoted.token_resolution.status, "required");
+  assert.equal(quoted.resolver, undefined, "quote must not expose the internal resolver registry record");
   assert.equal(calls.length, 0);
 });
 
@@ -158,6 +159,45 @@ test("declared endpoint chain coverage wins over generic Nansen coverage", () =>
   store.services.get("nansen_tgm_holders").manifest.input_schema.properties.chain = { type: "string", enum: ["ethereum"] };
   const result = quoteCapabilityRequest(store, request());
   assert.equal(result.status, "no_match");
+});
+
+test("unverified holder service cannot trigger even the paid resolver", async () => {
+  const { store, calls, options } = fixture();
+  store.services.get("nansen_tgm_holders").verification_status = "pending";
+  assert.equal((await routeCapabilityRequest(store, request(), options)).status, "no_match");
+  assert.equal(calls.length, 0);
+});
+
+test("duplicate search rows for the same contract are not distinct token candidates", async () => {
+  const token = { symbol: "PONS", chain: "robinhood", address };
+  const { store, calls, options } = fixture({ tokens: [token, { ...token }] });
+  assert.equal((await routeCapabilityRequest(store, request(), options)).status, "routed");
+  assert.equal(calls.length, 2);
+});
+
+test("holder trust constraints apply before resolution costs are incurred", async () => {
+  const { store, calls, options } = fixture();
+  const req = request();
+  req.constraints.min_trust_score = 1;
+  assert.equal((await routeCapabilityRequest(store, req, options)).status, "no_match");
+  assert.equal(calls.length, 0);
+});
+
+test("incomplete holder page cannot be sold as a complete top ten", async () => {
+  const { store, options } = fixture({ mutate: r => { r.data.data = r.data.data.slice(0, 2); r.data.pagination.is_last_page = false; } });
+  assert.equal((await routeCapabilityRequest(store, request({ token_address: address }), options)).status, "data_quality_failed");
+});
+
+test("non-numeric holder balances fail verification", async () => {
+  const { store, options } = fixture({ mutate: r => { r.data.data[0].token_amount = "unknown"; } });
+  assert.equal((await routeCapabilityRequest(store, request({ token_address: address }), options)).status, "data_quality_failed");
+});
+
+test("current holder contract must not silently answer a historical snapshot request", async () => {
+  const { store, calls, options } = fixture();
+  const result = await routeCapabilityRequest(store, request({ token_address: address, date: "2024-01-01" }), options);
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 0);
 });
 
 for (const [name, tokens] of [
