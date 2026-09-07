@@ -24,7 +24,7 @@ function fixture({ tokens, rows, mutate, resolver = true, holderStatus = 200 } =
     if (!resolver && id === "nansen_search_general") continue;
     const manifest = structuredClone(baseFundFlowManifest);
     Object.assign(manifest, { service_id: id, title: id.replaceAll("_", " "), description_for_agent: id.replaceAll("_", " "), capabilities,
-      sample_request: sample, input_schema: { type: "object", properties: {} },
+      sample_request: sample, input_schema: { type: "object", properties: id === "nansen_tgm_holders" ? { chain: { type: "string" }, token_address: { type: "string" } } : {} },
       endpoint: { method: "POST", url: `http://127.0.0.1/provider/${id}` } });
     manifest.provider.provider_id = "provider_nansen_api";
     manifest.pricing.amount = "0.01";
@@ -55,6 +55,36 @@ function fixture({ tokens, rows, mutate, resolver = true, holderStatus = 200 } =
 }
 function request(params = {}, max = "0.05") {
   return { capability: "token_holders", params: { chain: "robinhood", token_symbol: "PONS", limit: 10, ...params }, constraints: { max_price_usdc: max } };
+}
+
+// Production canary 2026-09-07: both endpoints advertised token_holders, but
+// prediction-market/top-holders accepts market_id, not chain + token_address.
+for (const [label, properties, capabilities] of [
+  ["prediction market", { market_id: { type: "string" } }, ["prediction_market", "polymarket"]],
+  ["missing chain", { token_address: { type: "string" } }, []],
+  ["missing contract", { chain: { type: "string" } }, []],
+  ["opaque schema", {}, []],
+  ["numeric chain", { chain: { type: "number" }, token_address: { type: "string" } }, []],
+  ["conflicting domain", { chain: { type: "string" }, token_address: { type: "string" } }, ["prediction_market"]]
+]) {
+  test(`holder eligibility precedes trust/price ranking: ${label}`, async () => {
+    const { store, calls, options } = fixture();
+    const manifest = structuredClone(store.services.get("nansen_tgm_holders").manifest);
+    Object.assign(manifest, { service_id: "incompatible_top_holders", title: label, input_schema: { type: "object", properties },
+      capabilities: [...manifest.capabilities, ...capabilities], endpoint: { method: "POST", url: "http://127.0.0.1/provider/incompatible_top_holders" } });
+    manifest.pricing.amount = "0";
+    registerService(store, manifest, "http://127.0.0.1").verification_status = "verified";
+    assert.deepEqual(rankCandidates(store, { capability: "token_holders", ...request().params }).map(x => x.service_id), ["nansen_tgm_holders"]);
+    assert.equal(quoteCapabilityRequest(store, request()).selected_service.service_id, "nansen_tgm_holders");
+    const result = await routeCapabilityRequest(store, request(), options);
+    assert.equal(result.status, "routed");
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(call => !call.url.includes("incompatible_top_holders")));
+    store.services.delete("nansen_tgm_holders");
+    calls.length = 0;
+    assert.equal((await routeCapabilityRequest(store, request(), options)).status, "no_match");
+    assert.equal(calls.length, 0, "do not pay even for resolution when the only holder contract is incompatible");
+  });
 }
 
 for (const query of [task, "查询 Robinhood Chain 上 PONS 前十名持币地址", "List the top 10 token holders of PONS on Robinhood Chain", "查robinhood链上pons代币前10大持有人"]) {
