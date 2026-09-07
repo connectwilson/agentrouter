@@ -879,6 +879,9 @@ export function agentHtml({ auth = {} } = {}) {
           ];
           document.getElementById("agent-api-cards").innerHTML = cards.join("") ||
             '<div class="empty-market">No matching services found.</div>';
+          document.querySelectorAll("#agent-api-cards [data-hire-agent-id]").forEach((button) => {
+            button.addEventListener("click", () => hireErc8004Agent(button, button.dataset.hireAgentId));
+          });
           const availableTotal = activeCategory === builtInCategory
             ? visibleBuiltIns.length
             : activeCategory === aiSearchCategory
@@ -926,7 +929,7 @@ export function agentHtml({ auth = {} } = {}) {
             '<div class="api-trust"><span class="trust-mark" aria-hidden="true">✓</span><div><strong>' + escapeHtml(score) + '</strong><small>8004scan score</small></div></div></div>' +
             '<div class="execution-result" data-execution-result role="status" aria-live="polite" hidden></div>' +
             '<div class="api-card-footer"><div class="pill-row">' + renderPills(protocols) + '</div>' +
-            '<button type="button" class="button ' + (verified ? "primary" : "ghost") + '" onclick="hireErc8004Agent(this,\'' + escapeAttr(agent.agent_id) + '\')">Hire / call</button></div>' +
+            '<button type="button" class="button ' + (verified ? "primary" : "ghost") + '" data-hire-agent-id="' + escapeAttr(agent.agent_id) + '">Hire / call</button></div>' +
           '</article>';
         }
         function renderBnbHireSummary(target, summary) {

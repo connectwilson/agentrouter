@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Script } from "node:vm";
 
 import { clientRouterScript } from "../src/app-shell.js";
+import * as homePages from "../src/home.js";
 import { accountHtml, agentHtml } from "../src/home.js";
+import { researchHtml } from "../src/research.js";
 import { studioHtml } from "../src/studio.js";
+
+// Compile the emitted browser code: valid template source can emit invalid JS.
+for (const [name, render] of Object.entries({ ...homePages, researchHtml, studioHtml })) {
+  test(`${name} emits parseable browser scripts`, () => {
+    const page = render({});
+    const scripts = [...page.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+      .filter(([, attributes]) => !/type=["']application\/ld\+json["']/i.test(attributes));
+    assert.ok(scripts.length > 0);
+    for (const [index, [, , source]] of scripts.entries()) {
+      assert.doesNotThrow(() => new Script(source, { filename: `${name}-${index}.js` }));
+    }
+  });
+}
 
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
