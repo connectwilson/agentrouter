@@ -18,13 +18,13 @@ One command, any supported client:
 npx @agentrouternetwork/agentrouter
 ```
 
-It detects installed AI clients, registers the MCP bridge with each, and installs
-the AgentRouter Skill. Reload the client afterwards so it starts the bridge.
+It selects one supported AI client, preserves existing configuration, registers
+the MCP bridge, and installs the AgentRouter Skill. Reload the client if needed.
 
 Supported: Claude Code, Claude Desktop, Codex, Cursor, Windsurf, Gemini CLI,
 opencode, OpenClaw, WorkBuddy.
 
-Target one client instead of all of them:
+Select a specific client:
 
 ```bash
 npx @agentrouternetwork/agentrouter --client claude-code
@@ -41,8 +41,7 @@ If your client is not on that list, point it at the bridge directly:
       "command": "npx",
       "args": ["-y", "--package", "@agentrouternetwork/mcp@latest", "agentrouter-mcp"],
       "env": {
-        "AGENT_ROUTER_URL": "https://agentrouter.network",
-        "AGENT_ROUTER_MAX_PRICE": "0.05"
+        "AGENT_ROUTER_URL": "https://agentrouter.network"
       }
     }
   }
@@ -60,19 +59,27 @@ agentrouter_fetch({ task: "latest funding rounds in AI infrastructure" })
 AgentRouter decides where that should go. Free sources answer for free; paid ones
 return a quote first, and the call only proceeds within the budget you set.
 
-Every result carries a `request_id` and a request to rate it. Submitting that
-rating is what keeps routing honest — see [docs/PROTOCOL.md](docs/PROTOCOL.md).
+Completed calls carry a `request_id` and feedback status. The MCP bridge submits
+automatic post-call feedback within the original call. It reports deferred or
+unavailable feedback explicitly; this does not imply an on-chain transaction succeeded.
 
 ## Local reads run on your machine
 
 Some sources are read through your own signed-in browser rather than a paid API:
 X, Reddit, YouTube, Bilibili, Xiaohongshu, Zhihu, Weibo, TikTok.
 
-These run locally through the OpenCLI browser connector. Nothing is uploaded, no
-credentials leave the machine, and access is read-only — AgentRouter never posts,
-messages, or writes on your behalf. It also never asks for your system password:
-a prompt asking to decrypt browser cookies is not from AgentRouter, and granting
-it would expose every site you are signed in to.
+AgentRouter prefers the AI client's built-in browser when it supports the requested
+operation. OpenCLI remains a compatibility fallback. Browser sessions stay local;
+structured public evidence is returned to AgentRouter to complete the recorded task.
+These reads do not post or message on your behalf, and do not require exporting cookies.
+
+## September 2026 client update
+
+This source release includes MCP 0.14.2 and Skill 0.11.2: browser account authorization,
+native browser handoffs, automatic feedback, and capability preflight guidance.
+An unavailable capability must be reported before requesting a payment budget or source
+connection. Check npm for the published package version; repository synchronization
+and npm publication are separate release steps.
 
 ## What is in here
 

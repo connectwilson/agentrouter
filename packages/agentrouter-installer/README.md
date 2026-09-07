@@ -40,3 +40,13 @@ Hosted paid calls use AgentRouter account credits. On the first paid call, the
 local bridge provides a browser approval link and securely remembers the
 connection; users do not copy an API key into the MCP configuration. Manual
 API keys remain available only for CI and headless servers.
+
+If the MCP configuration already exists but the current AI-client process has
+not loaded its tools yet, authorize the account without reinstalling anything:
+
+```bash
+npx @agentrouternetwork/agentrouter connect --client-name Codex
+```
+
+This opens the browser approval page and writes only the shared, origin-scoped
+device credential. It does not modify the Skill or any MCP configuration.
