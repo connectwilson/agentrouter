@@ -42,7 +42,7 @@ test("the MCP bridge records feedback inside the original data call", async () =
           request_id: "req_auto_1",
           service_id: "external_api_exa",
           result: { items: [{ title: "evidence" }], count: 1 },
-          verification: { overall_quality_score: 0.92, coverage_valid: true },
+          verification: { overall_quality_score: 0.92, coverage_valid: true, intent_fit_valid: true },
           consumer_feedback_request: {
             request_id: "req_auto_1",
             service_id: "external_api_exa",
@@ -104,6 +104,7 @@ test("an automatic feedback outage never hides otherwise usable data or asks for
         request_id: "req_auto_failure",
         service_id: "external_api_exa",
         result: { items: [{ title: "still usable" }], count: 1 },
+        verification: { coverage_valid: true, intent_fit_valid: true },
         consumer_feedback_request: {
           request_id: "req_auto_failure",
           service_id: "external_api_exa",
@@ -143,6 +144,32 @@ test("explicit feedback is accurately annotated as non-destructive and idempoten
     openWorldHint: true
   });
 });
+
+for (const verification of [{}, { source_urls_present: true }, { overall_quality_score: null }, { coverage_valid: true }]) {
+  test(`nonempty data is not proof of intent fit: ${JSON.stringify(verification)}`, async () => {
+    const calls = [];
+    const server = http.createServer(async (request, response) => {
+      const body = await readJson(request);
+      calls.push(body.params.name);
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: toolResult({
+        ok: true, status: "completed", request_id: "pons_wrong_pools",
+        result: { items: [{ title: "BREW / WBNB", metadata: { network: "bsc" } }] }, verification,
+        consumer_feedback_request: { request_id: "pons_wrong_pools", must_submit: true }
+      }) }));
+    });
+    await listen(server);
+    const client = createMcpClient(serverUrl(server));
+    try {
+      const response = await client.request("tools/call", { name: "agentrouter_fetch", arguments: { task: "查robinhood链上PONS代币的前10大 token holder的地址" } });
+      const value = JSON.parse(response.content[0].text);
+      assert.deepEqual(calls, ["agentrouter_fetch"]);
+      assert.equal(value.automatic_feedback.status, "assessment_unavailable");
+      assert.equal(value.consumer_feedback_request.must_submit, false);
+      assert.equal(value.result.items.length, 1);
+    } finally { client.close(); await close(server); }
+  });
+}
 
 test("every MCP tool declares an explicit least-privilege safety contract", () => {
   const expected = {
