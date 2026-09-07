@@ -1955,7 +1955,7 @@ async function resolveHolderToken(store, intent, workflow, options) {
   if (!preflight.ok) return { ok: false, status: "token_resolution_failed", preflight_validation: preflight };
   const invocation = await invokePaidService(store, resolver.service_id, resolverInput, { max_amount: workflow.quote.steps[0].amount, currency: "USDC" }, options);
   const evidence = { resolver_service_id: resolver.service_id, resolver_input: resolverInput, request_id: invocation.body.result?.request_id, billing: invocation.body.result?.metadata?.billing || null };
-  if (invocation.statusCode >= 400 || invocation.body.result?.status !== "success") return { ok: false, status: "token_resolution_failed", ...evidence, error: invocation.body.error };
+  if (invocation.statusCode >= 400 || invocation.body.result?.status !== "success" || invocation.body.result?.sample_type) return { ok: false, status: "token_resolution_failed", ...evidence, error: invocation.body.error };
   const match = matchHolderToken(invocation.body.result?.data, intent);
   if (!match.ok) return { ...match, ...evidence };
   return { ok: true, status: "resolved", ...evidence, resolution_type: "exact_symbol_and_chain", token_address: match.address,

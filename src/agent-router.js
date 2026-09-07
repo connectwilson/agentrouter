@@ -230,6 +230,11 @@ export async function askAgentRouter(store, {
 
 function plannedNaturalLanguageRoute(task, plan) {
   if (!plan || typeof plan !== "object") return null;
+  if (plan.capability === "token_holders" && ["needs_clarification", "invalid_request"].includes(plan.abstain_reason)) return {
+    ok: false, status: plan.abstain_reason, task, validation: plan.validation,
+    message: "Specify one supported chain and a token contract (or unambiguous symbol), with a holder count from 1 to 100.",
+    must_not_execute: true, must_not_request_payment_authorization: true
+  };
   if (plan.abstain_reason === "capability_not_available") {
     return {
       ok: false,

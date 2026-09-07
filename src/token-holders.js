@@ -18,7 +18,12 @@ export function parseHolderTask(text) {
     || text.match(/holders?\s+of\s+\$?([a-zA-Z][a-zA-Z0-9]{1,14})\b/i)?.[1]
     || (text.match(/\b[A-Z][A-Z0-9]{1,14}\b/g) || []).find(x => ![...HOLDER_CHAINS, "bsc", "eth", "chain", "token", "nansen"].includes(x.toLowerCase()));
   const count = text.match(/(?:前\s*|top\s*|largest\s*)(\d+)/i)?.[1];
-  return { query: text, chain: chains.length === 1 ? chains[0] : "", ...(tokenAddress ? { token_address: tokenAddress } : { token_symbol: symbol?.toUpperCase() }), limit: count ? Number(count) : 10 };
+  const chinese = text.match(/前\s*([一二三四五六七八九十百]+)/)?.[1];
+  const digits = "零一二三四五六七八九";
+  const chineseCount = chinese === "一百" || chinese === "百" ? 100 : chinese?.includes("十")
+    ? (digits.indexOf(chinese.split("十")[0]) || 1) * 10 + digits.indexOf(chinese.split("十")[1])
+    : chinese ? digits.indexOf(chinese) : 10;
+  return { query: text, chain: chains.length === 1 ? chains[0] : "", ...(tokenAddress ? { token_address: tokenAddress } : { token_symbol: symbol?.toUpperCase() }), limit: count ? Number(count) : chineseCount };
 }
 
 export function validateHolderParams(params) {

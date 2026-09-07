@@ -9,7 +9,7 @@ import {
 } from "../external-api-capability.js";
 import { findSocialPostUrl } from "../social-post-read.js";
 import { inferIntent, intentToCapabilityRequest } from "../agent-router.js";
-import { parseHolderTask } from "../token-holders.js";
+import { parseHolderTask, validateHolderParams } from "../token-holders.js";
 
 const ROUTE_PLAN_SCHEMA_VERSION = "agentrouter_route_plan_v1";
 
@@ -568,6 +568,10 @@ function routePlan({
 
 function finalizePlan(plan, context) {
   const implementationGated = applyImplementationGate(plan, context);
+  if (!implementationGated.abstain_reason && plan.capability === "token_holders") {
+    const validation = validateHolderParams(plan.params);
+    if (!validation.ok) return { ...implementationGated, abstain_reason: validation.missing ? "needs_clarification" : "invalid_request", validation, auth_requirement: noAuth(), must_not_fallback: true };
+  }
   if (implementationGated.abstain_reason) {
     return {
       ...implementationGated,
