@@ -200,9 +200,10 @@ test("a composite wallet leaderboard request reports unavailable before auth or 
   });
 });
 
-test("PONS holder coverage rejects across HTTP and MCP before auth, cost, or feedback", async () => {
+test("PONS holder coverage rejects across HTTP and MCP when no holder service is registered", async () => {
   let providerCalls = 0;
   await withRuntimeServer(async ({ baseUrl, store }) => {
+    for (const [id, record] of store.services) if (record.manifest.capabilities.some(c => ["token_holders", "holder_distribution"].includes(c))) store.services.delete(id);
     const task = "查robinhood链上PONS代币的前10大 token holder的地址";
     for (const max_price of ["0", "0.05"]) {
       const http = await postJson(baseUrl, "/agent-router/fetch", { task, max_price });

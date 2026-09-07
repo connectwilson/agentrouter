@@ -113,6 +113,53 @@ test("explicit contract skips resolver and fits a single-call budget", async () 
   assert.equal(calls.length, 1);
 });
 
+for (const chain of ["robinhood", "base", "ethereum", "bsc", "bnb", "arbitrum", "optimism", "hyperevm"]) {
+  test(`explicit holder contract preserves supported chain ${chain}`, async () => {
+    const { store, calls, options } = fixture();
+    const result = await routeCapabilityRequest(store, request({ chain, token_address: address }), options);
+    assert.equal(result.status, "routed");
+    assert.equal(calls[0].input.chain, chain === "bsc" ? "bnb" : chain);
+  });
+}
+
+test("truncated search cannot prove an unambiguous symbol", async () => {
+  const { store, calls, options } = fixture({ mutate: (r, id) => { if (id === "nansen_search_general") r.data.total_results = 60; } });
+  const result = await routeCapabilityRequest(store, request(), options);
+  assert.equal(result.status, "token_resolution_ambiguous");
+  assert.equal(calls.length, 1);
+});
+
+test("resolver samples cannot authorize buying another dataset", async () => {
+  const { store, calls, options } = fixture({ mutate: (r, id) => { if (id === "nansen_search_general") r.sample_type = "historical"; } });
+  const result = await routeCapabilityRequest(store, request(), options);
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 1);
+});
+
+test("missing holder chain is clarified before advertising account authorization", () => {
+  const plan = inferRoutePlan("查PONS代币前10大持有人", { registered_capabilities: ["token_holders"], agentrouter_authenticated: false, constraints: { max_price_usdc: "0.05" } });
+  assert.equal(plan.auth_requirement.required, false);
+  assert.equal(plan.abstain_reason, "needs_clarification");
+});
+
+test("Chinese top twenty is not silently top ten", () => {
+  assert.equal(intentToCapabilityRequest(inferIntent("查询 Robinhood Chain 上 PONS 前二十名持币地址")).params.limit, 20);
+});
+
+test("no resolver available is discovered before payment or provider I/O", async () => {
+  const { store, calls, options } = fixture({ resolver: false });
+  const result = await routeCapabilityRequest(store, request(), options);
+  assert.equal(result.status, "token_resolver_not_found");
+  assert.equal(calls.length, 0);
+});
+
+test("declared endpoint chain coverage wins over generic Nansen coverage", () => {
+  const { store } = fixture();
+  store.services.get("nansen_tgm_holders").manifest.input_schema.properties.chain = { type: "string", enum: ["ethereum"] };
+  const result = quoteCapabilityRequest(store, request());
+  assert.equal(result.status, "no_match");
+});
+
 for (const [name, tokens] of [
   ["wrong chain", [{ symbol: "PONS", chain: "ethereum", address }]],
   ["wrapped substitute", [{ symbol: "WPONS", chain: "robinhood", address }]],
