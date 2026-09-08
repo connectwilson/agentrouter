@@ -278,6 +278,21 @@ test("BSC transaction and ERC-8004 evidence audits never degrade into a pool-ran
   assert.equal(plan.must_not_fallback, true);
 });
 
+test("token smart-money requests without a chain clarify before any account or payment step", () => {
+  const plan = inferRoutePlan(
+    "查询 PONS 近 24 小时聪明钱动向。",
+    context({ connected_sources: [] })
+  );
+
+  assertCanonicalEnvelope(plan);
+  assert.equal(plan.task_family, "clarification");
+  assert.equal(plan.capability, "token_smart_money_activity");
+  assert.equal(plan.route_family, "none");
+  assert.equal(plan.abstain_reason, "needs_clarification");
+  assert.deepEqual(plan.auth_requirement, { required: false, kind: "none", source: null });
+  assert.equal(plan.must_not_fallback, true);
+});
+
 test("a vague research request abstains before auth, routing, or paid execution", () => {
   const plan = inferRoutePlan("帮我研究一下这个东西。", context({ connected_sources: [] }));
 
