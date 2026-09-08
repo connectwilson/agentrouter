@@ -22,7 +22,7 @@ function harness(options = {}) {
   const info = v => ({ provider_id: v.provider_id, chain_id: 56, transaction: { to: REGISTRY, value: "0x0", data: "0xf2c298be00" },
     gas_sponsorship: { available: true, endpoint: v.registration_endpoint + "/paymaster" }, ...options.info });
   let receipts = 0;
-  const wallet = { request: async request => {
+  const wallet = { ...options.walletFlags, request: async request => {
     calls.push(request.method);
     if (options.wallet) { const r = await options.wallet(request); if (r !== undefined) return r; }
     switch (request.method) {
@@ -45,7 +45,7 @@ function harness(options = {}) {
     return { identity: { agent_id: String(receipts), owner_address: OWNER, tx_hash: body.tx_hash } };
   };
   const journal = { get: key => saved.get(key), set: (key, value) => { if (options.storageFail) throw new Error("Storage unavailable"); saved.set(key, structuredClone(value)); } };
-  const batch = createVendorRegistrationBatch({ wallet, api, journal, onUpdate: x => updates.push(x), sleep: async () => {}, receiptAttempts: 2 });
+  const batch = createVendorRegistrationBatch({ wallet, walletInfo:options.walletInfo, api, journal, onUpdate: x => updates.push(x), sleep: async () => {}, receiptAttempts: 2 });
   return { batch, calls, updates, saved, vendors, wallet, api, journal };
 }
 
@@ -192,3 +192,31 @@ test("malformed recovery hash and malformed wallet result never reach submission
   assert.equal((await bad.batch.run(bad.vendors,OWNER)).status,"paused");
   assert.ok(!bad.calls.includes("eth_sendRawTransaction"));
 });
+
+for(const options of [{walletFlags:{isRabby:true}}, {walletInfo:{rdns:"io.rabby"}}]) {
+  test("Rabby fresh registration stops before wallet prompts and sponsor calls", async () => {
+    const h = harness(options);
+    assert.equal((await h.batch.run(h.vendors,OWNER)).status,"paused");
+    assert.deepEqual(h.calls,["config"]);
+    assert.equal(h.updates.at(-1).error_code,"WALLET_SPONSORED_SIGNING_UNSUPPORTED");
+    assert.match(h.updates.at(-1).message,/Rabby/);
+  });
+  test("Rabby can recover a submitted hash without unsupported signing or wallet prompts", async () => {
+    const h = harness(options);
+    assert.equal((await h.batch.run([{...h.vendors[0],recovery_hash:HASH}],OWNER)).status,"completed");
+    assert.deepEqual(h.calls,["config","verify"]);
+  });
+}
+
+for(const [code, expected] of [[4001,"cancelled"],[4100,"authorization"],[4200,"does not support"],[-32601,"does not support"],[-32002,"pending"],[-32603,"failed"],[undefined,"failed"]]) {
+  test("signing error classification preserves code " + code + " without exposing wallet payload", async () => {
+    const h = harness({wallet:r=>{if(r.method === "eth_signTransaction") throw Object.assign(new Error("sensitive provider payload"),{code});}});
+    await h.batch.run(h.vendors,OWNER);
+    const update = h.updates.at(-1);
+    assert.equal(update.error_code,code ?? "WALLET_SIGNING_FAILED");
+    assert.match(update.message,new RegExp(expected,"i"));
+    assert.doesNotMatch(update.message,/sensitive/);
+    assert.ok(!h.calls.includes("eth_sendRawTransaction"));
+    assert.ok(!h.calls.includes("eth_sendTransaction"));
+  });
+}
