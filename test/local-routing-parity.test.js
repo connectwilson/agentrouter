@@ -859,6 +859,34 @@ test("natural X post reads take precedence over keyword search and preserve a ze
   assert.equal(result.route_plan.budget_gate.paid_calls_allowed, false);
 });
 
+test("natural X account URLs reach the native account-history handoff", async () => {
+  const response = await callLocalMcpPackage({
+    jsonrpc: "2.0",
+    id: 391,
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: {
+        task: "能读到 https://x.com/hyperyoolo 内容吗？请读取该账号公开资料及最近几条原创帖子",
+        consumer_context: {
+          local_browser: {
+            adapter: "codex_browser",
+            available: true,
+            operations: ["read_user_posts"]
+          }
+        }
+      }
+    }
+  });
+  const result = JSON.parse(response.result.content[0].text);
+  assert.equal(result.status, "local_connector_required");
+  assert.equal(result.request.capability, "social_user_voice_research");
+  assert.equal(result.request.params.operation, "read_user_posts");
+  assert.equal(result.request.params.handle, "hyperyoolo");
+  assert.equal(result.handoff.target, "https://x.com/hyperyoolo");
+  assert.equal(result.handoff.selected_adapter, "codex_browser");
+});
+
 test("structured social batches prefer native browser handoffs per platform", async () => {
   const routed = await handleLocalStructuredSocialBatchRequest({
     method: "tools/call",

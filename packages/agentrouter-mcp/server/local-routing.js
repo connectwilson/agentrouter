@@ -340,7 +340,7 @@ export function decorateStandaloneLocalResult(result, { maxPrice = null } = {}) 
       : { required: false, kind: "none", source: null },
     budget_gate: {
       max_price_usdc: maxPrice ?? localRequestMaxPrice(result.request),
-      paid_calls_allowed: true,
+      paid_calls_allowed: Number(maxPrice ?? localRequestMaxPrice(result.request)) > 0,
       status: "allowed"
     },
     abstain_reason: null,

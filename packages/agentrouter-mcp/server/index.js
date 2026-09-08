@@ -151,8 +151,11 @@ async function forwardRequest(message) {
       });
       return;
     }
+    // A direct post URL is an identity-bearing read. It must beat generic
+    // keyword detection, which otherwise treats the URL as a search query.
+    const localSocialPost = localSocialPostRequest(message);
     // Keyword search only works where a browser is: the hosted server has none.
-    const localSearch = localSocialSearchRequest(message);
+    const localSearch = localSocialPost ? null : localSocialSearchRequest(message);
     if (localSearch) {
       const nativeHandoff = localBrowserSearchHandoffRequest(message, localSearch);
       if (nativeHandoff) {
@@ -180,7 +183,6 @@ async function forwardRequest(message) {
       });
       return;
     }
-    const localSocialPost = localSocialPostRequest(message);
     if (localSocialPost) {
       const nativeHandoff = localBrowserHandoffRequest(message, localSocialPost);
       if (nativeHandoff) {

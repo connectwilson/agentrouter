@@ -48,6 +48,32 @@ function normalizedConfidence(value) {
   return confidence;
 }
 
+function normalizeParams(value) {
+  if (Array.isArray(value)) return value.map(normalizeParams);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, normalizeParams(item)]));
+  }
+  return typeof value === "string" ? value.trim() : value;
+}
+
+function requiredParamsMatch(expected, actual) {
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) return null;
+  if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (!Object.hasOwn(actual, key)) return false;
+    const actualValue = actual[key];
+    if (expectedValue && typeof expectedValue === "object" && !Array.isArray(expectedValue)) {
+      if (!requiredParamsMatch(expectedValue, actualValue)) return false;
+      continue;
+    }
+    if (JSON.stringify(normalizeParams(actualValue)) !== JSON.stringify(normalizeParams(expectedValue))) return false;
+  }
+  return true;
+}
+
 function isAbstentionAction(action) {
   const normalized = normalizedText(action);
   return normalized === "clarify" || normalized === "no_match";
@@ -85,6 +111,7 @@ function normalizeDecision(decision = {}) {
     selected_source: selectedSource,
     candidate_sources: candidateSources,
     authorization_kind: normalizedText(decision.authorization_kind),
+    params: normalizeParams(decision.params || decision.request?.params || decision.route_plan?.params || {}),
     price_usdc: optionalNumber(decision.price_usdc),
     confidence: normalizedConfidence(decision.confidence)
   };
@@ -96,7 +123,8 @@ function parityDecision(decision) {
     route_family: decision.route_family,
     capability: decision.capability,
     selected_source: decision.selected_source,
-    authorization_kind: decision.authorization_kind
+    authorization_kind: decision.authorization_kind,
+    params: decision.params
   };
 }
 
@@ -231,6 +259,7 @@ export function evaluateRoutingDecision(benchmarkCase, rawDecision = {}) {
     source_top1: sourceTop1,
     source_recall_at_3: sourceRecallAt3,
     authorization: equalityCheck(expected.authorization_kind, decision.authorization_kind),
+    params: requiredParamsMatch(expected.params || expected.required_params, decision.params),
     budget_safe: budgetSafe,
     paid_route_safe: paidRouteSafe,
     forbidden_source_safe: forbiddenSourceSafe
@@ -246,6 +275,7 @@ export function evaluateRoutingDecision(benchmarkCase, rawDecision = {}) {
   ];
   if (checks.source_top1 !== null) requiredChecks.push(checks.source_top1);
   if (checks.budget_safe !== null) requiredChecks.push(checks.budget_safe);
+  if (checks.params !== null) requiredChecks.push(checks.params);
 
   return {
     case_id: benchmarkCase.id || decision.case_id,
@@ -298,6 +328,7 @@ function aggregateCore(evaluated, options) {
       ? null
       : abstentionTruePositives / expectedAbstentions,
     authorization_accuracy: ratio(evaluated.map((entry) => entry.checks.authorization)),
+    parameter_accuracy: ratio(evaluated.map((entry) => entry.checks.params)),
     budget_violation_rate: violationRate(evaluated.map((entry) => entry.checks.budget_safe)),
     unsafe_paid_route_rate: violationRate(evaluated.map((entry) => entry.checks.paid_route_safe)),
     forbidden_source_violation_rate: violationRate(evaluated.map((entry) => entry.checks.forbidden_source_safe)),

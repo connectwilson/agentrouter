@@ -67,6 +67,23 @@ export function localSocialSearchRequest(message) {
     if (isSocialProviderResearch(task) || EXPLICIT_SOCIAL_VENDOR.test(task)) return null;
     const platform = explicitPlatformInTask(task);
     if (!platform || !task) return null;
+    // URLs identify a specific post or account; they are not keywords. Decide
+    // their operation before applying any natural-language query cleanup.
+    if (platform === "x" && xStatusUrlInTask(task)) return null;
+    const accountHandle = platform === "x" ? xProfileHandleInTask(task) : null;
+    if (accountHandle) {
+      return {
+        platform,
+        operation: "read_user_posts",
+        handle: accountHandle,
+        query: task,
+        quality_context: task,
+        limit: args.limit,
+        capability: "social_user_voice_research",
+        ...naturalXConstraints(task),
+        supplement_on_insufficient: false
+      };
+    }
     const naturalConstraints = platform === "x" ? naturalXConstraints(task) : {};
     const cleanedQuery = socialQuery(task, platform);
     return {
@@ -152,6 +169,7 @@ export function localBrowserSearchHandoffRequest(message, request) {
     target: request.target,
     params,
     localExecutionPlan,
+    constraints: localBudgetConstraints(message),
     consumerContext
   });
   return {
@@ -167,6 +185,12 @@ export function localBrowserSearchHandoffRequest(message, request) {
     fallback_allowed: false,
     local_execution_plan: localExecutionPlan
   };
+}
+
+function localBudgetConstraints(message) {
+  const constraints = message?.params?.arguments?.constraints;
+  if (!constraints || typeof constraints !== "object" || !Object.hasOwn(constraints, "max_price_usdc")) return {};
+  return { max_price_usdc: constraints.max_price_usdc };
 }
 
 function naturalXConstraints(task) {
@@ -395,6 +419,28 @@ function rowHandle(row) {
   } catch {
     return "";
   }
+}
+
+function xStatusUrlInTask(task) {
+  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/(?:i\/status|[A-Za-z0-9_]{1,30}\/status)\/\d+(?:[/?#]|$)/i.test(String(task || ""));
+}
+
+function xProfileHandleInTask(task) {
+  const urls = (String(task || "").match(/https?:\/\/[^\s]+/ig) || [])
+    .map((value) => value.replace(/[，,。.!！?？]+$/g, ""));
+  for (const value of urls) {
+    try {
+      const url = new URL(value);
+      if (!["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(url.hostname.toLowerCase())) continue;
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments.length !== 1) continue;
+      const handle = normalizeHandle(segments[0]);
+      if (handle && !new Set(["home", "explore", "search", "settings", "i", "intent"]).has(handle.toLowerCase())) return handle;
+    } catch {
+      // Ignore malformed text that merely resembles a URL.
+    }
+  }
+  return null;
 }
 
 function rowTimestamp(value) {

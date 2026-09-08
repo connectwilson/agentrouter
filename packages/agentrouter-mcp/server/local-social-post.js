@@ -112,15 +112,13 @@ export function localBrowserHandoffRequest(message, parsed) {
     operation: "read_post",
     target: parsed.canonical_url,
     localExecutionPlan,
+    constraints: localBudgetConstraints(message),
     consumerContext
   });
   return {
     ok: false,
     status: "local_connector_required",
-    request: {
-      capability: "social_post_read",
-      params: { url: parsed.canonical_url, platform: parsed.platform }
-    },
+    request: handoff.request,
     action_required: {
       code: "LOCAL_BROWSER_EXECUTION_REQUIRED",
       message: "Use the AI client's built-in browser for this read-only request, then call agentrouter_complete_handoff with the structured result.",
@@ -130,6 +128,12 @@ export function localBrowserHandoffRequest(message, parsed) {
     fallback_allowed: false,
     local_execution_plan: localExecutionPlan
   };
+}
+
+function localBudgetConstraints(message) {
+  const constraints = message?.params?.arguments?.constraints;
+  if (!constraints || typeof constraints !== "object" || !Object.hasOwn(constraints, "max_price_usdc")) return {};
+  return { max_price_usdc: constraints.max_price_usdc };
 }
 
 export function localBrowserCompletionRequest(message) {

@@ -344,6 +344,7 @@ function normalizeBrowserRequest(input) {
     : input.localExecutionPlan?.params && typeof input.localExecutionPlan.params === "object"
       ? input.localExecutionPlan.params
       : {};
+  const constraints = normalizeConstraints(input.constraints);
   const limit = Math.min(Math.max(Math.trunc(Number(rawParams.limit) || (operation === "read_post" ? 1 : 10)), 1), 50);
   if (["read_post", "read_thread"].includes(operation)) {
     const target = clean(input.target || rawParams.url || rawParams.target, 2000);
@@ -353,7 +354,7 @@ function normalizeBrowserRequest(input) {
     return {
       target,
       targetIdentity: { post_id: identity.postId },
-      request: { capability, params: { platform, operation, url: target, limit } }
+      request: { capability, params: { platform, operation, url: target, limit }, constraints }
     };
   }
   if (operation === "read_user_posts") {
@@ -363,7 +364,7 @@ function normalizeBrowserRequest(input) {
     return {
       target: `https://x.com/${handle}`,
       targetIdentity: { handle: handle.toLowerCase() },
-      request: { capability: "social_user_voice_research", params: compactParams({ ...rawParams, platform, operation, handle, limit }) }
+      request: { capability: "social_user_voice_research", params: compactParams({ ...rawParams, platform, operation, handle, limit }), constraints }
     };
   }
   if (operation === "read_trends") {
@@ -371,7 +372,7 @@ function normalizeBrowserRequest(input) {
     return {
       target: "https://x.com/explore/tabs/trending",
       targetIdentity: { page: "trending" },
-      request: { capability: "social_search", params: compactParams({ ...rawParams, platform, operation, limit }) }
+      request: { capability: "social_search", params: compactParams({ ...rawParams, platform, operation, limit }), constraints }
     };
   }
   const query = clean(rawParams.query || rawParams.keyword || rawParams.question || rawParams.task, 1000);
@@ -379,8 +380,13 @@ function normalizeBrowserRequest(input) {
   return {
     target: `${canonicalOrigin(platform)}/search`,
     targetIdentity: { query_hash: createHash("sha256").update(query).digest("hex") },
-    request: { capability: rawParams.capability || "social_search", params: compactParams({ ...rawParams, platform, operation, query, limit }) }
+    request: { capability: rawParams.capability || "social_search", params: compactParams({ ...rawParams, platform, operation, query, limit }), constraints }
   };
+}
+
+function normalizeConstraints(value) {
+  if (!value || typeof value !== "object" || !Object.hasOwn(value, "max_price_usdc")) return {};
+  return { max_price_usdc: String(value.max_price_usdc) };
 }
 
 function normalizeCompletionSource(payload, value) {
