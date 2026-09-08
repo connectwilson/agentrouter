@@ -3229,7 +3229,7 @@ test("consumer feedback updates trust and affects later routing", async () => {
 });
 
 test("AgentRouter routes generic netflow requests to dynamic registered services", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ server, baseUrl }) => {
     const studioResponse = await fetch(`${baseUrl}/studio/providers`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -3248,6 +3248,7 @@ test("AgentRouter routes generic netflow requests to dynamic registered services
     assert.equal(studioResponse.status, 201);
     const provider = await studioResponse.json();
     assert.ok(provider.manifest.capabilities.includes("netflow"));
+    server.store.services.get("eth_spot_netflow_24h").manifest.freshness.max_data_lag_seconds = 300;
 
     const askResponse = await fetch(`${baseUrl}/agent-router/ask`, {
       method: "POST",
@@ -3599,6 +3600,9 @@ test("AgentRouter retries the next token smart-money service when a provider fai
         })
       });
       assert.equal(healthyFlowResponse.status, 201);
+      for (const serviceId of ["failing_hype_flow", "healthy_hype_flow"]) {
+        server.store.services.get(serviceId).manifest.freshness.max_data_lag_seconds = 300;
+      }
 
       const cli = await runAgentRouterCli(["ask", "查 HYPE 近 24 小时聪明钱动向"], {
         ADN_REGISTRY_URL: baseUrl
@@ -3753,7 +3757,7 @@ test("AgentRouter blocks ambiguous token symbol substitutions before target paym
       });
       assert.equal(flowResponse.status, 201);
 
-      const cli = await runAgentRouterCli(["ask", "查 GENIUS 近 24 小时聪明钱动向"], {
+      const cli = await runAgentRouterCli(["ask", "查以太坊上 GENIUS 近 24 小时聪明钱动向"], {
         ADN_REGISTRY_URL: baseUrl
       });
       assert.equal(cli.code, 0, cli.stderr);
