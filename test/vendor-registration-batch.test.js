@@ -10,6 +10,9 @@ test("dashboard offers explicit selection, owner preview, pause and persistent p
   assert.match(html, /createVendorRegistrationBatch/);
   assert.match(html, /row\.detail\.textContent\s*=/);
   assert.doesNotMatch(html, /Vendor pays 0 BNB and remains the onchain owner/);
+  assert.match(html, /vendor-payment-mode/);
+  assert.match(html, /Review platform fee/);
+  assert.match(html, /confirmFee:/);
 });
 
 const OWNER = "0x0531bc53d9632E58dd08b54034824E2FdF68f1dB";
