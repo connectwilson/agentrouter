@@ -264,6 +264,20 @@ test("XLM liquidation max-pain preserves the asset and chooses the registered-se
   assert.equal(plan.abstain_reason, null);
 });
 
+test("BSC transaction and ERC-8004 evidence audits never degrade into a pool-ranking query", () => {
+  const plan = inferRoutePlan(
+    "Verify BSC transaction 0xce780499022ade2028085acc000218a8e5d1cebddf4df912bd9dd779135fc365, ERC-8004 Agent ID 340924, and whether feedback exists for req_1788794834931.",
+    context({ connected_sources: [] })
+  );
+
+  assertCanonicalEnvelope(plan);
+  assert.equal(plan.route_family, "none");
+  assert.equal(plan.capability, "onchain_evidence_audit");
+  assert.equal(plan.abstain_reason, "capability_not_available");
+  assert.deepEqual(plan.candidate_sources, []);
+  assert.equal(plan.must_not_fallback, true);
+});
+
 test("a vague research request abstains before auth, routing, or paid execution", () => {
   const plan = inferRoutePlan("帮我研究一下这个东西。", context({ connected_sources: [] }));
 
