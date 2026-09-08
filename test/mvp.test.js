@@ -3438,7 +3438,7 @@ test("AgentRouter resolves token symbols before invoking token-address services"
 });
 
 test("AgentRouter discloses wrapped-token substitutions during token resolution", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ server, baseUrl }) => {
     const resolverResponse = await fetch(`${baseUrl}/studio/providers`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -3476,6 +3476,7 @@ test("AgentRouter discloses wrapped-token substitutions during token resolution"
       })
     });
     assert.equal(flowResponse.status, 201);
+    server.store.services.get("hyperevm_token_flow").manifest.freshness.max_data_lag_seconds = 300;
 
     const response = await fetch(`${baseUrl}/agent-router/request`, {
       method: "POST",

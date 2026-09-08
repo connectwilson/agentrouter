@@ -18,6 +18,9 @@ function createPaidService(store, baseUrl = "http://127.0.0.1:8800") {
     pricing: { amount: "0.01", currency: "USDC", network: "agentrouter" },
     provider: { provider_id: "browser_auth_test_provider" },
     endpoint: { url: `${baseUrl}/provider/browser-auth-test`, method: "POST" },
+    // The task asks for the current liquidation level. The fixture must declare
+    // that it can meet the current-data requirement before auth is considered.
+    freshness: { update_frequency: "minute", max_data_lag_seconds: 300 },
     input_schema: { type: "object", properties: {} },
     output_schema: { type: "object", properties: {} },
     sample_request: {},

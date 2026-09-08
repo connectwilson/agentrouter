@@ -2003,19 +2003,24 @@ function pickTokenResolver(services) {
 function findTokenMatch(data, { tokenSymbol, chain }) {
   const rows = flattenObjects(data);
   const normalized = String(tokenSymbol || "").toLowerCase();
-  const chainNormalized = String(chain || "").toLowerCase();
+  const chainNormalized = normalizeProviderChain(chain);
   const candidates = rows.map((row) => ({
     address: row.token_address || row.contract_address || row.contractAddress || row.address,
     symbol: row.symbol || row.token_symbol || row.ticker,
     name: row.name || row.token_name,
     chain: row.chain || row.network || row.blockchain
   })).filter((row) => /^0x[a-fA-F0-9]{40}$/.test(String(row.address || "")));
-  return candidates.find((row) =>
-    String(row.symbol || "").toLowerCase() === normalized &&
-    (!row.chain || !chainNormalized || String(row.chain).toLowerCase() === chainNormalized)
-  ) || candidates.find((row) => String(row.symbol || "").toLowerCase() === normalized)
-    || candidates.find((row) => String(row.name || "").toLowerCase() === normalized)
-    || candidates[0] || null;
+  // A resolver may return popular tickers from several networks.  Once a
+  // chain is part of the request, accepting a symbol-only fallback would turn
+  // an explicit BSC request into an Ethereum (or another-network) paid call.
+  // Keep substitutions (for example HYPE -> WHYPE) possible only *within* the
+  // requested chain; describeTokenResolution will disclose or block them.
+  const chainCandidates = chainNormalized
+    ? candidates.filter((row) => normalizeProviderChain(row.chain) === chainNormalized)
+    : candidates;
+  return chainCandidates.find((row) => String(row.symbol || "").toLowerCase() === normalized)
+    || chainCandidates.find((row) => String(row.name || "").toLowerCase() === normalized)
+    || chainCandidates[0] || null;
 }
 
 function describeTokenResolution({ requestedSymbol, matchedSymbol, matchedName, chain }) {
@@ -2105,6 +2110,7 @@ function recentDateRange(days) {
 function normalizeProviderChain(chain) {
   const normalized = String(chain || "").toLowerCase();
   if (normalized === "bsc") return "bnb";
+  if (["hyperliquid", "hyper evm", "hyper-evm"].includes(normalized)) return "hyperevm";
   return normalized || "ethereum";
 }
 

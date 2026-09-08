@@ -770,19 +770,22 @@ function findTokenMatch(data, { tokenSymbol, chain }) {
       address: item.token_address || item.address || item.contract_address || item.contract,
       symbol: item.symbol || item.token_symbol || item.ticker,
       name: item.name || item.token_name,
-      chain: normalizeProviderChain(item.chain || item.network || chain)
+      chain: item.chain || item.network ? normalizeProviderChain(item.chain || item.network) : null
     }))
     .filter((item) => item.address);
   const normalized = String(tokenSymbol || "").toLowerCase();
   const targetChain = normalizeProviderChain(chain);
-  const sameChain = candidates.filter((item) => !item.chain || item.chain === targetChain);
+  // A missing or mismatched chain is not evidence that the returned contract
+  // belongs to the requested network. Never pay a second provider based on a
+  // guessed cross-chain token match.
+  const sameChain = candidates.filter((item) => item.chain === targetChain);
   const exact = sameChain.find((item) => String(item.symbol || "").toLowerCase() === normalized);
   if (exact) return { ...exact, match_strategy: "exact_symbol", candidate_count: candidates.length };
   const wrapped = sameChain.find((item) => String(item.symbol || "").toLowerCase() === `w${normalized}`);
   if (wrapped) return { ...wrapped, match_strategy: "wrapped_symbol", candidate_count: candidates.length };
   const name = sameChain.find((item) => String(item.name || "").toLowerCase().includes(normalized));
   if (name) return { ...name, match_strategy: "name_contains_symbol", candidate_count: candidates.length };
-  const fallback = sameChain[0] || candidates[0] || null;
+  const fallback = sameChain[0] || null;
   return fallback ? { ...fallback, match_strategy: "first_candidate", candidate_count: candidates.length } : null;
 }
 
