@@ -1,4 +1,4 @@
-import { settlementChain, erc8004Registries, erc8004ExplorerUrl } from "./chains.js";
+import { settlementChain, erc8004Registries, erc8004ExplorerUrl, registrationMatchesSettlementChain } from "./chains.js";
 import { serviceMatchesCapabilityPack } from "./capability-packs.js";
 
 export function createMemoryStore() {
@@ -682,6 +682,7 @@ export function publicServiceSummary(record) {
 // a badge for an unminted identity would be a claim we cannot back.
 export function publicErc8004(record) {
   const registration = record?.manifest?.registration?.erc8004;
+  if ([56, 97].includes(settlementChain().id) && !registrationMatchesSettlementChain(registration)) return null;
   const agentId = registration?.agent_id || record?.manifest?.provider?.erc8004_agent_id || null;
   if (!agentId) return null;
   const chain = registration?.network || settlementChain().network;
@@ -692,7 +693,7 @@ export function publicErc8004(record) {
     agent_id: String(agentId),
     chain,
     chain_id: registration?.chain_id || settlementChain().id,
-    registry: registration?.identity_registry || erc8004Registries(chain).identityRegistry,
+    registry: registration?.identity_registry || registration?.registry_address || erc8004Registries(chain).identityRegistry,
     // Null off BSC: 8004scan indexes nothing else, and a link that 404s is
     // worse than no link.
     explorer_url: erc8004ExplorerUrl(String(agentId), chain)
@@ -722,6 +723,9 @@ export function publicErc8004Status(record) {
       registered_chain: registeredChain,
       agent_id: String(agentId)
     };
+  }
+  if ([56, 97].includes(settlementChain().id) && !registrationMatchesSettlementChain(registration)) {
+    return { state: "identity_unverified", active_chain: activeChain, registered_chain: registeredChain, agent_id: null };
   }
   return {
     state: registration?.status === "submitted" ? "submitted" : "registered",

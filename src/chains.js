@@ -138,6 +138,20 @@ export function erc8004AgentRegistryId(chainId = activeSettlementChainId()) {
   return `eip155:${settlementChain(chainId).id}:${erc8004Registries(chainId).identityRegistry}`;
 }
 
+// Shared by marketplace cards and feedback: storage uses identity_registry,
+// verified receipts use registry_address. Neither may contradict the other.
+export function registrationMatchesSettlementChain(registration = {}) {
+  const chain = settlementChain();
+  if (!/^(0|[1-9]\d*)$/.test(String(registration?.agent_id ?? ""))) return false;
+  const registries = [registration.registry_address, registration.identity_registry].filter(Boolean);
+  if (registries.some(address => String(address).toLowerCase() !== erc8004Registries().identityRegistry.toLowerCase())) return false;
+  if ([56, 97].includes(chain.id) && (!registries.length || !(registration.chain_id || registration.caip2 || registration.network))) return false;
+  if (registration.chain_id != null && registration.chain_id !== "" && Number(registration.chain_id) !== chain.id) return false;
+  if (registration.caip2 && String(registration.caip2).toLowerCase() !== chain.caip2.toLowerCase()) return false;
+  if (registration.network && ![chain.network.toLowerCase(), String(chain.id), chain.caip2.toLowerCase()].includes(String(registration.network).toLowerCase())) return false;
+  return true;
+}
+
 // 8004scan only indexes BSC, and the link must describe the chain the agent was
 // actually registered on — not whichever chain this process happens to settle
 // on now. Passing the ambient chain produced links pointing at BSC's registry

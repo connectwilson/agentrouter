@@ -174,12 +174,10 @@ test("a contradictory BSC network and chain id is hidden instead of linked", asy
   });
 });
 
-test("legacy provider-level Agent IDs remain readable only on the active chain", async () => {
+test("legacy provider-level Agent IDs cannot claim an active BSC identity without registry provenance", async () => {
   await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc" }, async () => {
     const identity = publicErc8004({ manifest: { provider: { erc8004_agent_id: "105" } } });
-    assert.equal(identity.agent_id, "105");
-    assert.equal(identity.chain, "bsc");
-    assert.equal(identity.explorer_url, "https://8004scan.io/agents/56/105");
+    assert.equal(identity, null);
   });
 });
 

@@ -157,7 +157,7 @@ test("an agent's explorer link follows the chain it was registered on", async ()
     const onArc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "22197", network: "arc-testnet", chain_id: 5042002 } } } });
     assert.equal(onArc, null);
 
-    const onBsc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "7", network: "bsc", chain_id: 56 } } } });
+    const onBsc = publicErc8004({ manifest: { registration: { erc8004: { agent_id: "7", network: "bsc", chain_id: 56, identity_registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" } } } });
     assert.equal(onBsc.explorer_url, "https://8004scan.io/agents/56/7");
 
     // No identity until one is actually minted.

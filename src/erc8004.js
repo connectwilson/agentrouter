@@ -1,7 +1,7 @@
 import { createPublicClient, createWalletClient, decodeEventLog, decodeFunctionData, encodeFunctionData, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ARC_TESTNET, isEvmAddress } from "./arc-payment.js";
-import { erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl, settlementChain } from "./chains.js";
+import { erc8004Registries, erc8004AgentRegistryId, erc8004ExplorerUrl, settlementChain, registrationMatchesSettlementChain } from "./chains.js";
 import { hashJson } from "./evidence.js";
 import { keccak256Hex } from "./keccak.js";
 
@@ -195,22 +195,6 @@ function resolveErc8004AgentIdentity({ serviceId, manifest } = {}) {
   return legacy != null && legacy !== ""
     ? { agentId: String(legacy), source: "legacy_manifest" }
     : { agentId: "", source: "not_configured" };
-}
-
-function registrationMatchesSettlementChain(registration = {}) {
-  const chain = settlementChain();
-  if (!/^(0|[1-9]\d*)$/.test(String(registration.agent_id ?? ""))) return false;
-  if (registration.registry_address && String(registration.registry_address).toLowerCase() !== erc8004Registries().identityRegistry.toLowerCase()) return false;
-  if ([56, 97].includes(chain.id) && (!registration.registry_address || !(registration.chain_id || registration.caip2 || registration.network))) return false;
-  if (registration.chain_id != null && registration.chain_id !== "") {
-    if (Number(registration.chain_id) !== chain.id) return false;
-  }
-  if (registration.caip2 && String(registration.caip2).toLowerCase() !== chain.caip2.toLowerCase()) return false;
-  if (registration.network) {
-    const network = String(registration.network).toLowerCase();
-    if (![chain.network.toLowerCase(), String(chain.id), chain.caip2.toLowerCase()].includes(network)) return false;
-  }
-  return true;
 }
 
 export function createErc8004AgentMetadata({ manifest, baseUrl = "" } = {}) {
