@@ -222,6 +222,8 @@ function publicArcAnchor(anchor) {
     "chain_id",
     "tx_hash",
     "block_number",
+    "contract_address",
+    "explorer_url",
     "event_type",
     "storage_model",
     "request_id",

@@ -2,7 +2,8 @@ import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { isEvmAddress } from "./arc-payment.js";
 import { hashJson } from "./evidence.js";
-import { settlementChain } from "./chains.js";
+import { settlementChain, SETTLEMENT_CHAINS } from "./chains.js";
+import { readPersistentAnchorJobs } from "./persistence.js";
 import { createAnchorOutboxJob, executeAnchorOutboxJob, persistentAnchorOutbox } from "./anchor-outbox.js";
 import { createSponsoredAnchorWallet } from "./bsc-anchor-paymaster.js";
 
@@ -171,16 +172,7 @@ export async function anchorEvidenceOnArc(evidence = {}, {
   } catch (error) {
     return anchorConfigFailure(baseAnchor(evidence), chain, contractAddress, error);
   }
-  const args = [
-    String(evidence.request_id || ""),
-    bytes32(evidence.trace_hash),
-    bytes32(evidence.result_hash),
-    bytes32(evidence.verification_hash),
-    feedbackHash(evidence),
-    hashJson(evidence.service_id || ""),
-    hashJson(evidence.provider_id || ""),
-    paymentHash(evidence)
-  ];
+  const args = evidenceAnchorArgs(evidence);
   const job = createAnchorOutboxJob({
     chainId: chain.id,
     anchorAddress: account.address,
@@ -295,6 +287,56 @@ export function createAnchorClients({ account, chain, publicClient: suppliedClie
     }),
     publicClient
   };
+}
+
+// A retry finishes independently of the historical execution snapshot. Join
+// that snapshot to its exact durable job at read time, without mutating either
+// record or causing another transaction. Hash binding prevents cross-call,
+// cross-provider and cross-chain attribution of a successful receipt.
+export async function refreshEvidenceAnchors(events, readJobs = readPersistentAnchorJobs) {
+  const expected = new Map();
+  for (const event of events) {
+    const anchor = event.arc_anchor;
+    if (!anchor?.outbox_job_id || anchor.mode === "mock" || !SETTLEMENT_CHAINS.includes(anchor.network)) continue;
+    if (settlementChain(anchor.network).id !== Number(anchor.chain_id)) continue;
+    if (!isEvmAddress(anchor.anchor_account) || !isEvmAddress(anchor.contract_address)) continue;
+    const job = createAnchorOutboxJob({ chainId: anchor.chain_id, anchorAddress: anchor.anchor_account,
+      contractAddress: anchor.contract_address, functionName: "anchorEvidence",
+      requestId: event.request_id, callArgs: evidenceAnchorArgs(event) });
+    if (job.job_id === anchor.outbox_job_id) expected.set(event, job);
+  }
+  const ids = [...new Set([...expected.values()].map(job => job.job_id))];
+  if (!ids.length) return events;
+  const completed = new Map();
+  try {
+    for (let i = 0; i < ids.length; i += 200) {
+      for (const row of await readJobs(ids.slice(i, i + 200))) {
+        if (row.status !== "anchored" || !/^0x[0-9a-fA-F]{64}$/.test(row.tx_hash || "")
+          || !/^[1-9]\d*$/.test(String(row.block_number ?? ""))) continue;
+        // Recompute even the persisted job ID rather than trusting a returned
+        // row merely because it claims to have the requested ID.
+        const identity = createAnchorOutboxJob({ chainId: row.chain_id, anchorAddress: row.anchor_address,
+          contractAddress: row.contract_address, functionName: row.function_name,
+          requestId: row.request_id, callArgs: row.call_args });
+        if (identity.job_id === row.job_id) completed.set(row.job_id, row);
+      }
+    }
+  } catch { return events; } // Keep historical evidence available; never leak DB errors.
+  return events.map(event => {
+    const wanted = expected.get(event);
+    const job = wanted && completed.get(wanted.job_id);
+    if (!job || job.request_id !== event.request_id) return event;
+    const chain = settlementChain(event.arc_anchor.network);
+    return { ...event, arc_anchor: { ...event.arc_anchor, status: "anchored", retryable: false,
+      tx_hash: job.tx_hash, block_number: String(job.block_number),
+      explorer_url: `${chain.blockExplorers.default.url}/tx/${job.tx_hash}` } };
+  });
+}
+
+function evidenceAnchorArgs(evidence) {
+  return [String(evidence.request_id || ""), bytes32(evidence.trace_hash), bytes32(evidence.result_hash),
+    bytes32(evidence.verification_hash), feedbackHash(evidence), hashJson(evidence.service_id || ""),
+    hashJson(evidence.provider_id || ""), paymentHash(evidence)];
 }
 
 function anchorExecutionResult(base, execution, { chain, contractAddress, account }) {

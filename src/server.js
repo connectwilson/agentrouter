@@ -16,7 +16,7 @@ import { getCapabilityCatalog, quoteCapabilityRequest, resolveRoute, routeCapabi
 import { claimPersistentBrowserHandoff, claimPersistentErc8004Hire, claimPersistentServiceRegistration, closePersistence, completePersistentErc8004Hire, failPersistentErc8004Hire, finalizePersistentServiceRegistration, persistenceEnabled, persistenceReadiness, persistentRegistryRequired, releasePersistentServiceRegistration, writePersistentServiceEvent, writePersistentServiceEventsAtomically } from "./persistence.js";
 import { createConsumerFeedbackRequest, verifyServiceResult } from "./verifier.js";
 import { verifyArcUsdcTransfer } from "./arc-payment.js";
-import { anchorEvidenceOnArc, assertEvidenceAnchorReady } from "./arc-anchor.js";
+import { anchorEvidenceOnArc, assertEvidenceAnchorReady, refreshEvidenceAnchors } from "./arc-anchor.js";
 import { createErc8004AgentMetadata, createErc8004FeedbackDescriptor, createErc8004RegistrationTransaction, ERC8004_REPUTATION_ABI, verifyErc8004FeedbackTransaction, verifyErc8004IdentityRegistrationTransaction } from "./erc8004.js";
 import { askAgentRouter } from "./agent-router.js";
 import { createProviderFromStudio, draftFromServiceRecord, studioHtml } from "./studio.js";
@@ -175,6 +175,7 @@ async function refreshLiveServiceState(req, res, store, url, baseUrl, serviceEve
 
 export function createServer({
   store = createMemoryStore(),
+  readAnchorJobs,
   baseUrl = "",
   socialResearchRunner = runSocialResearchCapability,
   allowHostedSocialResearchRunner = false,
@@ -243,6 +244,7 @@ export function createServer({
     res.setHeader("x-request-id", requestId);
     try {
       await routeRequest(req, res, store, baseUrl || getRequestBaseUrl(req), {
+        readAnchorJobs,
         socialResearchRunner,
         allowHostedSocialResearchRunner,
         socialConnectionOptions,
@@ -313,6 +315,7 @@ function safeDiagnosticToken(value, fallback) {
 }
 
 async function routeRequest(req, res, store, baseUrl, {
+  readAnchorJobs,
   socialResearchRunner = runSocialResearchCapability,
   allowHostedSocialResearchRunner = false,
   socialConnectionOptions = {},
@@ -2084,7 +2087,7 @@ async function routeRequest(req, res, store, baseUrl, {
       chain_anchor: `${settlementChain().network}_hash_anchor`,
       storage_model: "full_evidence_offchain_hashes_onchain",
       count: events.length,
-      events: events.map(publicEvidenceEvent)
+      events: (await refreshEvidenceAnchors(events, readAnchorJobs)).map(publicEvidenceEvent)
     });
     return;
   }
@@ -4969,11 +4972,12 @@ function vendorIdentityManifest(store, providerId, baseUrl = "") {
 
 function listRegisterableVendors(store, auth) {
   const actorKey = authUserKey(auth.user);
+  const isOperator = platformOperatorMatches(auth);
   const providerIds = new Set([...store.services.values()]
-    .filter((record) => auth.user?.role === "admin" || record.manifest?.registration?.owner?.user_key === actorKey)
+    .filter((record) => isOperator || auth.user?.role === "admin" || record.manifest?.registration?.owner?.user_key === actorKey)
     .map((record) => record.manifest?.provider?.provider_id)
     .filter(Boolean));
-  if (platformOperatorMatches(auth)) {
+  if (isOperator) {
     for (const source of getExternalApiCatalog(store, actorKey)) {
       if (source.implementation_status === "available" && source.provider_id) providerIds.add(source.provider_id);
     }

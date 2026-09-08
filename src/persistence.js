@@ -371,6 +371,18 @@ export async function readPersistentAnchorJob(jobId) {
   return normalizePersistentAnchorJob(result.rows[0]);
 }
 
+// Bounded primary-key lookup for the public evidence read model. No job is
+// claimed, retried or broadcast by this read path.
+export async function readPersistentAnchorJobs(jobIds = []) {
+  const ids = [...new Set(jobIds)].filter(id => /^anchor_[0-9a-f]{64}$/.test(String(id)));
+  if (!ids.length || !persistenceEnabled()) return [];
+  if (ids.length > 200) throw new Error("Too many anchor jobs in one lookup.");
+  const pool = await getPool();
+  await ensureSchema(pool);
+  const result = await pool.query("select * from adn_anchor_outbox where job_id = any($1::text[])", [ids]);
+  return result.rows.map(normalizePersistentAnchorJob);
+}
+
 export async function claimPersistentAnchorJob({ jobId, workerId, leaseMs = 30_000 } = {}) {
   if (!persistenceEnabled()) return null;
   const pool = await getPool();
