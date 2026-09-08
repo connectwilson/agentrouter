@@ -166,3 +166,27 @@ test("invalid submission hash never counts as a registered identity", async () =
   assert.equal((await h.batch.run(h.vendors, OWNER)).status,"paused");
   assert.ok(!h.calls.includes("verify"));
 });
+
+test("only allowlisted transaction fields reach the wallet, never an injected sender", async () => {
+  const h = harness({info:{transaction:{to:REGISTRY,data:"0xf2c298be00",value:"0x0",from:"0x"+"7".repeat(40)}}});
+  assert.equal((await h.batch.run([h.vendors[0]],OWNER)).status,"completed");
+});
+
+test("receipt mismatch and authentication expiry stop before the next Vendor", async () => {
+  for (const response of [{identity:{agent_id:"42",owner_address:"0x"+"1".repeat(40),tx_hash:HASH}}, {identity:{agent_id:"42",owner_address:OWNER,tx_hash:"0x"+"e".repeat(64)}}]) {
+    const h = harness({api:(p,b)=>b?.tx_hash ? response : undefined});
+    assert.equal((await h.batch.run(h.vendors,OWNER)).status,"paused");
+    assert.equal(h.calls.filter(x=>x==="eth_signTransaction").length,1);
+  }
+  const h = harness({api:()=>{throw new Error("Login expired");}});
+  assert.equal((await h.batch.run(h.vendors,OWNER)).status,"paused");
+  assert.ok(!h.calls.includes("eth_signTransaction"));
+});
+
+test("malformed recovery hash and malformed wallet result never reach submission", async () => {
+  const h = harness();
+  assert.equal((await h.batch.run([{...h.vendors[0],recovery_hash:"0x123"}],OWNER)).status,"paused");
+  const bad = harness({wallet:r=>r.method === "eth_signTransaction" ? {} : undefined});
+  assert.equal((await bad.batch.run(bad.vendors,OWNER)).status,"paused");
+  assert.ok(!bad.calls.includes("eth_sendRawTransaction"));
+});
