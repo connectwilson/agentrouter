@@ -794,10 +794,16 @@ async function routeRequest(req, res, store, baseUrl, {
     const registration = createErc8004RegistrationTransaction({ agentUri });
     const currentIdentity = store.erc8004VendorIdentities?.get(vendorIdentityStoreKey(providerId, registration.network)) || null;
     if (req.method === "GET") {
+      const platform = store.erc8004PlatformIdentities?.get(registration.network);
+      const platformPaid = platformOperatorMatches(auth) && platform?.status === "registered"
+        && Number(platform.chain_id) === registration.chain_id && Boolean(platform.agent_id)
+        && String(platform.registry_address).toLowerCase() === registration.transaction.to.toLowerCase()
+        && /^0x[0-9a-fA-F]{40}$/.test(platform.owner_address || "");
       sendJson(res, 200, {
         ...registration,
         provider_id: providerId,
         current_identity: currentIdentity,
+        platform_paid: { available: Boolean(platformPaid), owner_address: platformPaid ? platform.owner_address : null, vendor_pays_gas: false },
         gas_sponsorship: {
           required: true,
           available: Boolean(String(process.env.ADN_BSC_PAYMASTER_URL || "").trim()),
