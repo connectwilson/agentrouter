@@ -1772,9 +1772,7 @@ async function routeRequest(req, res, store, baseUrl, {
       requireKnownInvocation: true,
       writeEvent: serviceEventPersistence.writeEvent
     });
-    const trustAnchor = result.status === "consumer_feedback_already_recorded" && result.trust_anchor
-      ? result.trust_anchor
-      : await recordConsumerFeedbackAnchor(store, result, baseUrl);
+    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
     result.arc_anchor = trustAnchor.arc_anchor;
     result.erc8004 = trustAnchor.erc8004;
     result.trust_anchor = trustAnchor;
@@ -2946,9 +2944,7 @@ async function callRemoteMcpTool(name, args, store, baseUrl, paymentContext = {}
       actorKey,
       requireKnownInvocation: true
     });
-    const trustAnchor = result.status === "consumer_feedback_already_recorded" && result.trust_anchor
-      ? result.trust_anchor
-      : await recordConsumerFeedbackAnchor(store, result, baseUrl);
+    const trustAnchor = await recordConsumerFeedbackAnchor(store, result, baseUrl);
     return {
       ...result,
       arc_anchor: trustAnchor.arc_anchor,
@@ -4797,6 +4793,10 @@ function resolveFeedbackServiceId(store, requestId) {
 }
 
 async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "") {
+  const previous = feedbackResult.status === "consumer_feedback_already_recorded" ? feedbackResult.trust_anchor : null;
+  // A submitted rating is immutable. Never redirect it to a new identity or
+  // cause a second submission while waiting for its receipt.
+  if (previous?.erc8004?.tx_hash) return previous;
   const record = store.services.get(feedbackResult.service_id);
   const invocation = [...(store.feedbackEvents || [])].reverse().find((event) =>
     event.request_id === feedbackResult.request_id && event.service_id === feedbackResult.service_id
@@ -4813,6 +4813,10 @@ async function recordConsumerFeedbackAnchor(store, feedbackResult, baseUrl = "")
     reason: "ERC-8004 is the single public onchain record for consumer feedback."
   };
   const erc8004 = createConsumerRequiredErc8004Feedback({ feedbackResult, manifest: feedbackManifest, providerId, baseUrl });
+  if (previous) {
+    const fields = ["agent_id", "registry_address", "identity_registry_address", "chain_id", "feedback_hash", "status"];
+    if (erc8004.status === "not_configured" || fields.every(key => previous.erc8004?.[key] === erc8004[key])) return previous;
+  }
   const trustAnchor = {
     trust_anchor_version: "agent_router_trust_anchor_v1",
     primary_standard: erc8004.status === "not_configured" ? "offchain_feedback" : "ERC-8004",
