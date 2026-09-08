@@ -70,8 +70,8 @@ test("refresh requests announcements; legacy injection is explicitly labeled and
 
 test("account binds batch to the explicitly selected wallet, not global injection", () => {
   const html = accountHtml();
-  assert.ok(html.includes('id="vendor-wallet-select"'));
-  assert.ok(html.includes('id="vendor-wallet-status"'));
+  assert.ok(html.includes('walletSelect.id = "vendor-wallet-select"'));
+  assert.ok(html.includes('walletStatus.id = "vendor-wallet-status"'));
   assert.match(html,/wallet:selectedWallet\.provider/);
   assert.doesNotMatch(html,/wallet:window\.ethereum, api:vendorApi/);
   assert.match(html,/recovery\.addEventListener\("input", updateVendorControls\)/);

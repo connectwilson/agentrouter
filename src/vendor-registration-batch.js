@@ -1,10 +1,11 @@
 // Self-contained so the same controller can be embedded in the account page
 // and exercised with fake wallets. This never handles a private key.
-export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate = () => {},
+export function createVendorRegistrationBatch({ wallet, walletInfo = {}, api, journal, onUpdate = () => {},
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), receiptAttempts = 40 }) {
   const address = /^0x[0-9a-fA-F]{40}$/;
   const hash = /^0x[0-9a-fA-F]{64}$/;
   const registry = "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432";
+  const isRabby = walletInfo?.rdns === "io.rabby" || wallet?.isRabby === true;
   let running = false, stopped = false;
   const checkpoint = () => { if (stopped) throw new Error("Batch paused. No further transaction will be sent."); };
   function validateInfo(info, v) {
@@ -55,12 +56,14 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
       if (!wallet?.request) throw new Error("Open this page in a browser with your EVM wallet unlocked.");
       running = true; stopped = false;
       try {
-        const accounts = await wallet.request({method: "eth_requestAccounts"});
-        if (accounts?.[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error("Connected wallet does not match the selected owner. Switch wallets before starting.");
+        if (!isRabby) {
+          const accounts = await wallet.request({method: "eth_requestAccounts"});
+          if (accounts?.[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error("Connected wallet does not match the selected owner. Switch wallets before starting.");
+        }
         for (let index = 0; index < vendors.length; index++) {
           const v = vendors[index];
           const key = "ar-vendor-registration-v1:" + owner.toLowerCase() + ":56:" + v.provider_id;
-          const emit = (status, message, txHash, agentId) => onUpdate({provider_id:v.provider_id, index:index+1, total:vendors.length, status, message, tx_hash:txHash, agent_id:agentId});
+          const emit = (status, message, txHash, agentId, errorCode) => onUpdate({provider_id:v.provider_id, index:index+1, total:vendors.length, status, message, tx_hash:txHash, agent_id:agentId, error_code:errorCode});
           try {
             checkpoint();
             emit("preparing", "Checking Vendor identity and sponsorship…");
@@ -77,6 +80,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
               continue;
             }
             if (previous?.status === "submission_unknown") throw new Error("Submission outcome unknown. Enter its BscScan transaction hash to verify; do not register again.");
+            if (isRabby) throw Object.assign(new Error("Rabby cannot start a new registration through this raw-signing flow. AR needs a compatible sponsored registration path. Do not retry or export wallet secrets; no transaction was sent."), {code:"WALLET_SPONSORED_SIGNING_UNSUPPORTED"});
             if (!info.gas_sponsorship?.available || info.gas_sponsorship.endpoint !== v.registration_endpoint + "/paymaster") {
               throw new Error("Platform gas sponsorship is unavailable. No Vendor-paid transaction was sent.");
             }
@@ -100,8 +104,14 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
                 from:owner,...transaction,gas,gasPrice:"0x0",nonce,chainId:"0x38"
               }]});
             } catch (error) {
-              if (error.code === 4001) throw new Error("Wallet confirmation cancelled. Batch paused.");
-              throw new Error("This wallet cannot sign a sponsored transaction via eth_signTransaction. No BNB-paid fallback was sent.");
+              const originalCode = error?.code ?? error?.data?.originalError?.code ?? error?.cause?.code;
+              const code = typeof originalCode === "number" && Number.isInteger(originalCode) ? originalCode : "WALLET_SIGNING_FAILED";
+              const message = code === 4001 ? "Wallet confirmation cancelled. Batch paused."
+                : code === 4100 ? "Wallet authorization is missing. Review the selected wallet's site connection."
+                : code === -32002 ? "A wallet request is already pending. Complete or cancel it in the selected wallet."
+                : [4200,-32601].includes(code) ? "The selected wallet or its RPC does not support eth_signTransaction."
+                : "Wallet signing failed; this does not prove the signing method is unsupported.";
+              throw Object.assign(new Error(message + " Code: " + code + ". No transaction or BNB-paid fallback was sent."), {code});
             }
             await checkWallet(owner);
             const raw = typeof signed === "string" ? signed : signed?.raw;
@@ -114,7 +124,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
             const submission = await relay({method:"eth_sendRawTransaction",params:[raw]});
             await confirm(v, owner, submission.result, key, emit);
           } catch (error) {
-            emit("paused", error.message || "Registration paused. Review before resuming.");
+            emit("paused", error.message || "Registration paused. Review before resuming.", undefined, undefined, error.code);
             return {status:"paused", provider_id:v.provider_id};
           }
         }

@@ -2,6 +2,7 @@ import { authModalHtml, authModalStyles } from "./auth-modal.js";
 import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
 import { listBnbGoldenTasks } from "./capability-packs.js";
 import { createVendorRegistrationBatch } from "./vendor-registration-batch.js";
+import { createVendorWalletDiscovery } from "./vendor-wallet-discovery.js";
 
 const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
@@ -1659,6 +1660,36 @@ export function accountHtml({ auth = {} } = {}) {
         const batchOwner = document.getElementById("vendor-batch-owner");
         const batchStatus = document.getElementById("vendor-batch-status");
         const vendorRows = new Map();
+        const walletControls = document.createElement("div");
+        walletControls.className = "dash-form";
+        const walletLabel = document.createElement("label");
+        walletLabel.htmlFor = "vendor-wallet-select";
+        walletLabel.textContent = "Registration wallet";
+        const walletSelect = document.createElement("select");
+        walletSelect.id = "vendor-wallet-select";
+        const walletRefresh = document.createElement("button");
+        walletRefresh.type = "button"; walletRefresh.className = "dash-button secondary";
+        walletRefresh.textContent = "Refresh wallets";
+        const walletStatus = document.createElement("p");
+        walletStatus.id = "vendor-wallet-status"; walletStatus.setAttribute("role","status");
+        walletStatus.className = "dash-status";
+        walletControls.append(walletLabel, walletSelect, walletRefresh, walletStatus);
+        batchOwner.parentNode.insertBefore(walletControls, batchOwner.previousElementSibling);
+        const vendorWallets = (${createVendorWalletDiscovery.toString()})({target:window,onChange:entries => {
+          const selected = walletSelect.value;
+          walletSelect.replaceChildren(new Option("Choose your wallet", ""));
+          for (const entry of entries) walletSelect.append(new Option(entry.name + (entry.rdns ? " · " + entry.rdns : ""), entry.id));
+          walletSelect.value = selected;
+          updateVendorControls();
+        }});
+        walletSelect.addEventListener("change", updateVendorControls);
+        walletRefresh.addEventListener("click", () => vendorWallets.refresh());
+        vendorWallets.refresh();
+        window.addEventListener("pagehide", () => vendorWallets.dispose(), {once:true});
+        function rabbySelected() {
+          const entry = vendorWallets.get(walletSelect.value);
+          return entry?.rdns === "io.rabby" || entry?.provider?.isRabby === true;
+        }
         async function vendorApi(path, body) {
           const response = await fetch(path, { method:body ? "POST" : "GET", redirect:"error",
             headers:body ? {"content-type":"application/json"} : {},
@@ -1673,15 +1704,22 @@ export function accountHtml({ auth = {} } = {}) {
           }));
         }
         function updateVendorControls() {
-          const count = selectedVendors().length;
+          const selected = selectedVendors();
+          const count = selected.length;
+          const selectedWallet = vendorWallets.get(walletSelect.value);
+          const needsCompatibleWallet = rabbySelected();
           batchStart.textContent = "Register selected (" + count + "/5)";
-          batchStart.disabled = vendorBatchBusy || count < 1 || count > 5;
+          batchStart.disabled = vendorBatchBusy || !selectedWallet || count < 1 || count > 5 || (needsCompatibleWallet && selected.some(v => !v.recovery_hash));
           batchStop.disabled = !vendorBatchBusy;
           batchOwner.disabled = vendorBatchBusy;
+          walletSelect.disabled = vendorBatchBusy; walletRefresh.disabled = vendorBatchBusy;
+          walletStatus.textContent = !selectedWallet ? "Choose the wallet you intend to use. No connection or signature is requested by discovery."
+            : needsCompatibleWallet ? "Rabby: new sponsored registration is not supported by this AR flow yet. Do not retry or export wallet secrets. Existing transaction hashes can still be verified below."
+            : "Selected: " + selectedWallet.name + ". Raw transaction signing support is not yet verified. No BNB-paid fallback is allowed.";
           for (const [id, row] of vendorRows) {
             const registered = Boolean(vendorItems.find(v => v.provider_id === id)?.agent_id);
             row.select.disabled = vendorBatchBusy || registered;
-            row.button.disabled = vendorBatchBusy || registered;
+            row.button.disabled = vendorBatchBusy || registered || !selectedWallet || (needsCompatibleWallet && !row.recovery.value.trim());
             row.recovery.disabled = vendorBatchBusy || registered;
           }
         }
@@ -1717,6 +1755,7 @@ export function accountHtml({ auth = {} } = {}) {
               recovery.placeholder = "0x… transaction hash (optional)";
               recovery.setAttribute("aria-label", "Transaction hash for " + vendor.provider_id);
               recovery.maxLength = 66;
+              recovery.addEventListener("input", updateVendorControls);
               const note = document.createElement("small");
               note.textContent = "Only receipt verification is performed when a hash is supplied. Never enter wallet secrets.";
               recoveryBox.append(summary, recovery, note);
@@ -1739,6 +1778,8 @@ export function accountHtml({ auth = {} } = {}) {
         }
         async function startVendorBatch(items) {
           if (vendorBatchBusy) return;
+          const selectedWallet = vendorWallets.get(walletSelect.value);
+          if (!selectedWallet) { batchStatus.textContent = "Choose your registration wallet first."; return; }
           vendorBatchBusy = true; updateVendorControls();
           batchStatus.className = "dash-status";
           batchStatus.textContent = "Preparing " + items.length + " Vendor(s) for owner " + batchOwner.value.trim() + ". Confirm each transaction in your wallet.";
@@ -1747,7 +1788,7 @@ export function accountHtml({ auth = {} } = {}) {
             await navigator.locks.request("ar-vendor-registration", {ifAvailable:true}, async lock => {
               if (!lock) throw new Error("Another tab is registering Vendors. Finish or pause it before continuing here.");
               vendorBatch = (${createVendorRegistrationBatch.toString()})({
-                wallet:window.ethereum, api:vendorApi,
+                wallet:selectedWallet.provider, walletInfo:selectedWallet, api:vendorApi,
                 journal:{
                   get:key => { const value = localStorage.getItem(key); return value ? JSON.parse(value) : null; },
                   set:(key,value) => {
