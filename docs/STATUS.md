@@ -1,8 +1,21 @@
 # Status
 
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
-## Latest local repair (not deployed)
+## Latest local repair — not deployed
+
+- Corrected BSC canonical registry defaults, shared chain/registry provenance validation across Vendor metadata, marketplace and feedback, and supported both verified-receipt and persisted registry field names. Unproven legacy/global IDs no longer become active BSC identities.
+- BSC execution anchoring now uses Paymaster-only transport with chain/method simulation, a fixed 300,000 gas ceiling, zero gas price and durable nonce reuse; missing or denied sponsorship never spends EOA BNB as fallback. Incomplete transaction receipts cannot claim successful anchoring.
+- Added 37 executable regressions plus AR-BUG-080/081 corpus entries. Related suite 109/109; final full suite 1,099 passed, zero failed, two database-environment skips; new transport coverage 100% lines/functions, 97.22% branches; dependency audit zero vulnerabilities. See `docs/BSC_REPAIR_2026-09-08.md` for verification and rollout boundaries.
+- Production policies, identities and transactions were not changed. Policy must cover the correct mainnet reputation contract and the evidence anchor, and a valid Vendor identity must be registered/verified before real feedback can be accepted as onchain proof.
+
+## Latest production routing release
+
+- Deployed `f9827ab` to Render `agentrouter-markets-sg`; GitHub CI `34137789188` passed. A production-catalog collision between token holders and prediction-market holders was reproduced and fixed with input-contract/domain eligibility before trust and price ranking. Scoped tests: 83/83; full suite: 1,062 passed, zero failed, two local DB skips; separate CI PostgreSQL tests: 3/3.
+- Final production MCP test reused the paid-resolved Robinhood PONS contract, returned ten holder addresses, charged 0.01 credits, and automatically recorded consumer feedback in 21.692 seconds. Public feedback lookup returned operational and consumer events; pre-deploy resolver feedback survived the redeploy. This is a resumed execution test, not a new symbol-only end-to-end paid pass.
+- Onchain evidence remains incomplete: Vendor BSC Agent ID is missing for ERC-8004 consumer feedback; the separate execution anchor is queued for retry after an insufficient-gas-balance error. Successful responses also retain stale pre-execution payment-connection advice, a remaining presentation defect. See `docs/PONS_PAID_CANARY_2026-09-07.md`. No new npm bridge package was published in this release.
+
+### Earlier local canary (historical)
 
 - Registered Nansen token-holder routing is implemented, including Robinhood chain, exact-chain symbol resolution, complete two-step quotes/budget reservations, no-sample input construction, and holder-specific verification. Fifty-three scoped cases pass; the new contract module has 100% line/function and 80.61% branch coverage. HTTP/MCP tests distinguish callable registered services from truly absent coverage and isolate provider configuration. See `docs/PONS_ROUTING_REGRESSION.md` for source references and live-release boundaries.
 - A subsequent user-authorized paid canary resolved Robinhood PONS to `0x39dbed3a2bd333467115de45665cc57f813c4571` and returned ten holder addresses through production AR provider billing, for 0.02 credits in 11.345 seconds. This used local repaired routing, not deployed production routing. Production feedback submissions failed (`SERVICE_NOT_FOUND`, zero stored events), so end-to-end production acceptance and BSC transaction evidence remain pending. See `docs/PONS_PAID_CANARY_2026-09-07.md` for receipts, data, and boundaries.

@@ -518,7 +518,7 @@ test("marketplace identity state distinguishes submitted registration", () => {
   process.env.ADN_SETTLEMENT_CHAIN = "bsc";
   try {
     const status = publicErc8004Status({ manifest: { registration: { erc8004: {
-      agent_id: "90", network: "bsc", status: "submitted"
+      agent_id: "90", network: "bsc", status: "submitted", identity_registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
     } } } });
     assert.equal(status.state, "submitted");
   } finally {

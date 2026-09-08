@@ -30,3 +30,11 @@ Official contract references checked on 2026-09-07:
 `src/token-holders.js` centralizes the adapter's chain scope, parsing, exact token matching, input contract, and result verification. Its scoped regression suite has 53 cases, with 100% line/function and 80.61% branch coverage. HTTP/MCP integration tests now isolate their provider directory so developer-installed providers cannot turn an intended no-provider case into a supported route.
 
 Regression IDs: AR-BUG-076, AR-BUG-077, AR-BUG-078. Runtime tests cover both registered-service quotes and no-service refusals through HTTP/MCP, free and nonzero budgets, no-match telemetry, and absence of bogus feedback.
+
+## Production catalog collision (AR-BUG-079)
+
+The first deployed canary on `16ec93d` resolved PONS correctly but selected `nansen_prediction_market_top_holders`. That manifest carried the same holder tags as TGM while its input schema declared `market_id` rather than `chain` and `token_address`. The earlier three-service canary omitted this competitor and therefore was insufficient evidence of full-catalog routing accuracy.
+
+Revision `f9827ab` makes explicit string-typed chain/contract fields and a compatible domain mandatory before trust/price ranking or paid symbol resolution. A mislabeled prediction-market service, missing chain, missing contract, opaque schema, numeric chain, and conflicting domain are now regression cases. Ranking, quotes, execution, absent-compatible-service refusal, and HTTP/MCP entrypoints are covered. The scoped suites pass 83/83; full regression passes 1,062 with zero failures and two DB-dependent skips, while CI separately passes all three real Postgres checks. An offline check loading 234 existing provider manifests admits only `nansen_tgm_holders` for the PONS request.
+
+See the paid canary report for production release evidence, costs, and the separate missing Vendor ERC-8004 identity limitation. Passing these checks does not establish correctness for every possible future imported manifest.
