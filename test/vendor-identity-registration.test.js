@@ -202,6 +202,27 @@ test("an AgentRouter-managed external Vendor gets its own identity instead of in
   });
 });
 
+test("platform operator can discover imported Vendor identities without claiming their services", async () => {
+  await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc", ADN_PLATFORM_OPERATOR_OWNER_KEY: "local:local-development-user" }, async () => {
+    const store = createMemoryStore();
+    const session = createDevSession(store, "http://127.0.0.1");
+    registerService(store, ownedManifest("nansen_imported_holders", "provider_nansen_api", "github:original-importer", "/holders"), "http://127.0.0.1");
+    const server = createServer({ store });
+    const base = await listen(server);
+    const headers = { cookie: session.cookie.split(";")[0] };
+    try {
+      const b = await (await fetch(`${base}/agent-router/erc8004/vendors`, { headers })).json();
+      assert.equal(b.vendors.filter(v => v.provider_id === "provider_nansen_api").length, 1);
+      assert.equal((await fetch(`${base}/agent-router/erc8004/vendors/provider_nansen_api/registration`, { headers })).status, 200);
+      assert.equal(store.services.get("nansen_imported_holders").manifest.registration.owner.user_key, "github:original-importer");
+      delete process.env.ADN_PLATFORM_OPERATOR_OWNER_KEY;
+      const unprivileged = await (await fetch(`${base}/agent-router/erc8004/vendors`, { headers })).json();
+      assert.equal(unprivileged.vendors.some(v => v.provider_id === "provider_nansen_api"), false);
+      assert.equal((await fetch(`${base}/agent-router/erc8004/vendors/provider_nansen_api/registration`, { headers })).status, 403);
+    } finally { await new Promise(resolve => server.close(resolve)); }
+  });
+});
+
 test("Vendor identities survive restart and reattach to all hydrated services", async () => {
   await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc" }, async () => {
     const store = createMemoryStore();
