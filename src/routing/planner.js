@@ -96,6 +96,22 @@ export function inferRoutePlan(task, context = {}) {
     }), context);
   }
 
+  // A transaction receipt, ERC-8004 Agent ID, or feedback-event audit is not
+  // a DEX/pool ranking. Until an audited chain-reader capability is registered,
+  // fail closed instead of allowing generic on-chain words to select a market
+  // data connector that cannot verify the requested evidence.
+  if (isOnchainEvidenceAudit(text)) {
+    return finalizePlan(routePlan({
+      taskFamily: "onchain_evidence_audit",
+      dataFamily: "onchain_execution_evidence",
+      capability: "onchain_evidence_audit",
+      confidence: 0.99,
+      abstainReason: "capability_not_available",
+      mustNotFallback: true,
+      budget
+    }), context);
+  }
+
   const connectedSources = normalizedSet(context.connected_sources);
   if (isTokenHoldersQuery(text)) {
     return finalizePlan(routePlan({
@@ -782,6 +798,16 @@ function isInsufficientContext(text) {
   }
   return /^(?:帮我|請|请)?(?:研究|调研|調研|查|查找|分析|看看|了解)(?:一下)?(?:这个|這個|那个|那個|它|这东西|這東西|这个东西|這個東西)$/i.test(compact)
     || /^(?:please)?(?:research|investigate|lookinto|analy[sz]e)(?:this|that|it|thisthing)(?:forme)?$/i.test(compact);
+}
+
+function isOnchainEvidenceAudit(text) {
+  const value = String(text || "");
+  const transactionHash = /\b0x[a-fA-F0-9]{64}\b/.test(value);
+  const requestId = /\breq_[a-zA-Z0-9_-]+\b/.test(value);
+  const agentId = /\b(?:erc[\s-]?8004|agent\s*id|agent_id|agent\s*身份|代理\s*身份)\b/i.test(value);
+  const feedback = /\b(?:givefeedback|feedback|reputation\s*(?:event|receipt|transaction)?)\b|反馈(?:是否)?(?:上链|存在|交易|收据)/i.test(value);
+  const receipt = /\b(?:transaction|tx|receipt|evidence\s*(?:anchor|audit|verification))\b|交易(?:哈希|收据|证据|验证)|链上(?:证据|审计|验证)/i.test(value);
+  return (transactionHash || requestId || agentId) && (feedback || receipt);
 }
 
 function isSelfContainedReasoning(text) {
