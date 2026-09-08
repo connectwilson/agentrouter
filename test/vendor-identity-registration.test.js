@@ -253,6 +253,14 @@ test("feedback recorded before Vendor registration can resume with the new ident
       assert.equal(store.feedbackEvents.length, count, "identity refresh must not add a rating");
       const replay = await rate();
       assert.deepEqual(replay.trust_anchor, resumed.trust_anchor, "unchanged descriptors remain idempotent");
+      const consumer = store.feedbackEvents.find(e => e.event_version === "agent_consumer_feedback_v1");
+      consumer.trust_anchor.erc8004.tx_hash = TX_HASH;
+      consumer.trust_anchor.erc8004.status = "submitted";
+      consumer.trust_anchor.state = "onchain_submitted";
+      const submitted = await rate();
+      assert.equal(submitted.erc8004.tx_hash, TX_HASH);
+      assert.equal(submitted.erc8004.status, "submitted", "never reissue an already-submitted rating");
+      assert.equal(store.feedbackEvents.length, count);
     } finally { await new Promise(resolve => server.close(resolve)); }
   });
 });

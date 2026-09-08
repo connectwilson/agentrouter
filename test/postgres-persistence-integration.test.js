@@ -17,6 +17,7 @@ import {
   enqueuePersistentAnchorJob,
   finalizePersistentServiceRegistration,
   reservePersistentAnchorJobNonce,
+  readPersistentAnchorJobs,
   serviceEventIdempotencyKey,
   writePersistentServiceEvent,
   writePersistentPublicApiCandidates
@@ -370,7 +371,7 @@ async function assertConcurrentAnchorNonces({ cleanup, uniquePrefix }) {
   const anchorAddress = `0x${crypto.createHash("sha256").update(`${uniquePrefix}:anchor`).digest("hex").slice(0, 40)}`;
   const contractAddress = `0x${crypto.createHash("sha256").update(`${uniquePrefix}:contract`).digest("hex").slice(0, 40)}`;
   const jobs = ["a", "b"].map((suffix) => ({
-    jobId: `${uniquePrefix}_anchor_${suffix}`,
+    jobId: `anchor_${crypto.createHash("sha256").update(`${uniquePrefix}_anchor_${suffix}`).digest("hex")}`,
     workerId: `${uniquePrefix}_worker_${suffix}`
   }));
   cleanup.anchorJobs.push(...jobs.map((job) => job.jobId));
@@ -407,6 +408,13 @@ async function assertConcurrentAnchorNonces({ cleanup, uniquePrefix }) {
     pendingNonce: "99"
   });
   assert.equal(replay.reserved_nonce, reserved[0].reserved_nonce, "retrying one job must reuse its reserved nonce");
+  const snapshot = await readPersistentAnchorJobs([jobs[0].jobId, jobs[1].jobId, jobs[0].jobId, "invalid"]);
+  assert.equal(snapshot.length, 2);
+  assert.ok(snapshot.every(j => j.status === "processing"));
+  assert.deepEqual(snapshot.map(j => j.reserved_nonce).sort(), ["41", "42"]);
+  assert.deepEqual(await readPersistentAnchorJobs([]), []);
+  await assert.rejects(readPersistentAnchorJobs(Array.from({ length: 201 }, (_, i) =>
+    `anchor_${crypto.createHash("sha256").update(String(i)).digest("hex")}`)), /Too many/);
 }
 
 async function assertRoutingFeedbackCas({ inspectionPool, cleanup, uniquePrefix }) {

@@ -2,7 +2,15 @@
 
 Last updated: 2026-09-08
 
-## Latest local repair — not deployed
+## Latest evidence follow-up — local fixes pending rollout
+
+- Production `0acceb9` successfully submitted the existing PONS execution evidence through the corrected AgentRouter Paymaster policy after explicit user confirmation. BSC transaction `0xa9785ff572b9e53d09bc67483606eeb5ad03fdabc20843213fd5145bf8d8291b`, block 120623869, receipt success, 31,590 Gas, zero sender Gas price. All eight event fields matched the original job. See `docs/BSC_PONS_ONCHAIN_EVIDENCE_2026-09-08.md`.
+- New local fixes reconcile public evidence against exact durable jobs without mutating historical data or rebroadcasting; include imported service Vendors in the configured operator's registration list; refresh unsigned feedback descriptors after late Vendor registration without adding another rating or replacing a submitted hash.
+- Added 22 executable cases plus AR-BUG-082/083/084. Final full suite: 1,121 passed, zero failed, two PostgreSQL-environment skips. Scoped safety suite: 74/74. Anchor module coverage: 88.11% lines, 95% functions, 64.21% branches (not an 80% branch-coverage claim). Dependency audit: zero vulnerabilities. Real PostgreSQL tests remain to run in CI; Docker daemon was unavailable locally.
+- Read-only production data check verified the original PONS event's exact outbox hash binding, so no data migration or new transaction is required for its display fix. Production evidence GET still shows the old pending snapshot until these new fixes are deployed.
+- No Vendor identity or ERC-8004 ReputationRegistry feedback was created in this follow-up. Publishing these fixes needs user approval; Vendor owner remains the previously selected `0x0531…f1dB`, and any wallet signature or additional sponsorship changes remain explicit handoff boundaries.
+
+## Earlier registry/Paymaster repair — subsequently deployed as 0acceb9
 
 - Corrected BSC canonical registry defaults, shared chain/registry provenance validation across Vendor metadata, marketplace and feedback, and supported both verified-receipt and persisted registry field names. Unproven legacy/global IDs no longer become active BSC identities.
 - BSC execution anchoring now uses Paymaster-only transport with chain/method simulation, a fixed 300,000 gas ceiling, zero gas price and durable nonce reuse; missing or denied sponsorship never spends EOA BNB as fallback. Incomplete transaction receipts cannot claim successful anchoring.

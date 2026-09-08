@@ -106,3 +106,31 @@ test("reconciliation does not attach a matching outbox id to altered evidence", 
     assert.equal(result.events[0].arc_anchor.status, "anchor_pending_retry");
   });
 });
+
+test("bulk reads are bounded and deduplicated without losing any evidence events", async () => {
+  const pairs = Array.from({ length: 201 }, (_, i) => fixture(`req_${i}`));
+  const byId = new Map(pairs.map(p => [p.job.job_id, p.job]));
+  const sizes = [];
+  await request([...pairs.map(p => p.event), pairs[0].event], async ids => {
+    sizes.push(ids.length); return ids.map(id => byId.get(id));
+  }, async base => {
+    const b = await (await fetch(`${base}/agent-router/evidence`)).json();
+    assert.equal(b.count, 202);
+    assert.ok(b.events.every(e => e.arc_anchor.status === "anchored"));
+    assert.deepEqual(sizes, [200, 1]);
+  });
+});
+
+test("legacy, mock and contradictory-chain snapshots do not initiate durable lookups", async () => {
+  const pairs = Array.from({ length: 5 }, (_, i) => fixture(`legacy_${i}`));
+  delete pairs[0].event.arc_anchor;
+  delete pairs[1].event.arc_anchor.outbox_job_id;
+  pairs[2].event.arc_anchor.mode = "mock";
+  pairs[3].event.arc_anchor.network = "bsc-testnet";
+  pairs[4].event.arc_anchor.anchor_account = "invalid";
+  let reads = 0;
+  await request(pairs.map(p => p.event), async () => { reads++; return []; }, async base => {
+    assert.equal((await fetch(`${base}/agent-router/evidence`)).status, 200);
+    assert.equal(reads, 0);
+  });
+});
