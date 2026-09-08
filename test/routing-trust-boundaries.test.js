@@ -107,6 +107,20 @@ test("token smart-money resolution never substitutes a same-symbol address from 
   assert.deepEqual(providerCalls, ["http://127.0.0.1/provider/strict-token-resolver"]);
 });
 
+test("token smart-money requests without an explicit chain fail before token resolution or payment", async () => {
+  const store = createMemoryStore();
+  const routed = await routeCapabilityRequest(store, {
+    capability: "token_smart_money_activity",
+    params: { token_symbol: "PONS", window: "24h" },
+    constraints: { max_price_usdc: "0.05" }
+  }, { consumerApiKey: "ar_consumer_secret" });
+
+  assert.equal(routed.ok, false);
+  assert.equal(routed.status, "invalid_request");
+  assert.equal(routed.error, "MISSING_REQUIRED_PARAM");
+  assert.deepEqual(routed.missing, ["chain"]);
+});
+
 test("direct invocation rejects a pending service before any provider fetch", async () => {
   const { store, serviceId } = registeredFundFlowService({ verificationStatus: "pending" });
   const fetchSpy = installProviderFetchSpy(serviceId);
