@@ -3268,7 +3268,7 @@ test("AgentRouter routes generic netflow requests to dynamic registered services
 });
 
 test("AgentRouter resolves token symbols before invoking token-address services", async () => {
-  await withServer(async ({ baseUrl }) => {
+  await withServer(async ({ server, baseUrl }) => {
     const newsSearchResponse = await fetch(`${baseUrl}/studio/providers`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -3344,12 +3344,13 @@ test("AgentRouter resolves token symbols before invoking token-address services"
       })
     });
     assert.equal(flowResponse.status, 201);
+    server.store.services.get("token_flow_intelligence").manifest.freshness.max_data_lag_seconds = 300;
 
     const askResponse = await fetch(`${baseUrl}/agent-router/ask`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        task: "通过 AgentRouter 查询 AZTEC 的聪明钱近24小时的动向",
+        task: "通过 AgentRouter 查询以太坊上 AZTEC 的聪明钱近24小时的动向",
         max_price: "0.05"
       })
     });

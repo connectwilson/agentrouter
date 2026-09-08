@@ -301,7 +301,10 @@ const CAPABILITY_ALIASES = [
     not_for: ["chain-level smart-money netflow", "generic news search", "market-wide token rankings"],
     input_schema: {
       type: "object",
-      required: ["token_symbol"],
+      // A ticker has no chain identity. Requiring the network avoids silently
+      // resolving a same-symbol contract on Ethereum when the user meant BSC,
+      // Base, or another supported network.
+      required: ["token_symbol", "chain"],
       properties: {
         token_symbol: { type: "string", description: "Token ticker or symbol, for example AZTEC." },
         token_address: { type: "string", description: "Optional contract address. AgentRouter may resolve it from token_symbol when omitted." },
