@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc } from "../src/arc-anchor.js";
+import { anchorConsumerFeedbackOnArc, anchorEvidenceOnArc, createAnchorClients } from "../src/arc-anchor.js";
+import { keccak256 } from "viem";
 
 const CONTRACT = "0x1111111111111111111111111111111111111111";
 const PRIVATE_KEY = `0x${"1".repeat(64)}`;
@@ -171,6 +172,57 @@ test("a DB fault after broadcast retains the tx hash and never signs a second tr
     assert.equal(durable.nextNonce, 14n);
   });
 });
+
+test("production sponsored adapter retains denied jobs, resumes without duplicate broadcasts, and never needs EOA balance", async () => {
+  await withAnchorEnv(async () => {
+    const outbox = createSharedOutbox();
+    let allowed = false;
+    let broadcasts = 0;
+    const clientFactory = ({ account, chain }) => createAnchorClients({
+      account, chain,
+      publicClient: {
+        getChainId: async () => 56,
+        getTransactionCount: async () => 0,
+        simulateContract: async () => ({}),
+        estimateGas: async () => 80000n,
+        waitForTransactionReceipt: async () => ({ status: "success", blockNumber: 123n })
+      },
+      paymasterRpc: async (method, params) => {
+        if (method === "pm_isSponsorable") return { sponsorable: allowed };
+        broadcasts++;
+        return keccak256(params[0]);
+      }
+    });
+    const input = evidence("req_sponsored_retry", TRACE_A);
+    const first = await anchorEvidenceOnArc(input, { outbox, clientFactory });
+    assert.equal(first.status, "anchor_pending_retry");
+    assert.match(first.error, /sponsorship denied/);
+    assert.equal(broadcasts, 0);
+    allowed = true;
+    const second = await anchorEvidenceOnArc(input, { outbox, clientFactory });
+    assert.equal(second.status, "anchored");
+    const third = await anchorEvidenceOnArc(input, { outbox, clientFactory });
+    assert.equal(third.duplicate, true);
+    assert.equal(broadcasts, 1);
+    assert.equal(outbox.nextNonce, 1n);
+  });
+});
+
+for (const receipt of [undefined, {}, { status: "success" }, { status: "reverted", blockNumber: 123n }]) {
+  test(`incomplete or reverted receipt cannot become anchored: ${JSON.stringify(receipt, (_,v)=>typeof v === "bigint" ? String(v) : v)}`, async () => {
+    await withAnchorEnv(async () => {
+      const result = await anchorEvidenceOnArc(evidence("req_bad_receipt", TRACE_A), {
+        outbox: createSharedOutbox(),
+        clientFactory: () => ({
+          publicClient: { getTransactionCount: async () => 1, waitForTransactionReceipt: async () => receipt },
+          walletClient: { writeContract: async () => txHash(1) }
+        })
+      });
+      assert.equal(result.status, "anchor_pending_retry");
+      assert.equal(result.tx_hash, txHash(1));
+    });
+  });
+}
 
 function evidence(requestId, traceHash) {
   return {

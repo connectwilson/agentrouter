@@ -99,7 +99,7 @@ test("platform operator registers the BSC identity without leaking it into third
       const feedback = await feedbackResponse.json();
       assert.equal(feedbackResponse.status, 200);
       assert.equal(feedback.erc8004.agent_id, null);
-      assert.equal(feedback.erc8004.agent_id_source, "external_vendor_not_configured");
+      assert.equal(feedback.erc8004.agent_id_source, "vendor_identity_not_verified");
       assert.equal(feedback.trust_anchor.state, "offchain_recorded");
     } finally {
       await new Promise((resolve) => server.close(resolve));

@@ -547,9 +547,9 @@ test("external API feedback requires a Vendor identity and never inherits a plat
     const provider = createErc8004FeedbackDescriptor({ serviceId: "provider_owned_service" });
 
     assert.equal(external.agent_id, null);
-    assert.equal(external.agent_id_source, "external_vendor_not_configured");
-    assert.equal(provider.agent_id, "9001");
-    assert.equal(provider.agent_id_source, "global_fallback");
+    assert.equal(external.agent_id_source, "unscoped_identity_rejected");
+    assert.equal(provider.agent_id, null, "BSC provider services must not inherit a global platform identity either");
+    assert.equal(provider.agent_id_source, "unscoped_identity_rejected");
 
     process.env.ADN_SETTLEMENT_CHAIN = "arc-testnet";
     const otherChain = createErc8004FeedbackDescriptor({ serviceId: "external_api_open_meteo" });
