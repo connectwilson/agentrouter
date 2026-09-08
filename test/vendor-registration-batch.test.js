@@ -8,6 +8,7 @@ test("dashboard offers explicit selection, owner preview, pause and persistent p
   for (const id of ["vendor-batch-start", "vendor-batch-stop", "vendor-batch-owner", "vendor-batch-status"]) assert.ok(html.includes('id="'+id+'"'));
   assert.match(html, /navigator\.locks/);
   assert.match(html, /createVendorRegistrationBatch/);
+  assert.match(html, /row\.detail\.textContent\s*=/);
   assert.doesNotMatch(html, /Vendor pays 0 BNB and remains the onchain owner/);
 });
 
@@ -56,6 +57,7 @@ test("batch requests wallet access once and registers selected vendors sequentia
   assert.equal(h.calls.filter(x => x === "eth_signTransaction").length, 2);
   assert.deepEqual(h.calls.filter(x => ["eth_signTransaction", "verify"].includes(x)), ["eth_signTransaction", "verify", "eth_signTransaction", "verify"]);
   assert.equal(h.updates.filter(x => x.status === "registered").length, 2);
+  assert.deepEqual(h.updates.filter(x => x.status === "registered").map(x=>x.agent_id), ["1","2"]);
 });
 
 test("deduplicates exact provider IDs without automatically merging similar names", async () => {
