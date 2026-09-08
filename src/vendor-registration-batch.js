@@ -1,6 +1,7 @@
 // Self-contained so the same controller can be embedded in the account page
 // and exercised with fake wallets. This never handles a private key.
 export function createVendorRegistrationBatch({ wallet, walletInfo = {}, api, journal, onUpdate = () => {},
+  confirmFee = async () => false, now = () => Date.now(),
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), receiptAttempts = 40 }) {
   const address = /^0x[0-9a-fA-F]{40}$/;
   const hash = /^0x[0-9a-fA-F]{64}$/;
@@ -43,7 +44,8 @@ export function createVendorRegistrationBatch({ wallet, walletInfo = {}, api, jo
   }
   return {
     stop() { stopped = true; },
-    async run(selected, owner) {
+    async run(selected, owner, mode = "sponsored") {
+      if (!["sponsored", "platform_paid"].includes(mode)) throw new Error("Unknown registration payment mode.");
       if (running) throw new Error("A registration batch is already running.");
       if (!address.test(owner || "")) throw new Error("Enter the full intended owner wallet address before starting.");
       const vendors = [...new Map(selected.map(v => [v.provider_id, v])).values()];
@@ -56,7 +58,7 @@ export function createVendorRegistrationBatch({ wallet, walletInfo = {}, api, jo
       if (!wallet?.request) throw new Error("Open this page in a browser with your EVM wallet unlocked.");
       running = true; stopped = false;
       try {
-        if (!isRabby) {
+        if (!isRabby && mode === "sponsored") {
           const accounts = await wallet.request({method: "eth_requestAccounts"});
           if (accounts?.[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error("Connected wallet does not match the selected owner. Switch wallets before starting.");
         }
@@ -80,6 +82,49 @@ export function createVendorRegistrationBatch({ wallet, walletInfo = {}, api, jo
               continue;
             }
             if (previous?.status === "submission_unknown") throw new Error("Submission outcome unknown. Enter its BscScan transaction hash to verify; do not register again.");
+            if (mode === "platform_paid") {
+              if (info.platform_paid?.available !== true || info.platform_paid.owner_address?.toLowerCase() !== owner.toLowerCase()) {
+                throw new Error("Platform-paid registration requires the configured operator and the registered platform owner wallet. No Vendor-paid transaction is allowed.");
+              }
+              const accounts = await wallet.request({method:"eth_requestAccounts"});
+              if (accounts?.[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error("Connected wallet does not match the platform owner.");
+              await wallet.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x38"}]});
+              await checkWallet(owner);
+              const estimate = BigInt(await wallet.request({method:"eth_estimateGas",params:[{from:owner,...transaction}]}));
+              const gas = (estimate * 120n + 99n) / 100n;
+              if (estimate <= 0n || gas > 500000n) throw new Error("Registration exceeds the 500,000 Gas safety limit.");
+              const price = BigInt(await wallet.request({method:"eth_gasPrice"}));
+              const maxFee = gas * price;
+              if (price <= 0n || maxFee > 1000000000000000n) throw new Error("Invalid fee or registration exceeds the 0.001 BNB per-transaction safety limit.");
+              const balance = BigInt(await wallet.request({method:"eth_getBalance",params:[owner,"pending"]}));
+              if (balance < maxFee) throw new Error("Platform wallet has insufficient BNB for the estimated maximum fee.");
+              const quotedAt = now();
+              journal.set(key, {status:"ready"});
+              emit("awaiting_fee_confirmation", "Review the BNB fee paid by the platform wallet. This is not Paymaster-sponsored.");
+              if (await confirmFee({provider_id:v.provider_id,owner_address:owner,chain_id:56,
+                registry_address:transaction.to,max_fee_wei:maxFee.toString(),gas:gas.toString(),gas_price_wei:price.toString()}) !== true) {
+                throw new Error("Platform fee confirmation cancelled. No transaction was sent.");
+              }
+              await checkWallet(owner);
+              if (now() - quotedAt > 60000) throw new Error("Fee quote expired. Start again to review a fresh estimate.");
+              // The wallet signs AND sends this request. Persist uncertainty first,
+              // and never resend after a timeout or unknown wallet error.
+              journal.set(key, {status:"submission_unknown"});
+              emit("awaiting_signature", "Confirm registration and the platform-paid BNB fee in your wallet. Do not increase the quoted fee limits.");
+              let txHash;
+              try {
+                txHash = await wallet.request({method:"eth_sendTransaction",params:[{from:owner,...transaction,
+                  gas:"0x"+gas.toString(16),gasPrice:"0x"+price.toString(16),chainId:"0x38"}]});
+              } catch (error) {
+                if (error?.code === 4001) {
+                  journal.set(key,{status:"ready"});
+                  throw new Error("Wallet confirmation cancelled. Batch paused; no automatic retry.");
+                }
+                throw new Error("Wallet submission outcome unknown. Check wallet activity and recover the transaction hash before retrying.");
+              }
+              await confirm(v, owner, txHash, key, emit);
+              continue;
+            }
             if (isRabby) throw Object.assign(new Error("Rabby cannot start a new registration through this raw-signing flow. AR needs a compatible sponsored registration path. Do not retry or export wallet secrets; no transaction was sent."), {code:"WALLET_SPONSORED_SIGNING_UNSUPPORTED"});
             if (!info.gas_sponsorship?.available || info.gas_sponsorship.endpoint !== v.registration_endpoint + "/paymaster") {
               throw new Error("Platform gas sponsorship is unavailable. No Vendor-paid transaction was sent.");

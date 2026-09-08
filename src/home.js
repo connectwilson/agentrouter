@@ -1674,6 +1674,36 @@ export function accountHtml({ auth = {} } = {}) {
         walletStatus.id = "vendor-wallet-status"; walletStatus.setAttribute("role","status");
         walletStatus.className = "dash-status";
         walletControls.append(walletLabel, walletSelect, walletRefresh, walletStatus);
+        const paymentLabel = document.createElement("label");
+        paymentLabel.htmlFor = "vendor-payment-mode"; paymentLabel.textContent = "Registration gas payment";
+        const paymentMode = document.createElement("select"); paymentMode.id = "vendor-payment-mode";
+        paymentMode.append(new Option("Paymaster sponsorship (compatible wallets only)", "sponsored"),
+          new Option("Platform wallet pays BNB (operator only, supports Rabby)", "platform_paid"));
+        paymentMode.addEventListener("change", updateVendorControls);
+        walletControls.append(paymentLabel, paymentMode);
+        let cancelFeeReview = null;
+        function reviewPlatformFee(quote) {
+          return new Promise(resolve => {
+            const dialog = document.createElement("dialog");
+            dialog.setAttribute("aria-label", "Review platform fee");
+            const title = document.createElement("h3"); title.textContent = "Review platform fee";
+            const text = document.createElement("p");
+            const wei = BigInt(quote.max_fee_wei);
+            const bnb = (wei / 1000000000000000000n).toString() + "." + (wei % 1000000000000000000n).toString().padStart(18,"0").replace(/0+$/, "");
+            text.textContent = "Vendor: " + quote.provider_id + " · BSC mainnet. Owner and gas payer: " + quote.owner_address
+              + ". Estimated maximum fee: " + bnb + " BNB (includes 20% gas-limit buffer). Vendor pays 0 BNB. This is NOT Paymaster-sponsored. Actual fee is shown in the mined receipt. Do not raise fee limits in the wallet. Quote expires in 60 seconds.";
+            const accept = document.createElement("button"); accept.type = "button"; accept.className = "dash-button";
+            accept.textContent = "Continue to wallet — platform pays gas";
+            const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "dash-button secondary"; cancel.textContent = "Cancel";
+            let settled = false;
+            const finish = value => { if (settled) return; settled = true; clearTimeout(timer); cancelFeeReview = null; dialog.close(); dialog.remove(); resolve(value); };
+            const timer = setTimeout(() => finish(false), 60000);
+            cancelFeeReview = () => finish(false);
+            accept.addEventListener("click", () => finish(true)); cancel.addEventListener("click", () => finish(false));
+            dialog.addEventListener("cancel", event => {event.preventDefault(); finish(false);});
+            dialog.append(title, text, accept, cancel); document.body.append(dialog); dialog.showModal();
+          });
+        }
         batchOwner.parentNode.insertBefore(walletControls, batchOwner.previousElementSibling);
         const vendorWallets = (${createVendorWalletDiscovery.toString()})({target:window,onChange:entries => {
           const selected = walletSelect.value;
@@ -1707,14 +1737,16 @@ export function accountHtml({ auth = {} } = {}) {
           const selected = selectedVendors();
           const count = selected.length;
           const selectedWallet = vendorWallets.get(walletSelect.value);
-          const needsCompatibleWallet = rabbySelected();
+          const needsCompatibleWallet = rabbySelected() && paymentMode.value === "sponsored";
           batchStart.textContent = "Register selected (" + count + "/5)";
           batchStart.disabled = vendorBatchBusy || !selectedWallet || count < 1 || count > 5 || (needsCompatibleWallet && selected.some(v => !v.recovery_hash));
           batchStop.disabled = !vendorBatchBusy;
           batchOwner.disabled = vendorBatchBusy;
           walletSelect.disabled = vendorBatchBusy; walletRefresh.disabled = vendorBatchBusy;
+          paymentMode.disabled = vendorBatchBusy;
           walletStatus.textContent = !selectedWallet ? "Choose the wallet you intend to use. No connection or signature is requested by discovery."
             : needsCompatibleWallet ? "Rabby: new sponsored registration is not supported by this AR flow yet. Do not retry or export wallet secrets. Existing transaction hashes can still be verified below."
+            : paymentMode.value === "platform_paid" ? "Platform-paid mode: the registered platform wallet pays BNB and owns the identity. Review each fee before confirming in your wallet. No Vendor is charged."
             : "Selected: " + selectedWallet.name + ". Raw transaction signing support is not yet verified. No BNB-paid fallback is allowed.";
           for (const [id, row] of vendorRows) {
             const registered = Boolean(vendorItems.find(v => v.provider_id === id)?.agent_id);
@@ -1789,6 +1821,7 @@ export function accountHtml({ auth = {} } = {}) {
               if (!lock) throw new Error("Another tab is registering Vendors. Finish or pause it before continuing here.");
               vendorBatch = (${createVendorRegistrationBatch.toString()})({
                 wallet:selectedWallet.provider, walletInfo:selectedWallet, api:vendorApi,
+                confirmFee:reviewPlatformFee,
                 journal:{
                   get:key => { const value = localStorage.getItem(key); return value ? JSON.parse(value) : null; },
                   set:(key,value) => {
@@ -1820,7 +1853,7 @@ export function accountHtml({ auth = {} } = {}) {
                   }
                 }
               });
-              const result = await vendorBatch.run(items, batchOwner.value.trim());
+              const result = await vendorBatch.run(items, batchOwner.value.trim(), paymentMode.value);
               if (result.status === "completed") batchStatus.textContent = "Batch completed. Each Vendor result and transaction appears below.";
             });
           } catch (error) {
@@ -1833,6 +1866,7 @@ export function accountHtml({ auth = {} } = {}) {
         batchStart.addEventListener("click", () => startVendorBatch(selectedVendors()));
         batchStop.addEventListener("click", () => {
           vendorBatch?.stop();
+          cancelFeeReview?.();
           batchStatus.textContent = "Pause requested. Cancel any open wallet prompt. An already submitted transaction can still confirm.";
         });
         // The deposit needs confirmations before it can be credited, so the
