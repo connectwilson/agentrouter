@@ -66,6 +66,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
             emit("preparing", "Checking Vendor identity and sponsorship…");
             const info = await api(v.registration_endpoint);
             validateInfo(info, v);
+            const transaction = {to:info.transaction.to, data:info.transaction.data, value:"0x0"};
             if (info.current_identity) {
               emit("already_registered", "Already registered as Agent #" + info.current_identity.agent_id);
               continue;
@@ -85,9 +86,9 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
             const relay = body => api(info.gas_sponsorship.endpoint, body);
             const nonce = (await relay({method: "eth_getTransactionCount", params:[owner,"pending"]})).result;
             if (!/^0x[0-9a-fA-F]+$/.test(nonce || "")) throw new Error("Invalid transaction nonce from sponsorship service.");
-            const gas = await wallet.request({method:"eth_estimateGas",params:[{from:owner,...info.transaction}]});
+            const gas = await wallet.request({method:"eth_estimateGas",params:[{from:owner,...transaction}]});
             if (BigInt(gas) <= 0n || BigInt(gas) > 500000n) throw new Error("Registration exceeds the 500,000 Gas safety limit.");
-            const sponsorship = await relay({method:"pm_isSponsorable",params:[{from:owner,...info.transaction,gas}]});
+            const sponsorship = await relay({method:"pm_isSponsorable",params:[{from:owner,...transaction,gas}]});
             if (sponsorship.gas_sponsorship?.sponsored !== true) throw new Error("Platform sponsorship was declined. No BNB-paid fallback will be used.");
             await checkWallet(owner);
             // Fail before signing when browser persistence is unavailable.
@@ -96,7 +97,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
             let signed;
             try {
               signed = await wallet.request({method:"eth_signTransaction",params:[{
-                from:owner,...info.transaction,gas,gasPrice:"0x0",nonce,chainId:"0x38"
+                from:owner,...transaction,gas,gasPrice:"0x0",nonce,chainId:"0x38"
               }]});
             } catch (error) {
               if (error.code === 4001) throw new Error("Wallet confirmation cancelled. Batch paused.");

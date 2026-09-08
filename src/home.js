@@ -1718,7 +1718,7 @@ export function accountHtml({ auth = {} } = {}) {
               recovery.setAttribute("aria-label", "Transaction hash for " + vendor.provider_id);
               recovery.maxLength = 66;
               const note = document.createElement("small");
-              note.textContent = "Only receipt verification is performed when a hash is supplied. Never enter a private key.";
+              note.textContent = "Only receipt verification is performed when a hash is supplied. Never enter wallet secrets.";
               recoveryBox.append(summary, recovery, note);
               copy.append(label, detail, status, recoveryBox);
               const button = document.createElement("button");
