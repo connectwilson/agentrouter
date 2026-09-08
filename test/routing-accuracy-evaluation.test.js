@@ -231,3 +231,38 @@ test("a forbidden-source hit is wrong even when its broad route family looks pla
   assert.equal(result.checks.forbidden_source_safe, false);
   assert.equal(result.correct, false);
 });
+
+test("critical route parameters are part of correctness and entrypoint parity", async () => {
+  const { evaluateRoutingDecision, aggregateRoutingAccuracy } = await loadEvaluator();
+  const entry = {
+    id: "onchain-holders-robinhood-pons",
+    locale: "zh-CN",
+    slices: ["onchain", "parameter_identity"],
+    expected: {
+      action: "route",
+      route_family: "external_api",
+      capability: "token_holders",
+      acceptable_sources: ["nansen"],
+      forbidden_sources: [],
+      authorization_kind: "agentrouter_account",
+      paid_allowed: true,
+      max_price_usdc: "0.05",
+      params: { chain: "robinhood", token: "PONS", limit: 10 }
+    }
+  };
+  const correct = decisionFor(entry, {
+    params: { chain: "robinhood", token: "PONS", limit: 10 }
+  });
+  const wrongChain = decisionFor(entry, {
+    entrypoint: "fetch",
+    params: { chain: "ethereum", token: "PONS", limit: 10 }
+  });
+
+  const expected = evaluateRoutingDecision(entry, correct);
+  const incorrect = evaluateRoutingDecision(entry, wrongChain);
+
+  assert.equal(expected.checks.params, true);
+  assert.equal(incorrect.checks.params, false);
+  assert.equal(incorrect.correct, false);
+  assert.equal(aggregateRoutingAccuracy([expected, incorrect]).entrypoint_parity, 0);
+});

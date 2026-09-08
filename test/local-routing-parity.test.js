@@ -830,6 +830,35 @@ test("built-in browser post handoff and completion both return canonical route p
   });
 });
 
+test("natural X post reads take precedence over keyword search and preserve a zero budget", async () => {
+  const response = await callLocalMcpPackage({
+    jsonrpc: "2.0",
+    id: 390,
+    method: "tools/call",
+    params: {
+      name: "agentrouter_fetch",
+      arguments: {
+        task: "读取这条帖子 https://x.com/hyperyoolo/status/2097171633140310195",
+        constraints: { max_price_usdc: "0" },
+        consumer_context: {
+          local_browser: {
+            adapter: "codex_browser",
+            available: true,
+            operations: ["read_post"]
+          }
+        }
+      }
+    }
+  });
+  const result = JSON.parse(response.result.content[0].text);
+  assert.equal(result.status, "local_connector_required");
+  assert.equal(result.request.capability, "social_post_read");
+  assert.equal(result.handoff.operation, "read_post");
+  assert.equal(result.handoff.target, "https://x.com/hyperyoolo/status/2097171633140310195");
+  assert.equal(result.route_plan.budget_gate.max_price_usdc, "0");
+  assert.equal(result.route_plan.budget_gate.paid_calls_allowed, false);
+});
+
 test("structured social batches prefer native browser handoffs per platform", async () => {
   const routed = await handleLocalStructuredSocialBatchRequest({
     method: "tools/call",

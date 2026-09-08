@@ -76,6 +76,23 @@ test("common agent-generated X capability aliases are normalized before remote r
   }
 });
 
+test("X profile URLs are account-history reads, never keyword searches", () => {
+  const task = "能读到 https://x.com/hyperyoolo 内容吗？请读取该账号公开资料及最近几条原创帖子";
+  const request = localSocialSearchRequest(fetchMessage(task));
+
+  assert.ok(request);
+  assert.equal(request.platform, "x");
+  assert.equal(request.operation, "read_user_posts");
+  assert.equal(request.handle, "hyperyoolo");
+  assert.equal(request.capability, "social_user_voice_research");
+  assert.notEqual(request.operation, "search");
+});
+
+test("X status URLs stay out of keyword search interception", () => {
+  const task = "读取这条帖子 https://x.com/hyperyoolo/status/2097171633140310195";
+  assert.equal(localSocialSearchRequest(fetchMessage(task)), null);
+});
+
 test("the X platform detector rejects asset symbols, variables, products, and vendor research", () => {
   const negatives = [
     "查 XLM 当前最大爆仓痛点",
