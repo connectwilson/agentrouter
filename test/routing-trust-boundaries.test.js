@@ -43,6 +43,70 @@ test("a current on-chain request excludes services whose declared freshness cann
   assert.deepEqual(candidates, []);
 });
 
+test("token smart-money resolution never substitutes a same-symbol address from another chain", async () => {
+  const store = createMemoryStore();
+  const resolver = structuredClone(baseFundFlowManifest);
+  resolver.service_id = "strict_chain_token_resolver";
+  resolver.provider.provider_id = "strict_chain_token_directory";
+  resolver.title = "Strict Chain Token Resolver";
+  resolver.description_for_agent = "Resolve a token symbol to its contract address on the requested chain.";
+  resolver.capabilities = ["data_service", "token_search", "token_metadata"];
+  resolver.endpoint = { method: "POST", url: "http://127.0.0.1/provider/strict-token-resolver" };
+  resolver.input_schema = {
+    type: "object",
+    required: ["search_query", "chain"],
+    properties: { search_query: { type: "string" }, chain: { type: "string" } }
+  };
+  resolver.sample_request = { search_query: "PONS", chain: "bsc" };
+
+  const flow = structuredClone(baseFundFlowManifest);
+  flow.service_id = "strict_chain_token_flow";
+  flow.provider.provider_id = "strict_chain_flow_provider";
+  flow.title = "Strict Chain Token Flow";
+  flow.description_for_agent = "Token flow intelligence with who bought and sold activity.";
+  flow.capabilities = ["data_service", "token_god_mode", "token_data", "flow_intelligence", "token_flow", "smart_money"];
+  flow.endpoint = { method: "POST", url: "http://127.0.0.1/provider/strict-token-flow" };
+  flow.input_schema = {
+    type: "object",
+    required: ["chain", "token_address"],
+    properties: { chain: { type: "string" }, token_address: { type: "string" } }
+  };
+  flow.sample_request = { chain: "bsc", token_address: "0x1111111111111111111111111111111111111111" };
+
+  for (const manifest of [resolver, flow]) {
+    const record = registerService(store, manifest, "https://agentrouter.test");
+    record.verification_status = "verified";
+  }
+
+  const providerCalls = [];
+  const routed = await routeCapabilityRequest(store, {
+    capability: "token_smart_money_activity",
+    params: { token_symbol: "PONS", chain: "bsc", window: "24h" },
+    constraints: { max_price_usdc: "0.05" }
+  }, {
+    consumerApiKey: "ar_consumer_secret",
+    providerTransportOptions: {
+      lookup: async () => [{ address: "127.0.0.1", family: 4 }],
+      requestHop: async ({ url }) => {
+        providerCalls.push(String(url));
+        if (String(url).includes("strict-token-resolver")) {
+          return new Response(JSON.stringify(tokenResolverEnvelope(resolver.service_id, [{
+            symbol: "PONS",
+            token_address: "0x1111111111111111111111111111111111111111",
+            chain: "ethereum"
+          }])), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        throw new Error("The token-flow provider must not be called for a wrong-chain token match.");
+      }
+    }
+  });
+
+  assert.equal(routed.ok, false);
+  assert.equal(routed.status, "token_not_found");
+  assert.equal(routed.token_resolution.resolver_input.chain, "bnb");
+  assert.deepEqual(providerCalls, ["http://127.0.0.1/provider/strict-token-resolver"]);
+});
+
 test("direct invocation rejects a pending service before any provider fetch", async () => {
   const { store, serviceId } = registeredFundFlowService({ verificationStatus: "pending" });
   const fetchSpy = installProviderFetchSpy(serviceId);
@@ -303,6 +367,13 @@ function liveFundFlowEnvelope(serviceId) {
     ledger_entry_id: `ledger_${serviceId}`,
     balance_after: "1.00"
   };
+  return envelope;
+}
+
+function tokenResolverEnvelope(serviceId, data) {
+  const envelope = liveFundFlowEnvelope(serviceId);
+  envelope.data = data;
+  envelope.query = { search_query: "PONS", chain: "bnb" };
   return envelope;
 }
 
