@@ -5,6 +5,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { erc8004Registries, settlementChain } from "../src/chains.js";
 import { createErc8004AgentMetadata, resolveErc8004AgentId } from "../src/erc8004.js";
 import * as anchor from "../src/arc-anchor.js";
+import { applyErc8004RegistrationToManifest } from "../src/registry.js";
+import { publicErc8004, publicErc8004Status } from "../src/store.js";
 
 const IDENTITY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
 const REPUTATION = "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63";
@@ -47,6 +49,22 @@ test("a scoped canonical BSC registration remains usable", async () => onBsc(asy
   const manifest = { registration: { erc8004: { agent_id: "81001", chain_id: 56, registry_address: IDENTITY } } };
   assert.equal(resolveErc8004AgentId({ serviceId: "registered", manifest }), "81001");
 }));
+
+test("receipt-applied registration identity_registry remains valid for feedback and marketplace", async () => onBsc(async () => {
+  const manifest = {};
+  applyErc8004RegistrationToManifest(manifest, { agent_id: "81001", chain_id: 56, network: "bsc", registry_address: IDENTITY, status: "registered" });
+  assert.equal(resolveErc8004AgentId({ serviceId: "registered", manifest }), "81001");
+  assert.equal(publicErc8004({ manifest }).agent_id, "81001");
+}));
+
+for (const erc8004 of [undefined, { agent_id: "22914" }, { agent_id: "22914", network: "bsc", chain_id: 56, identity_registry: contract }, { agent_id: "22914", chain_id: 56, registry_address: IDENTITY, identity_registry: contract }]) {
+  test(`marketplace rejects the same unproven identity as feedback: ${JSON.stringify(erc8004)}`, async () => onBsc(async () => {
+    const record = { manifest: { provider: { erc8004_agent_id: "22914" }, registration: { erc8004 } } };
+    assert.equal(publicErc8004(record), null);
+    assert.notEqual(publicErc8004Status(record).state, "registered");
+    assert.equal(resolveErc8004AgentId({ serviceId: "service", manifest: record.manifest }), "");
+  }));
+}
 
 function clients(overrides = {}, rpcOverride) {
   const signed = [], methods = [];
@@ -107,4 +125,57 @@ test("retry after an uncertain broadcast reproduces the same signed transaction"
   await c.walletClient.writeContract(call);
   assert.equal(raw[0], raw[1]);
   assert.equal(parseTransaction(raw[0]).nonce, 7);
+}));
+
+for (const scenario of ["success", "HTTP failure", "JSON RPC error", "missing result", "invalid JSON", "timeout"]) {
+  test(`configured Paymaster HTTP transport: ${scenario}`, async () => onBsc(async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    process.env.ADN_BSC_PAYMASTER_URL = "https://paymaster.invalid/private-test-token";
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, process.env.ADN_BSC_PAYMASTER_URL);
+      assert.ok(options.signal instanceof AbortSignal);
+      const body = JSON.parse(options.body);
+      requests.push(body.method);
+      if (scenario === "timeout") throw new Error(`timeout ${url}`);
+      return { ok: scenario !== "HTTP failure", json: async () => {
+        if (scenario === "invalid JSON") throw new Error(url);
+        if (scenario === "JSON RPC error") return { error: { message: url } };
+        if (scenario === "missing result") return {};
+        return { result: body.method === "pm_isSponsorable" ? { Sponsorable: "true" } : keccak256(body.params[0]) };
+      } };
+    };
+    try {
+      const f = clients();
+      const c = anchor.createAnchorClients({ account: f.signer, chain: settlementChain(), publicClient: f.publicClient });
+      if (scenario === "success") {
+        await c.walletClient.writeContract(call);
+        assert.deepEqual(requests, ["pm_isSponsorable", "eth_sendRawTransaction"]);
+        assert.equal(f.signed.length, 1);
+      } else {
+        await assert.rejects(c.walletClient.writeContract(call), error => {
+          assert.match(error.message, /Paymaster.*unavailable/);
+          assert.doesNotMatch(error.message, /private-test-token|paymaster.invalid/);
+          return true;
+        });
+        assert.equal(f.signed.length, 0);
+      }
+    } finally { globalThis.fetch = originalFetch; }
+  }));
+}
+
+for (const invalid of [
+  { nonce: undefined }, { nonce: -1n }, { nonce: BigInt(Number.MAX_SAFE_INTEGER) + 1n },
+  { functionName: "transfer" }
+]) test(`invalid anchor transaction is rejected before signing: ${JSON.stringify(invalid,(_,v)=>typeof v === "bigint" ? String(v) : v)}`, async () => onBsc(async () => {
+  const f = clients();
+  const c = anchor.createAnchorClients({ account: f.signer, chain: settlementChain(), publicClient: f.publicClient, paymasterRpc: f.rpc });
+  await assert.rejects(c.walletClient.writeContract({ ...call, ...invalid }));
+  assert.equal(f.signed.length, 0);
+}));
+
+test("invalid returned transaction hash never counts as a successful broadcast", async () => onBsc(async () => {
+  const f = clients({}, async method => method === "pm_isSponsorable" ? { sponsorable: true } : zero);
+  const c = anchor.createAnchorClients({ account: f.signer, chain: settlementChain(), publicClient: f.publicClient, paymasterRpc: f.rpc });
+  await assert.rejects(c.walletClient.writeContract(call), /mismatched.*hash/);
 }));

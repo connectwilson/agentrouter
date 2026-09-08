@@ -52,6 +52,27 @@ function verifiedIdentity(expected, agentId = "81001") {
   };
 }
 
+test("public Vendor HTTP metadata cannot inherit a legacy ID from another registry", async () => {
+  await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc", ADN_ERC8004_AGENT_ID: "319032" }, async () => {
+    const store = createMemoryStore();
+    const manifest = ownedManifest("legacy_nansen_holders", "provider_nansen_api", "local:local-development-user", "/holders");
+    manifest.provider.erc8004_agent_id = "22914";
+    manifest.registration.erc8004 = { agent_id: "22914", chain_id: 5042002, network: "arc-testnet" };
+    registerService(store, manifest, "http://127.0.0.1");
+    store.providers.set("provider_nansen_api", manifest.provider);
+    const server = createServer({ store });
+    const baseUrl = await listen(server);
+    try {
+      const response = await fetch(`${baseUrl}/.well-known/erc8004/vendors/provider_nansen_api.json`);
+      const card = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(card.registrations[0].agentId, null);
+      assert.equal(card.explorer_url, undefined);
+      assert.equal(manifest.provider.erc8004_agent_id, "22914", "do not rewrite historical source data");
+    } finally { await new Promise(resolve => server.close(resolve)); }
+  });
+});
+
 test("one chain-generated Vendor Agent ID is shared by every service from that Vendor", async () => {
   await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc" }, async () => {
     const store = createMemoryStore();
