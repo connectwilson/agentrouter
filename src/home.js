@@ -1,6 +1,7 @@
 import { authModalHtml, authModalStyles } from "./auth-modal.js";
 import { clientRouterScript, naiveDesignSystemStyles } from "./app-shell.js";
 import { listBnbGoldenTasks } from "./capability-packs.js";
+import { createVendorRegistrationBatch } from "./vendor-registration-batch.js";
 
 const skillInstallCommand = "npx @agentrouternetwork/agentrouter";
 const localInstallConfig = `{
@@ -1441,7 +1442,7 @@ export function accountHtml({ auth = {} } = {}) {
             <div class="dash-grid"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Top services by spend</h2><p>Derived from your own service-call ledger.</p></div></div><div class="dash-services" id="top-services"></div></article><aside class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Routing safeguards</h2><p>Every call is bounded by your policy.</p></div></div><div class="dash-actions"><div class="dash-action"><i>✓</i><span><b>Server-side credentials</b><small>Provider API keys remain private to AgentRouter.</small></span></div><div class="dash-action"><i>✓</i><span><b>Payment precision</b><small>Credit ledger uses six decimal places.</small></span></div></div></aside></div>
           </section>
 
-          <section class="dash-view" data-panel="keys" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Connected agents</h2><p>No API key needs to be copied into an MCP configuration. On the first paid call, AgentRouter opens a short browser approval flow and stores the connection privately on your device.</p></div><a class="dash-link" href="/agent">Install AgentRouter →</a></div><div id="agent-connection-list"></div></article><div class="dash-grid dash-section"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Developer API keys</h2><p>An advanced fallback for CI and headless servers that cannot open a browser. Most people never need one.</p></div></div><form class="dash-form" id="api-key-form"><label for="api-key-label">Client label</label><div class="dash-form-row"><input id="api-key-label" name="label" value="CI server" maxlength="120"><button class="dash-button" type="submit">Create key</button></div></form><div class="dash-key-result" id="api-key-result" hidden><b>Copy this key now. It will not be shown again.</b><code id="api-key-value"></code><button class="dash-button secondary" id="copy-api-key" type="button">Copy key</button><small>Use this only for CI or a headless server. Never paste it into a chat.</small></div><div class="dash-card-head dash-section"><div><h3>Your keys</h3><p>The full secret is stored only as a hash and is never shown again. The hint below is enough to tell one key from another.</p></div></div><div id="api-key-list"></div></article><aside class="dash-panel dash-card"><h2>Security model</h2><p>Browser-approved connections can use only this account's prepaid balance. They never expose GitHub credentials or provider API keys and can be disconnected at any time.</p><p>Every call, from a browser connection or a key, is capped by the per-call spending limit set on the Credits page.</p></aside></div><article class="dash-panel dash-card dash-section" id="platform-identity-card"><div class="dash-card-head"><div><h2>BNB Chain platform identity</h2><p>Register the ERC-8004 identity for AgentRouter-operated services. Third-party Vendor reputation is kept on separate Vendor Agent IDs.</p></div><button class="dash-button" id="platform-identity-button" type="button">Register BSC identity</button></div><p class="dash-status" id="platform-identity-status" role="status">Checking registration status…</p></article><article class="dash-panel dash-card dash-section" id="vendor-identities-card"><div class="dash-card-head"><div><h2>Vendor identities</h2><p>Each Vendor receives one chain-generated ERC-8004 Agent ID shared by its services. AgentRouter sponsors registration — Vendor pays 0 BNB and remains the onchain owner.</p></div></div><div class="dash-actions" id="vendor-identities-list"><p class="dash-status">Loading Vendor identities…</p></div></article></section>
+          <section class="dash-view" data-panel="keys" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Connected agents</h2><p>No API key needs to be copied into an MCP configuration. On the first paid call, AgentRouter opens a short browser approval flow and stores the connection privately on your device.</p></div><a class="dash-link" href="/agent">Install AgentRouter →</a></div><div id="agent-connection-list"></div></article><div class="dash-grid dash-section"><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Developer API keys</h2><p>An advanced fallback for CI and headless servers that cannot open a browser. Most people never need one.</p></div></div><form class="dash-form" id="api-key-form"><label for="api-key-label">Client label</label><div class="dash-form-row"><input id="api-key-label" name="label" value="CI server" maxlength="120"><button class="dash-button" type="submit">Create key</button></div></form><div class="dash-key-result" id="api-key-result" hidden><b>Copy this key now. It will not be shown again.</b><code id="api-key-value"></code><button class="dash-button secondary" id="copy-api-key" type="button">Copy key</button><small>Use this only for CI or a headless server. Never paste it into a chat.</small></div><div class="dash-card-head dash-section"><div><h3>Your keys</h3><p>The full secret is stored only as a hash and is never shown again. The hint below is enough to tell one key from another.</p></div></div><div id="api-key-list"></div></article><aside class="dash-panel dash-card"><h2>Security model</h2><p>Browser-approved connections can use only this account's prepaid balance. They never expose GitHub credentials or provider API keys and can be disconnected at any time.</p><p>Every call, from a browser connection or a key, is capped by the per-call spending limit set on the Credits page.</p></aside></div><article class="dash-panel dash-card dash-section" id="platform-identity-card"><div class="dash-card-head"><div><h2>BNB Chain platform identity</h2><p>Register the ERC-8004 identity for AgentRouter-operated services. Third-party Vendor reputation is kept on separate Vendor Agent IDs.</p></div><button class="dash-button" id="platform-identity-button" type="button">Register BSC identity</button></div><p class="dash-status" id="platform-identity-status" role="status">Checking registration status…</p></article><article class="dash-panel dash-card dash-section" id="vendor-identities-card"><div class="dash-card-head"><div><h2>Vendor identities</h2><p>Each Vendor receives one chain-generated ERC-8004 Agent ID shared by its services. AgentRouter sponsors registration. The signing wallet owns the identity. Platform-managed integrations are not Vendor endorsements.</p></div></div><div class="dash-form"><label for="vendor-batch-owner">Identity owner wallet (verify before signing)</label><input id="vendor-batch-owner" placeholder="0x…" maxlength="42" autocomplete="off"><p>Select up to 5 Vendors. Each requires a wallet confirmation. Similar names may be duplicate imports: select only the canonical Vendor; identities are not merged automatically. Platform sponsorship limits still apply.</p><div class="dash-form-row"><button class="dash-button" type="button" id="vendor-batch-start" disabled>Register selected (0/5)</button><button class="dash-button secondary" type="button" id="vendor-batch-stop" disabled>Pause batch</button></div><p class="dash-status" id="vendor-batch-status" role="status" aria-live="polite">Choose Vendors below. No transaction starts automatically.</p></div><div class="dash-actions" id="vendor-identities-list"><p class="dash-status">Loading Vendor identities…</p></div></article></section>
 
           <section class="dash-view" data-panel="activity" hidden><article class="dash-panel dash-card"><div class="dash-card-head"><div><h2>Account activity</h2><p>Top-ups and billable service calls from your account ledger.</p></div></div><div class="dash-activity" id="activity-list"></div></article></section>
 
@@ -1611,6 +1612,8 @@ export function accountHtml({ auth = {} } = {}) {
           document.getElementById("platform-identity-card").hidden = false;
           if (info.current_identity) {
             button.hidden = true;
+            const ownerInput = document.getElementById("vendor-batch-owner");
+            if (!ownerInput.value) ownerInput.value = info.current_identity.owner_address || "";
             status.textContent = "Registered as ERC-8004 agent #" + info.current_identity.agent_id + " on " + info.chain_name + ".";
           } else {
             button.hidden = false;
@@ -1650,95 +1653,144 @@ export function accountHtml({ auth = {} } = {}) {
             status.textContent = error?.code === 4001 ? "Registration cancelled." : (error.message || "Registration failed.");
           } finally { button.disabled = false; }
         });
+        let vendorItems = [], vendorBatch = null, vendorBatchBusy = false;
+        const batchStart = document.getElementById("vendor-batch-start");
+        const batchStop = document.getElementById("vendor-batch-stop");
+        const batchOwner = document.getElementById("vendor-batch-owner");
+        const batchStatus = document.getElementById("vendor-batch-status");
+        const vendorRows = new Map();
+        async function vendorApi(path, body) {
+          const response = await fetch(path, { method:body ? "POST" : "GET", redirect:"error",
+            headers:body ? {"content-type":"application/json"} : {},
+            body:body ? JSON.stringify(body) : undefined, signal:AbortSignal.timeout(20000) });
+          const result = await response.json();
+          if (!response.ok) throw Object.assign(new Error(result.error?.message || result.error || "Registration request failed (HTTP " + response.status + ")."), {code:result.error?.code});
+          return result;
+        }
+        function selectedVendors() {
+          return vendorItems.filter(v => vendorRows.get(v.provider_id)?.select.checked).map(v => ({
+            ...v, recovery_hash:vendorRows.get(v.provider_id).recovery.value.trim()
+          }));
+        }
+        function updateVendorControls() {
+          const count = selectedVendors().length;
+          batchStart.textContent = "Register selected (" + count + "/5)";
+          batchStart.disabled = vendorBatchBusy || count < 1 || count > 5;
+          batchStop.disabled = !vendorBatchBusy;
+          batchOwner.disabled = vendorBatchBusy;
+          for (const [id, row] of vendorRows) {
+            const registered = Boolean(vendorItems.find(v => v.provider_id === id)?.agent_id);
+            row.select.disabled = vendorBatchBusy || registered;
+            row.button.disabled = vendorBatchBusy || registered;
+            row.recovery.disabled = vendorBatchBusy || registered;
+          }
+        }
         async function loadVendorIdentities() {
           const card = document.getElementById("vendor-identities-card");
           const list = document.getElementById("vendor-identities-list");
-          const response = await fetch("/agent-router/erc8004/vendors");
-          if (!response.ok) { card.hidden = true; return; }
-          const payload = await response.json();
-          card.hidden = false;
-          list.replaceChildren();
-          for (const vendor of payload.vendors || []) {
-            const row = document.createElement("div");
-            row.className = "dash-action";
-            const copy = document.createElement("span");
-            const title = document.createElement("b");
-            title.textContent = vendor.title || vendor.provider_id;
-            const detail = document.createElement("small");
-            detail.textContent = vendor.agent_id
-              ? "ERC-8004 agent #" + vendor.agent_id + " · " + vendor.service_count + " service(s)"
-              : vendor.service_count + " service(s) · identity not registered";
-            copy.append(title, detail);
-            const button = document.createElement("button");
-            button.className = "dash-button";
-            button.type = "button";
-            button.dataset.vendorRegistration = vendor.registration_endpoint;
-            button.textContent = vendor.agent_id ? "Registered #" + vendor.agent_id : "Register Vendor";
-            button.disabled = Boolean(vendor.agent_id);
-            row.append(copy, button);
-            list.append(row);
-          }
-          if (!list.childElementCount) {
-            const empty = document.createElement("p");
-            empty.className = "dash-status";
-            empty.textContent = "No Vendor identities are available for this account.";
-            list.append(empty);
+          try {
+            const payload = await vendorApi("/agent-router/erc8004/vendors");
+            card.hidden = false;
+            vendorItems = [...new Map((payload.vendors || []).map(v => [v.provider_id, v])).values()];
+            list.replaceChildren(); vendorRows.clear();
+            for (const vendor of vendorItems) {
+              const row = document.createElement("div");
+              row.className = "dash-action";
+              const copy = document.createElement("span");
+              const label = document.createElement("label");
+              const select = document.createElement("input");
+              select.type = "checkbox";
+              select.setAttribute("aria-label", "Select " + vendor.provider_id);
+              select.addEventListener("change", updateVendorControls);
+              const title = document.createElement("b");
+              title.textContent = (vendor.title || vendor.provider_id) + " · " + vendor.provider_id;
+              label.append(select, title);
+              const detail = document.createElement("small");
+              detail.textContent = vendor.service_count + " service(s)" + (vendor.agent_id ? " · Agent #" + vendor.agent_id : " · not registered");
+              const status = document.createElement("p");
+              status.className = "dash-status";
+              status.setAttribute("role","status");
+              const recoveryBox = document.createElement("details");
+              const summary = document.createElement("summary");
+              summary.textContent = "Recover an already submitted transaction";
+              const recovery = document.createElement("input");
+              recovery.placeholder = "0x… transaction hash (optional)";
+              recovery.setAttribute("aria-label", "Transaction hash for " + vendor.provider_id);
+              recovery.maxLength = 66;
+              const note = document.createElement("small");
+              note.textContent = "Only receipt verification is performed when a hash is supplied. Never enter a private key.";
+              recoveryBox.append(summary, recovery, note);
+              copy.append(label, detail, status, recoveryBox);
+              const button = document.createElement("button");
+              button.className = "dash-button";
+              button.type = "button";
+              button.dataset.vendorRegistration = vendor.registration_endpoint;
+              button.textContent = vendor.agent_id ? "Registered #" + vendor.agent_id : "Register Vendor";
+              button.addEventListener("click", () => startVendorBatch([{...vendor, recovery_hash:recovery.value.trim()}]));
+              row.append(copy, button); list.append(row);
+              vendorRows.set(vendor.provider_id, {select,button,status,recovery,detail});
+            }
+            if (!vendorItems.length) list.textContent = "No Vendor identities are available for this account.";
+            updateVendorControls();
+          } catch (error) {
+            batchStatus.textContent = error.message;
+            batchStatus.className = "dash-status error";
           }
         }
-        document.getElementById("vendor-identities-list").addEventListener("click", async (event) => {
-          const button = event.target.closest("[data-vendor-registration]");
-          if (!button) return;
-          button.disabled = true;
-          const original = button.textContent;
+        async function startVendorBatch(items) {
+          if (vendorBatchBusy) return;
+          vendorBatchBusy = true; updateVendorControls();
+          batchStatus.className = "dash-status";
+          batchStatus.textContent = "Preparing " + items.length + " Vendor(s) for owner " + batchOwner.value.trim() + ". Confirm each transaction in your wallet.";
           try {
-            if (!window.ethereum) throw new Error("No browser wallet detected. Open this page in a browser with an EVM wallet.");
-            const endpoint = button.dataset.vendorRegistration;
-            const configResponse = await fetch(endpoint);
-            const info = await configResponse.json();
-            if (!configResponse.ok) throw new Error(info.error?.message || "Vendor registration is unavailable.");
-            if (info.current_identity) { await loadVendorIdentities(); return; }
-            button.textContent = "Connect wallet…";
-            const [owner] = await window.ethereum.request({ method: "eth_requestAccounts" });
-            await ensurePlatformChain(info);
-            if (!info.gas_sponsorship?.available) throw new Error("AgentRouter gas sponsorship is temporarily unavailable. No Vendor-paid transaction was sent.");
-            const nonceResponse = await fetch(info.gas_sponsorship.endpoint, { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ method:"eth_getTransactionCount", params:[owner, "pending"] }) });
-            const nonceResult = await nonceResponse.json();
-            if (!nonceResponse.ok || !nonceResult.result) throw new Error(nonceResult.error || "AgentRouter could not obtain a sponsored transaction nonce.");
-            const nonce = nonceResult.result;
-            const gas = await window.ethereum.request({ method: "eth_estimateGas", params: [{ from:owner, ...info.transaction }] });
-            const sponsoredTransaction = { from:owner, ...info.transaction, gas, gasPrice:"0x0", nonce, chainId:"0x" + Number(info.chain_id).toString(16) };
-            button.textContent = "Checking sponsorship…";
-            const sponsorshipResponse = await fetch(info.gas_sponsorship.endpoint, { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ method:"pm_isSponsorable", params:[{ from:owner, ...info.transaction, gas }] }) });
-            const sponsorship = await sponsorshipResponse.json();
-            if (!sponsorshipResponse.ok || sponsorship.gas_sponsorship?.sponsored !== true) throw new Error(sponsorship.error || "AgentRouter could not sponsor this registration.");
-            button.textContent = "Sign gas-free registration…";
-            let signed;
-            try {
-              signed = await window.ethereum.request({ method: "eth_signTransaction", params: [sponsoredTransaction] });
-            } catch (error) {
-              if (error?.code === 4001) throw error;
-              throw new Error("This wallet cannot sign a sponsored transaction. Use a wallet that supports eth_signTransaction; AgentRouter will not fall back to charging BNB.");
-            }
-            const rawTransaction = typeof signed === "string" ? signed : signed?.raw;
-            if (!rawTransaction) throw new Error("The wallet did not return a signed transaction.");
-            button.textContent = "Submitting gas-free registration…";
-            const submissionResponse = await fetch(info.gas_sponsorship.endpoint, { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ method:"eth_sendRawTransaction", params:[rawTransaction] }) });
-            const submission = await submissionResponse.json();
-            if (!submissionResponse.ok) throw new Error(submission.error || "AgentRouter could not submit the sponsored registration.");
-            const txHash = submission.result;
-            for (let attempt = 0; attempt < 40; attempt++) {
-              button.textContent = "Confirming " + (attempt + 1) + "/40";
-              const response = await fetch(endpoint, { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ tx_hash:txHash, owner_address:owner }) });
-              const result = await response.json();
-              if (response.ok) { await loadVendorIdentities(); return; }
-              if (result.error?.code !== "ERC8004_RECEIPT_NOT_FOUND") throw new Error(result.error?.message || "Vendor registration could not be verified.");
-              await new Promise((resolve) => setTimeout(resolve, 3000));
-            }
-            throw new Error("The Vendor registration transaction is still pending.");
+            if (!navigator.locks) throw new Error("This browser cannot safely coordinate registration tabs. Use a current Chrome browser.");
+            await navigator.locks.request("ar-vendor-registration", {ifAvailable:true}, async lock => {
+              if (!lock) throw new Error("Another tab is registering Vendors. Finish or pause it before continuing here.");
+              vendorBatch = (${createVendorRegistrationBatch.toString()})({
+                wallet:window.ethereum, api:vendorApi,
+                journal:{
+                  get:key => { const value = localStorage.getItem(key); return value ? JSON.parse(value) : null; },
+                  set:(key,value) => {
+                    const json = JSON.stringify(value);
+                    localStorage.setItem(key,json);
+                    if (localStorage.getItem(key) !== json) throw new Error("Browser storage is unavailable. Registration stopped safely.");
+                  }
+                },
+                onUpdate:update => {
+                  const row = vendorRows.get(update.provider_id);
+                  const text = update.index + "/" + update.total + " · " + update.provider_id + " · " + update.message;
+                  batchStatus.textContent = text;
+                  batchStatus.className = update.status === "paused" ? "dash-status error" : "dash-status";
+                  row.status.textContent = update.message;
+                  if (update.tx_hash) {
+                    const link = document.createElement("a");
+                    link.href = "https://bscscan.com/tx/" + update.tx_hash;
+                    link.target = "_blank"; link.rel = "noopener noreferrer";
+                    link.textContent = " View transaction";
+                    row.status.append(link);
+                  }
+                  if (["registered","already_registered"].includes(update.status)) {
+                    row.select.checked = false;
+                    row.button.textContent = update.message;
+                    // Server-verified result; refresh from server on next page load.
+                    vendorItems.find(v => v.provider_id === update.provider_id).agent_id = "verified";
+                  }
+                }
+              });
+              const result = await vendorBatch.run(items, batchOwner.value.trim());
+              if (result.status === "completed") batchStatus.textContent = "Batch completed. Each Vendor result and transaction appears below.";
+            });
           } catch (error) {
-            button.textContent = error?.code === 4001 ? "Cancelled" : (error.message || "Registration failed");
-            setTimeout(() => { button.textContent = original; button.disabled = false; }, 3000);
+            batchStatus.className = "dash-status error";
+            batchStatus.textContent = error.message || "Registration paused.";
+          } finally {
+            vendorBatch = null; vendorBatchBusy = false; updateVendorControls();
           }
+        }
+        batchStart.addEventListener("click", () => startVendorBatch(selectedVendors()));
+        batchStop.addEventListener("click", () => {
+          vendorBatch?.stop();
+          batchStatus.textContent = "Pause requested. Cancel any open wallet prompt. An already submitted transaction can still confirm.";
         });
         // The deposit needs confirmations before it can be credited, so the
         // claim is retried rather than failing the moment the block is young.
