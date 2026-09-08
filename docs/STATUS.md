@@ -2,6 +2,13 @@
 
 Last updated: 2026-09-08
 
+## Rabby compatibility preflight — local, pending execution-path decision
+
+- Production `3766cbc` batch registration reached the wallet signing step but did not produce a Vendor transaction or Agent ID. Rabby does not implement the dApp raw-signature entry point the original flow assumed.
+- Local follow-up adds explicit wallet selection, pins the selected provider, blocks new Rabby raw-signing attempts before wallet prompts and preserves distinct signing error codes. Hash-based receipt verification remains available. This prevents repeated misleading failures; it does not yet make Rabby sponsored registration executable.
+- AR-BUG-086: 47 focused tests pass; full suite 1,168 passed, zero failed, two database-environment skips. Local browser verification passed; real wallet untouched. See `docs/VENDOR_BATCH_REGISTRATION.md`.
+- Decision required: explicitly allow the platform owner wallet to pay registration gas (Vendor still pays zero), or approve a separate sponsored relay design if this platform wallet must also pay zero. Neither is an automatic fallback; no new contract, signer, policy or production configuration was changed.
+
 ## Wallet-confirmed Vendor batch registration — local, not deployed
 
 - Implemented the selected browser-wallet option: choose up to five Vendors, verify the existing platform owner, then confirm each sponsored registration sequentially. No new wallet, private key export or unattended server signer. Platform ownership is disclosed instead of implying third-party Vendor endorsement.

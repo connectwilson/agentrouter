@@ -21,6 +21,12 @@ window.ethereum = { request: async ({method}) => {
   }
   throw new Error("Fixture rejects unexpected wallet method: " + method);
 } };
+const rabbyFixture = {isRabby:true, request:window.ethereum.request};
+window.addEventListener("eip6963:requestProvider", () => {
+  for (const [provider,name,rdns] of [[window.ethereum,"Mock raw-signing wallet","test.mock"],[rabbyFixture,"Rabby fixture","io.rabby"]]) {
+    window.dispatchEvent(new CustomEvent("eip6963:announceProvider", {detail:{provider,info:{name,rdns}}}));
+  }
+});
 </script>`;
 const server = http.createServer(async (req,res) => {
   const url = new URL(req.url,"http://localhost");
