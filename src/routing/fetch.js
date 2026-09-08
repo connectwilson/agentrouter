@@ -65,11 +65,20 @@ export async function runRemoteAgentRouterFetch(store, args = {}, {
   if (!requirements.length) {
     const socialPost = findSocialPostUrl(task);
     if (socialPost) {
+      const nativeHandoff = nativeBrowserRouteHandoff(routePlan, args.consumer_context, task);
+      if (nativeHandoff) return complete(nativeHandoff);
       const providers = await socialProviderFactory(store, ownerKey, socialConnectionOptions);
-      return complete(await runSocialPostReadCapability(
-        { url: socialPost.canonical_url, platform: socialPost.platform },
-        { providers, consumerContext: args.consumer_context }
-      ));
+      if (Object.values(providers || {}).some((candidates) => (
+        Array.isArray(candidates) ? candidates.length > 0 : Boolean(candidates)
+      ))) {
+        return complete(await runSocialPostReadCapability(
+          { url: socialPost.canonical_url, platform: socialPost.platform },
+          { providers, consumerContext: args.consumer_context }
+        ));
+      }
+      // Keep fetch aligned with ask when no browser adapter and no connected
+      // provider can execute the read. Do not probe a nonexistent connector.
+      if (routePlan?.route_family === "local_browser") return complete(localBrowserRouteRequired(routePlan));
     }
     if (["source_not_callable", "capability_not_available"].includes(routePlan?.abstain_reason)) {
       return complete(structuredRoutePreflight(routePlan));
@@ -227,7 +236,9 @@ export function nativeBrowserRouteHandoff(routePlan, consumerContext, task) {
   const platform = routePlan.params?.platform
     || routePlan.candidate_sources?.[0]
     || routePlan.source_constraint;
-  const operation = String(routePlan.params?.operation || "search").trim().toLowerCase();
+  const operation = String(
+    routePlan.params?.operation || (routePlan.task_family === "social_post_read" ? "read_post" : "search")
+  ).trim().toLowerCase();
   if (!platform || !hasNativeBrowserCapability(consumerContext, operation)) return null;
   const params = {
     ...routePlan.params,

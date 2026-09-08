@@ -438,6 +438,7 @@ export function localBrowserRouteRequired(plan) {
     retry_original_request_after_connection: false,
     complete_through_local_bridge: true,
     do_not_fallback_outside_agentrouter: true,
+    fallback_allowed: false,
     message: "Use the AgentRouter MCP bridge with the user's signed-in local browser. Do not ask for an API key and do not replace this route with generic web search."
   };
 }

@@ -68,6 +68,7 @@ function decisionFromPlan(entry, plan, entrypoint) {
     selected_source: blocked ? null : plan.candidate_sources[0] || null,
     candidate_sources: blocked ? [] : plan.candidate_sources,
     authorization_kind: blocked ? "none" : authKind,
+    params: plan.params,
     price_usdc: blocked || plan.estimated_price_usdc == null
       ? null
       : Number(plan.estimated_price_usdc),
@@ -99,6 +100,7 @@ test("the versioned benchmark enforces canonical planner accuracy and safety gat
   // manufactured here by cloning one planner output under two labels.
   assert.equal(metrics.entrypoint_parity, null);
   assert.ok(metrics.authorization_accuracy >= 0.98, JSON.stringify(metrics));
+  assert.equal(metrics.parameter_accuracy, 1, JSON.stringify(metrics));
   assert.equal(metrics.budget_violation_rate, 0);
   assert.equal(metrics.unsafe_paid_route_rate, 0);
   assert.ok(metrics.high_confidence_misroute_rate <= 0.02, JSON.stringify(metrics));

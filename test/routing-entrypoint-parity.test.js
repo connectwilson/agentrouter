@@ -41,6 +41,7 @@ function normalizedDecision(payload) {
     source_constraint: plan.source_constraint,
     provider_constraint: plan.provider_constraint,
     candidate_sources: plan.candidate_sources,
+    params: plan.params,
     auth_requirement: plan.auth_requirement,
     budget_gate: plan.budget_gate,
     abstain_reason: plan.abstain_reason,
@@ -71,7 +72,9 @@ test("ask and fetch expose the same canonical decision for high-risk natural-lan
       "研究 AgentRouter 的产品定位、主要竞品和市场机会。",
       "查找关于 AI Agent 路由的同行评审论文和引用次数。",
       "Find x if x=2",
-      "查XLM当前最大爆仓痛点"
+      "查XLM当前最大爆仓痛点",
+      "阅读这条 X 帖子的内容并总结观点：https://x.com/example/status/1234567890。",
+      "Show the top 5 profitable Hyperliquid wallets over 48 hours for tokens listed by Robinhood."
     ]) {
       const [ask, fetchResult] = await Promise.all([
         post(baseUrl, "/agent-router/ask", task),

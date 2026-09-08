@@ -41,6 +41,7 @@ function decisionFor(entry, overrides = {}) {
     selected_source: expected.acceptable_sources[0] || null,
     candidate_sources: [...expected.acceptable_sources],
     authorization_kind: expected.authorization_kind,
+    params: expected.params,
     price_usdc: expected.max_price_usdc === "0" ? 0 : 0,
     confidence: 1,
     ...overrides
@@ -72,6 +73,10 @@ test("routing benchmark is versioned, provider-tolerant, and covers the known ri
     if (entry.request) {
       assert.equal(typeof entry.request.capability, "string", entry.id);
       assert.equal(typeof entry.request.params, "object", entry.id);
+    }
+    if (entry.expected.params !== undefined) {
+      assert.equal(typeof entry.expected.params, "object", entry.id);
+      assert.equal(Array.isArray(entry.expected.params), false, entry.id);
     }
     assert.ok(["route", "clarify", "no_match"].includes(entry.expected.action), entry.id);
     assert.ok([
