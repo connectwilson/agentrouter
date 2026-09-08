@@ -1354,6 +1354,13 @@ function scoreCandidate(record, intent, requiredCapabilities, constraints, match
   const provenance = summarizeProvenance(record);
   const freshnessLimit = Number(constraints.freshness_seconds || 0);
   const serviceFreshness = Number(manifest.freshness?.max_data_lag_seconds || 0);
+  // A caller-specified freshness bound is an eligibility contract, not a
+  // preference to be outweighed by trust or price. Selecting a service that
+  // declares a slower cadence creates a paid call that cannot satisfy the
+  // request before the provider is even contacted.
+  if (freshnessLimit > 0 && (!serviceFreshness || serviceFreshness > freshnessLimit)) {
+    return { service_id: manifest.service_id, routing_score: 0 };
+  }
   const freshnessFit = !freshnessLimit || (serviceFreshness && serviceFreshness <= freshnessLimit) ? 1 : 0.35;
   const maxPrice = Number(constraints.max_price_usdc || 0);
   const price = Number(manifest.pricing.amount);
