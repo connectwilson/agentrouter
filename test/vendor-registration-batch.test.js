@@ -45,9 +45,67 @@ function harness(options = {}) {
     return { identity: { agent_id: String(receipts), owner_address: OWNER, tx_hash: body.tx_hash } };
   };
   const journal = { get: key => saved.get(key), set: (key, value) => { if (options.storageFail) throw new Error("Storage unavailable"); saved.set(key, structuredClone(value)); } };
-  const batch = createVendorRegistrationBatch({ wallet, walletInfo:options.walletInfo, api, journal, onUpdate: x => updates.push(x), sleep: async () => {}, receiptAttempts: 2 });
+  const batch = createVendorRegistrationBatch({ wallet, walletInfo:options.walletInfo, api, journal, confirmFee:options.confirmFee, now:options.now, onUpdate: x => updates.push(x), sleep: async () => {}, receiptAttempts: 2 });
   return { batch, calls, updates, saved, vendors, wallet, api, journal };
 }
+
+function paidHarness(options = {}) {
+  return harness({walletFlags:{isRabby:true}, info:{platform_paid:{available:true,owner_address:OWNER}},
+    confirmFee:async () => true, ...options,
+    wallet:async r => {
+      const custom = await options.wallet?.(r); if (custom !== undefined) return custom;
+      if (r.method === "eth_gasPrice") return "0x5f5e100";
+      if (r.method === "eth_getBalance") return "0xde0b6b3a7640000";
+      if (r.method === "eth_sendTransaction") {
+        assert.equal(r.params[0].gasPrice,"0x5f5e100");
+        assert.equal(r.params[0].value,"0x0");
+        assert.equal(r.params[0].from,OWNER); return HASH;
+      }
+    }});
+}
+test("Rabby platform-paid mode quotes each fee before ordinary sending and verifies the receipt", async () => {
+  const quotes=[];
+  const h=paidHarness({confirmFee:async q=>{quotes.push(q); assert.equal(h.calls.includes("eth_sendTransaction"),quotes.length>1);return true;}});
+  assert.equal((await h.batch.run(h.vendors,OWNER,"platform_paid")).status,"completed");
+  assert.equal(quotes.length,2);
+  assert.equal(quotes[0].owner_address,OWNER);
+  assert.equal(quotes[0].max_fee_wei,"12000000000000");
+  assert.equal(h.calls.filter(x=>x==="eth_sendTransaction").length,2);
+  for(const method of ["eth_signTransaction","eth_sendRawTransaction","pm_isSponsorable"]) assert.ok(!h.calls.includes(method));
+});
+for (const [name,options] of [
+  ["declined fee",{confirmFee:async()=>false}],
+  ["missing fee confirmation handler",{confirmFee:undefined}],
+  ["not a platform operator",{info:{platform_paid:{available:false}}}],
+  ["wrong platform owner",{info:{platform_paid:{available:true,owner_address:"0x"+"2".repeat(40)}}}],
+  ["insufficient BNB",{wallet:r=>r.method==="eth_getBalance"?"0x0":undefined}],
+  ["zero gas price",{wallet:r=>r.method==="eth_gasPrice"?"0x0":undefined}],
+  ["excessive fee",{wallet:r=>r.method==="eth_gasPrice"?"0xffffffffff":undefined}],
+  ["expired quote",{now:(()=>{let time=0;return ()=>time+=61000;})()}]
+]) test("platform-paid blocks "+name+" without sending",async()=>{
+  const h=paidHarness(options);
+  assert.equal((await h.batch.run(h.vendors,OWNER,"platform_paid")).status,"paused");
+  assert.ok(!h.calls.includes("eth_sendTransaction"));
+});
+test("paid send timeout blocks duplicate submission across retries",async()=>{
+  const h=paidHarness({wallet:r=>{if(r.method==="eth_sendTransaction")throw new Error("Lost response");}});
+  await h.batch.run(h.vendors,OWNER,"platform_paid");
+  await h.batch.run(h.vendors,OWNER,"platform_paid");
+  assert.equal(h.calls.filter(x=>x==="eth_sendTransaction").length,1);
+  assert.match(h.updates.at(-1).message,/unknown/i);
+});
+test("paid wallet cancellation pauses and permits a deliberate retry",async()=>{
+  const h=paidHarness({wallet:r=>{if(r.method==="eth_sendTransaction")throw Object.assign(new Error("Cancel"),{code:4001});}});
+  await h.batch.run(h.vendors,OWNER,"platform_paid");
+  assert.match(h.updates.at(-1).message,/cancel/i);
+  await h.batch.run(h.vendors,OWNER,"platform_paid");
+  assert.equal(h.calls.filter(x=>x==="eth_sendTransaction").length,2);
+});
+test("unknown payment modes cannot accidentally use sponsorship",async()=>{
+  const h=paidHarness();
+  await assert.rejects(h.batch.run(h.vendors,OWNER,"auto"),/mode/i);
+  assert.equal(h.calls.length,0);
+});
 
 test("batch requests wallet access once and registers selected vendors sequentially", async () => {
   const h = harness();
