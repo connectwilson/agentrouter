@@ -109,6 +109,33 @@ test("unknown payment modes cannot accidentally use sponsorship",async()=>{
   await assert.rejects(h.batch.run(h.vendors,OWNER,"auto"),/mode/i);
   assert.equal(h.calls.length,0);
 });
+test("platform-paid rechecks account and network after fee consent",async()=>{
+  for(const changed of ["eth_accounts","eth_chainId"]){
+    let approved=false;
+    const h=paidHarness({confirmFee:async()=>{approved=true;return true;},wallet:r=>approved&&r.method===changed?(changed==="eth_accounts"?["0x"+"2".repeat(40)]:"0x1"):undefined});
+    assert.equal((await h.batch.run(h.vendors,OWNER,"platform_paid")).status,"paused");
+    assert.ok(!h.calls.includes("eth_sendTransaction"));
+  }
+});
+test("pausing during paid fee review sends nothing",async()=>{
+  const h=paidHarness({confirmFee:async()=>{h.batch.stop();return true;}});
+  await h.batch.run(h.vendors,OWNER,"platform_paid");
+  assert.ok(!h.calls.includes("eth_sendTransaction"));
+});
+test("paid receipt failure resumes verification without asking for fees or resending",async()=>{
+  let failed=true,quotes=0;
+  const h=paidHarness({confirmFee:async()=>{quotes++;return true;},api:(p,b)=>{if(b?.tx_hash&&failed)throw new Error("Receipt service unavailable");}});
+  await h.batch.run([h.vendors[0]],OWNER,"platform_paid");
+  failed=false;
+  assert.equal((await h.batch.run([h.vendors[0]],OWNER,"platform_paid")).status,"completed");
+  assert.equal(quotes,1);
+  assert.equal(h.calls.filter(x=>x==="eth_sendTransaction").length,1);
+});
+test("paid flow cannot sign without durable browser storage",async()=>{
+  const h=paidHarness({storageFail:true});
+  assert.equal((await h.batch.run(h.vendors,OWNER,"platform_paid")).status,"paused");
+  assert.ok(!h.calls.includes("eth_sendTransaction"));
+});
 
 test("batch requests wallet access once and registers selected vendors sequentially", async () => {
   const h = harness();

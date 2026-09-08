@@ -14,6 +14,12 @@ window.ethereum = { request: async ({method}) => {
   if (method === "eth_chainId") return "0x38";
   if (method === "wallet_switchEthereumChain") return null;
   if (method === "eth_estimateGas") return "0x186a0";
+  if (method === "eth_gasPrice") return "0x5f5e100";
+  if (method === "eth_getBalance") return "0xde0b6b3a7640000";
+  if (method === "eth_sendTransaction") {
+    if (mode === "cancel") throw Object.assign(new Error("Cancelled"),{code:4001});
+    return (await (await fetch("/__fixture/send",{method:"POST"})).json()).hash;
+  }
   if (method === "eth_signTransaction") {
     if (mode === "cancel") throw Object.assign(new Error("Cancelled"),{code:4001});
     if (mode === "unsupported") throw Object.assign(new Error("Unsupported"),{code:-32601});
@@ -37,6 +43,7 @@ const server = http.createServer(async (req,res) => {
     return res.end(html.replace("</head>",mockWallet+"</head>").replace("<body data-agentrouter-app>",'<body data-agentrouter-app><div style="padding:16px;background:#543">LOCAL MOCK ONLY · No blockchain transactions <label>Scenario <select id="fixture-mode"><option value="success">Success</option><option value="cancel">Cancel signing</option><option value="unsupported">Unsupported wallet</option></select></label></div>'));
   }
   if (url.pathname === "/__fixture/sign") {signed++;return send({ok:true});}
+  if (url.pathname === "/__fixture/send") {sent++;return send({hash:"0x"+String(sent).padStart(64,"0")});}
   if (url.pathname === "/__fixture/state") return send({signed,sent,verified,identities:[...identities]});
   if (url.pathname === "/account/dashboard") return send({summary:{balance_credits:0,spent_credits_30d:0,successful_paid_calls:0,connected_agents:0},recent_activity:[],api_keys:[],top_services:[]});
   if (url.pathname === "/account/credits/deposit") return send({enabled:false});
@@ -45,7 +52,7 @@ const server = http.createServer(async (req,res) => {
   const match = url.pathname.match(/^\/agent-router\/erc8004\/vendors\/(alpha|beta|gamma)\/registration(\/paymaster)?$/);
   if (match) {
     const id = match[1];
-    if(req.method === "GET") return send({provider_id:id,chain_id:56,current_identity:identities.get(id),transaction:{to:registry,value:"0x0",data:"0xf2c298be00"},gas_sponsorship:{available:true,endpoint:url.pathname+"/paymaster"}});
+    if(req.method === "GET") return send({provider_id:id,chain_id:56,current_identity:identities.get(id),platform_paid:{available:true,owner_address:owner},transaction:{to:registry,value:"0x0",data:"0xf2c298be00"},gas_sponsorship:{available:true,endpoint:url.pathname+"/paymaster"}});
     let raw="";for await(const chunk of req) raw+=chunk;
     const body=JSON.parse(raw);
     if (body.method === "eth_getTransactionCount") return send({result:"0x0"});

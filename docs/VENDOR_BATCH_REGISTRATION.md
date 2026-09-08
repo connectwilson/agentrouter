@@ -10,9 +10,11 @@ Batch registration was deployed as `3766cbc` on 2026-09-08. A real attempt stopp
 - Official Rabby source inspected at `f12cbb05eb7eed48ddb1c02dee887deff193ec55`: `src/background/controller/provider/controller.ts` implements `ethSendTransaction`, not `ethSignTransaction`; `rpcFlow.ts` forwards unhandled `eth_` methods to RPC. This explains why our current raw-signature acquisition assumption cannot be relied upon for Rabby.
 - This follow-up does NOT implement a new Rabby sponsorship transport. Do not describe it as a completed gas-free registration fix.
 
-### Decision needed before a new execution path
+### Explicit platform-paid path (approved, implemented locally)
 
-The existing owner is the platform's `0x0531…f1dB` wallet. If the operator authorizes this platform wallet to pay BNB gas, an explicitly labeled ordinary wallet-send path can keep Vendor cost zero without a new contract. It must not be an automatic fallback from failed sponsorship. Before any actual send, show the estimated cost and let the operator confirm in Rabby. No such permission, code path or transaction is included here.
+The operator approved the existing platform `0x0531…f1dB` wallet paying BNB gas. The separate `platform_paid` mode uses `eth_sendTransaction`, not an automatic fallback. The server exposes an available payer only to the configured operator and pins it to the registered platform identity owner on the canonical chain/registry. The user operates Rabby and confirms each real transaction.
+
+Each fee review shows Vendor, full payer, BSC, gas plus 20% buffer, maximum fee in BNB, and a non-Paymaster label. Guards: 500,000 gas, 0.001 BNB per-transaction safety ceiling, sufficient balance, 60-second quote expiry, account/network recheck after consent. Do not increase limits in the wallet. Actual cost comes from the mined receipt. Unknown sends block repeat registration; returned hashes resume verification. These local guards do not guarantee cross-device exactly-once execution.
 
 If the operator requires zero BNB paid by this wallet as well, use a separately reviewed sponsored-registration design (for example a typed-authorization relay with atomic registry registration and identity transfer). That requires a separate decision about contract deployment, signer custody, fees and receipt verification; do not silently add a relay or repurpose the evidence-anchor signer.
 
@@ -20,8 +22,8 @@ If the operator requires zero BNB paid by this wallet as well, use a separately 
 
 1. Open Account → Connections → Vendor identities.
 2. Select the intended registration wallet and verify the full owner address. The page prefills the existing platform identity owner returned by the server; it does not create a new wallet. The selected operator wallet is `0x0531bc53d9632E58dd08b54034824E2FdF68f1dB`.
-3. Select one to five canonical Vendors and click Register selected. Similar imported names are not automatically merged; do not register duplicate imports as separate identities without reviewing them.
-4. Confirm each registration in the browser wallet. Registrations run sequentially and only through approved platform sponsorship. This is batch preparation, not one-signature or unattended registration.
+3. For Rabby, explicitly choose **Platform wallet pays BNB**. Select one to five canonical Vendors and click Register selected. Similar imported names are not automatically merged; do not register duplicate imports as separate identities without reviewing them.
+4. Review each fee and confirm in Rabby yourself. The original Paymaster mode remains separate for compatible raw-signing wallets. This is batch preparation, not one-signature or unattended registration.
 5. Successful receipt verification displays the returned Agent ID and transaction link. Cancellation or errors pause the batch with a persistent explanation. Already registered Vendors are skipped.
 
 The signing wallet owns these identities. Platform-managed integrations are not endorsements by the named third-party Vendors. Provider authentication, ownership checks and receipt verification remain server-side.
@@ -30,13 +32,17 @@ The signing wallet owns these identities. Platform-managed integrations are not 
 
 - BSC mainnet only; canonical IdentityRegistry; zero BNB value; fixed register method; maximum 500,000 gas; connected owner and network checked around signing.
 - No private key export, new server signer, or BNB-paid fallback. Actual sponsorship eligibility and daily limits remain enforced by the existing Paymaster policy. Five selected Vendors is a batch limit, not a promise that five transactions remain in the daily allowance.
-- Uses `eth_signTransaction`. A wallet that does not support this method pauses without sending a paid fallback. Compatibility with the user's real wallet still needs verification after deployment.
+- Sponsored mode uses `eth_signTransaction`; platform-paid mode uses `eth_sendTransaction` after explicit fee consent. Compatibility with the user's real wallet still needs verification after deployment.
 - Same-origin browser locks prevent concurrent batches in supported browsers. This is not a cross-device or server-wide registration lock.
 - The local recovery journal stores status and public transaction hashes, never signed transactions or wallet secrets. A known submitted hash resumes receipt verification rather than signing again. An uncertain broadcast without a returned hash blocks another submission; recover with its BscScan transaction hash.
 - Preserve browser storage while a transaction is unresolved. Clearing it or switching devices removes this local guard; this implementation does not claim global exactly-once execution.
 - Pause cannot undo a transaction already submitted. Never interpret a paused UI as a chain rollback.
 
 ## Reproduce tests
+
+Platform-paid preview: choose Rabby fixture and alpha. Sponsored mode stays disabled. Explicitly select Platform wallet pays BNB and register: the fee dialog shows 0.000012 BNB and full payer. Expiry sends nothing; confirming a fresh quote produces fake Agent ID 900001 without raw signing. All fixture IDs/hashes are fake. Tests cover wrong operator/payer, fee bounds, insufficient balance, missing or declined consent, expiry, account/network changes, stop, cancellation, storage failures, uncertain send and receipt recovery.
+
+2026-09-08 platform-paid verification: browser fixture counters were raw signed=0, ordinary sent=1, verified=1. This proves the local ordinary-send branch, not real Rabby execution. Full suite and scoped regression results are recorded in `docs/STATUS.md`. Fresh production-dependency npm audit reported zero vulnerabilities. No database migration or dependency change is needed.
 
 ```sh
 node --test test/vendor-registration-batch.test.js

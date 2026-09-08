@@ -2,12 +2,20 @@
 
 Last updated: 2026-09-08
 
-## Rabby compatibility preflight — local, pending execution-path decision
+## Rabby platform-paid registration — local, pending release and user wallet confirmation
+
+- Operator approved the existing `0x0531…f1dB` platform wallet paying registration gas. Wallet operation/signing remain user-only. No private key, new signer, relay contract or Paymaster policy change.
+- Explicit `platform_paid` mode uses `eth_sendTransaction`; default sponsorship never automatically falls back to spending BNB. Server disclosure requires the configured operator and registered platform identity on the canonical chain/registry. The payer must match that identity owner.
+- Every transaction first shows the full payer and fee: 20% gas buffer, 500,000 gas ceiling, 0.001 BNB safety ceiling, sufficient balance, 60-second expiry, and post-consent account/network checks. Unknown send outcomes block repeat sends; known hashes resume verification. This is not a cross-device exactly-once guarantee.
+- AR-BUG-087 adds fee, authorization, cancellation, timeout and recovery cases. Isolated browser verified quote expiry without sending and one successful fake Rabby ordinary-send registration. This is not real chain evidence. Production remains `3766cbc`; Nansen registration still requires rollout and user wallet confirmation.
+- Final verification: 1,187 total tests, 1,185 passed, zero failed, two database-environment skips; 17 corpus/acceptance tests passed separately. Controller/discovery coverage: 100% lines and 91.30% branches before the final four additional boundary tests. Fresh production-dependency audit: zero vulnerabilities. Local mock counters: raw signed=0, ordinary sent=1, verified=1.
+
+## Rabby compatibility preflight — preceding local change
 
 - Production `3766cbc` batch registration reached the wallet signing step but did not produce a Vendor transaction or Agent ID. Rabby does not implement the dApp raw-signature entry point the original flow assumed.
 - Local follow-up adds explicit wallet selection, pins the selected provider, blocks new Rabby raw-signing attempts before wallet prompts and preserves distinct signing error codes. Hash-based receipt verification remains available. This prevents repeated misleading failures; it does not yet make Rabby sponsored registration executable.
 - AR-BUG-086: 47 focused tests pass; full suite 1,168 passed, zero failed, two database-environment skips. Local browser verification passed; real wallet untouched. See `docs/VENDOR_BATCH_REGISTRATION.md`.
-- Decision required: explicitly allow the platform owner wallet to pay registration gas (Vendor still pays zero), or approve a separate sponsored relay design if this platform wallet must also pay zero. Neither is an automatic fallback; no new contract, signer, policy or production configuration was changed.
+- Decision resolved above: platform wallet BNB payment authorized. No automatic paid fallback or new relay was introduced.
 
 ## Wallet-confirmed Vendor batch registration — local, not deployed
 
