@@ -202,6 +202,24 @@ test("an AgentRouter-managed external Vendor gets its own identity instead of in
   });
 });
 
+test("platform-paid option is limited to the configured operator and verified platform identity owner", async () => {
+  await withEnv({ADN_SETTLEMENT_CHAIN:"bsc",ADN_PLATFORM_OPERATOR_OWNER_KEY:"local:local-development-user",ADN_PLATFORM_OPERATOR_GITHUB_LOGIN:undefined},async()=>{
+    const store=createMemoryStore();
+    const session=createDevSession(store,"http://127.0.0.1");
+    registerService(store,ownedManifest("paid_alpha","paid_alpha","local:local-development-user","/a"),"http://127.0.0.1");
+    const server=createServer({store}); const base=await listen(server);
+    const headers={cookie:session.cookie.split(";")[0]};
+    const config=async()=> (await fetch(base+"/agent-router/erc8004/vendors/paid_alpha/registration",{headers})).json();
+    try {
+      assert.equal((await config()).platform_paid.available,false);
+      store.erc8004PlatformIdentities.set("bsc",verifiedIdentity({registryAddress:"0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",agentUri:"https://example.test/platform"}));
+      assert.deepEqual((await config()).platform_paid,{available:true,owner_address:OWNER,vendor_pays_gas:false});
+      delete process.env.ADN_PLATFORM_OPERATOR_OWNER_KEY;
+      assert.equal((await config()).platform_paid.available,false,"service owner is not the platform payer");
+    } finally {await new Promise(resolve=>server.close(resolve));}
+  });
+});
+
 test("platform operator can discover imported Vendor identities without claiming their services", async () => {
   await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc", ADN_PLATFORM_OPERATOR_OWNER_KEY: "local:local-development-user" }, async () => {
     const store = createMemoryStore();
