@@ -74,7 +74,8 @@ test("ask and fetch expose the same canonical decision for high-risk natural-lan
       "Find x if x=2",
       "查XLM当前最大爆仓痛点",
       "阅读这条 X 帖子的内容并总结观点：https://x.com/example/status/1234567890。",
-      "Show the top 5 profitable Hyperliquid wallets over 48 hours for tokens listed by Robinhood."
+      "Show the top 5 profitable Hyperliquid wallets over 48 hours for tokens listed by Robinhood.",
+      "Verify BSC transaction 0xce780499022ade2028085acc000218a8e5d1cebddf4df912bd9dd779135fc365, ERC-8004 Agent ID 340924, and whether feedback exists for req_1788794834931."
     ]) {
       const [ask, fetchResult] = await Promise.all([
         post(baseUrl, "/agent-router/ask", task),

@@ -119,6 +119,22 @@ async function callMcpFetch(baseUrl, args, headers = {}) {
   return JSON.parse(rpc.result.content[0].text);
 }
 
+test("BSC transaction-evidence audit fails closed across HTTP and MCP without contacting a market-data connector", async () => {
+  const task = "Verify BSC transaction 0xce780499022ade2028085acc000218a8e5d1cebddf4df912bd9dd779135fc365, ERC-8004 Agent ID 340924, and whether feedback exists for req_1788794834931.";
+  await withRuntimeServer(async ({ baseUrl }) => {
+    const http = await postJson(baseUrl, "/agent-router/fetch", { task, max_price: "0" });
+    const mcp = await callMcpFetch(baseUrl, { task, max_price: "0" });
+
+    for (const payload of [http.payload, mcp]) {
+      assert.equal(payload.route_plan.capability, "onchain_evidence_audit");
+      assert.equal(payload.route_plan.abstain_reason, "capability_not_available");
+      assert.deepEqual(payload.route_plan.candidate_sources, []);
+      assert.notEqual(payload.route_plan.params?.source, "geckoterminal");
+      assert.notEqual(payload.route_plan.params?.source, "dexscreener");
+    }
+  });
+});
+
 function secretStore() {
   const values = new Map();
   return {
