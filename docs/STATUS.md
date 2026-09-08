@@ -2,6 +2,13 @@
 
 Last updated: 2026-09-08
 
+## Wallet-confirmed Vendor batch registration — local, not deployed
+
+- Implemented the selected browser-wallet option: choose up to five Vendors, verify the existing platform owner, then confirm each sponsored registration sequentially. No new wallet, private key export or unattended server signer. Platform ownership is disclosed instead of implying third-party Vendor endorsement.
+- Added persistent per-Vendor status, confirmed Agent IDs, pause, same-browser concurrency protection and transaction-hash recovery. Uncertain submission blocks blind re-registration; unavailable sponsorship never falls back to spending owner BNB. Real-wallet `eth_signTransaction` compatibility is still unverified.
+- AR-BUG-085 has 31 executable cases. Full regression: 1,152 passed, zero failed, two PostgreSQL-environment skips. Local mock browser checks verified successful batches, cancellation, unsupported signing, resume and reload without duplicate submissions. See `docs/VENDOR_BATCH_REGISTRATION.md` for operation, limitations and reproducible tests.
+- This work has local commits only; no real Vendor registration or ReputationRegistry feedback was created in these tests. The earlier evidence follow-up was subsequently published as `9097123`; this batch feature requires a separate rollout.
+
 ## Latest evidence follow-up — local fixes pending rollout
 
 - Production `0acceb9` successfully submitted the existing PONS execution evidence through the corrected AgentRouter Paymaster policy after explicit user confirmation. BSC transaction `0xa9785ff572b9e53d09bc67483606eeb5ad03fdabc20843213fd5145bf8d8291b`, block 120623869, receipt success, 31,590 Gas, zero sender Gas price. All eight event fields matched the original job. See `docs/BSC_PONS_ONCHAIN_EVIDENCE_2026-09-08.md`.
