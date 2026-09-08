@@ -31,6 +31,18 @@ test("pending services are excluded from candidate ranking", () => {
   );
 });
 
+test("a current on-chain request excludes services whose declared freshness cannot meet its hard limit", () => {
+  const { store, record } = registeredFundFlowService({ verificationStatus: "verified" });
+  record.manifest.freshness.max_data_lag_seconds = 3600;
+
+  const candidates = rankCandidates(store, fundFlowIntent(), {
+    max_price_usdc: "0.05",
+    freshness_seconds: 60
+  });
+
+  assert.deepEqual(candidates, []);
+});
+
 test("direct invocation rejects a pending service before any provider fetch", async () => {
   const { store, serviceId } = registeredFundFlowService({ verificationStatus: "pending" });
   const fetchSpy = installProviderFetchSpy(serviceId);
