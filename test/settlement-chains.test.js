@@ -183,7 +183,7 @@ test("an Arc identity token id is never reused as a BSC feedback target", async 
       serviceId: "svc",
       manifest: {
         registration: {
-          erc8004: { agent_id: "7", network: "bsc", chain_id: 56 }
+          erc8004: { agent_id: "7", network: "bsc", chain_id: 56, registry_address: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" }
         }
       }
     });

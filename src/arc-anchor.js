@@ -4,6 +4,7 @@ import { isEvmAddress } from "./arc-payment.js";
 import { hashJson } from "./evidence.js";
 import { settlementChain } from "./chains.js";
 import { createAnchorOutboxJob, executeAnchorOutboxJob, persistentAnchorOutbox } from "./anchor-outbox.js";
+import { createSponsoredAnchorWallet } from "./bsc-anchor-paymaster.js";
 
 export const AGENT_ROUTER_EVIDENCE_ANCHOR_ABI = [
   {
@@ -282,17 +283,17 @@ export async function anchorConsumerFeedbackOnArc({ requestId, serviceId, provid
   return anchorExecutionResult(base, execution, { chain, contractAddress, account });
 }
 
-function createAnchorClients({ account, chain }) {
+export function createAnchorClients({ account, chain, publicClient: suppliedClient, paymasterRpc }) {
+  const publicClient = suppliedClient || createPublicClient({ chain, transport: http(chain.rpcUrl) });
   return {
-    walletClient: createWalletClient({
+    walletClient: [56, 97].includes(chain.id)
+      ? createSponsoredAnchorWallet({ account, chain, publicClient, paymasterRpc })
+      : createWalletClient({
       account,
       chain,
       transport: http(chain.rpcUrl)
     }),
-    publicClient: createPublicClient({
-      chain,
-      transport: http(chain.rpcUrl)
-    })
+    publicClient
   };
 }
 

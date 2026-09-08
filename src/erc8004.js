@@ -168,6 +168,18 @@ function resolveErc8004AgentIdentity({ serviceId, manifest } = {}) {
     return { agentId: String(registration.agent_id), source: "manifest_registration" };
   }
 
+  // Aggregate Vendor cards must not inherit a provider's old token ID or the
+  // platform ID. Token IDs have meaning only within a chain AND registry.
+  if (manifest?.manifest_type === "agentrouter_vendor_identity" || String(serviceId || "").startsWith("vendor:")) {
+    return { agentId: "", source: "vendor_identity_not_verified" };
+  }
+  if (registration?.agent_id != null && registration.agent_id !== "") {
+    return { agentId: "", source: "cross_chain_registration_rejected" };
+  }
+  if ([56, 97].includes(settlementChain().id)) {
+    return { agentId: "", source: "unscoped_identity_rejected" };
+  }
+
   const serviceEnvName = serviceId ? `ADN_ERC8004_AGENT_ID_${envKey(serviceId)}` : "";
   if (serviceEnvName && process.env[serviceEnvName]) return { agentId: process.env[serviceEnvName], source: "service_override" };
   if (String(serviceId || "").startsWith("external_api_")) {
@@ -187,13 +199,16 @@ function resolveErc8004AgentIdentity({ serviceId, manifest } = {}) {
 
 function registrationMatchesSettlementChain(registration = {}) {
   const chain = settlementChain();
+  if (!/^(0|[1-9]\d*)$/.test(String(registration.agent_id ?? ""))) return false;
+  if (registration.registry_address && String(registration.registry_address).toLowerCase() !== erc8004Registries().identityRegistry.toLowerCase()) return false;
+  if ([56, 97].includes(chain.id) && (!registration.registry_address || !(registration.chain_id || registration.caip2 || registration.network))) return false;
   if (registration.chain_id != null && registration.chain_id !== "") {
-    return Number(registration.chain_id) === chain.id;
+    if (Number(registration.chain_id) !== chain.id) return false;
   }
-  if (registration.caip2) return String(registration.caip2).toLowerCase() === chain.caip2.toLowerCase();
+  if (registration.caip2 && String(registration.caip2).toLowerCase() !== chain.caip2.toLowerCase()) return false;
   if (registration.network) {
     const network = String(registration.network).toLowerCase();
-    return network === chain.network.toLowerCase() || network === String(chain.id) || network === chain.caip2.toLowerCase();
+    if (![chain.network.toLowerCase(), String(chain.id), chain.caip2.toLowerCase()].includes(network)) return false;
   }
   return true;
 }
