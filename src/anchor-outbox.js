@@ -132,8 +132,8 @@ export async function executeAnchorOutboxJob({
       confirmations: 1,
       timeout: receiptTimeoutMs
     });
-    if (receipt?.status && receipt.status !== "success") {
-      throw new Error(`Evidence anchor transaction ${txHash} ${receipt.status}.`);
+    if (receipt?.status !== "success" || receipt.blockNumber == null) {
+      throw new Error(`Evidence anchor transaction ${txHash} has no confirmed successful receipt.`);
     }
     const anchored = await outbox.markAnchored({
       jobId: job.job_id,
