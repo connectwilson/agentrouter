@@ -223,6 +223,40 @@ test("platform operator can discover imported Vendor identities without claiming
   });
 });
 
+test("feedback recorded before Vendor registration can resume with the new identity without another rating", async () => {
+  await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc", ADN_PLATFORM_OPERATOR_OWNER_KEY: "local:local-development-user" }, async () => {
+    const store = createMemoryStore();
+    const session = createDevSession(store, "http://127.0.0.1");
+    const server = createServer({ store, erc8004RegistrationVerifier: async ({ expected }) => verifiedIdentity(expected, "84004") });
+    const base = await listen(server);
+    const headers = { cookie: session.cookie.split(";")[0], "content-type": "application/json" };
+    try {
+      const call = await runExternalApiQuery(store, "local:local-development-user", {
+        source: "gdelt", operation: "search", query: "agent payments"
+      }, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({
+        articles: [{ title: "Evidence", url: "https://example.com/news", domain: "example.com", seendate: "20260908T000000Z" }]
+      }) }) });
+      const rate = async () => (await fetch(`${base}/agent-router/feedback`, {
+        method: "POST", headers, body: JSON.stringify(call.consumer_feedback_request.example)
+      })).json();
+      const first = await rate();
+      assert.equal(first.erc8004.status, "not_configured");
+      const count = store.feedbackEvents.length;
+      assert.equal((await fetch(`${base}/agent-router/erc8004/vendors/provider_gdelt/registration`, {
+        method: "POST", headers, body: JSON.stringify({ tx_hash: TX_HASH, owner_address: OWNER })
+      })).status, 200);
+      const resumed = await rate();
+      assert.equal(resumed.status, "consumer_feedback_already_recorded");
+      assert.equal(resumed.erc8004.agent_id, "84004");
+      assert.equal(resumed.erc8004.status, "consumer_submission_required");
+      assert.equal(resumed.erc8004.feedback_hash, first.erc8004.feedback_hash);
+      assert.equal(store.feedbackEvents.length, count, "identity refresh must not add a rating");
+      const replay = await rate();
+      assert.deepEqual(replay.trust_anchor, resumed.trust_anchor, "unchanged descriptors remain idempotent");
+    } finally { await new Promise(resolve => server.close(resolve)); }
+  });
+});
+
 test("Vendor identities survive restart and reattach to all hydrated services", async () => {
   await withEnv({ ADN_SETTLEMENT_CHAIN: "bsc" }, async () => {
     const store = createMemoryStore();
