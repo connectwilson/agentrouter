@@ -31,7 +31,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
         if (!identity?.agent_id || identity.owner_address?.toLowerCase() !== owner.toLowerCase()
           || identity.tx_hash?.toLowerCase() !== txHash.toLowerCase()) throw new Error("Registration receipt did not verify the selected owner and transaction.");
         journal.set(key, { status: "registered", tx_hash: txHash });
-        emit("registered", "Registered Agent #" + identity.agent_id, txHash);
+        emit("registered", "Registered Agent #" + identity.agent_id, txHash, identity.agent_id);
         return;
       } catch (error) {
         if (error.code !== "ERC8004_RECEIPT_NOT_FOUND") throw error;
@@ -60,7 +60,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
         for (let index = 0; index < vendors.length; index++) {
           const v = vendors[index];
           const key = "ar-vendor-registration-v1:" + owner.toLowerCase() + ":56:" + v.provider_id;
-          const emit = (status, message, txHash) => onUpdate({provider_id:v.provider_id, index:index+1, total:vendors.length, status, message, tx_hash:txHash});
+          const emit = (status, message, txHash, agentId) => onUpdate({provider_id:v.provider_id, index:index+1, total:vendors.length, status, message, tx_hash:txHash, agent_id:agentId});
           try {
             checkpoint();
             emit("preparing", "Checking Vendor identity and sponsorship…");
@@ -68,7 +68,7 @@ export function createVendorRegistrationBatch({ wallet, api, journal, onUpdate =
             validateInfo(info, v);
             const transaction = {to:info.transaction.to, data:info.transaction.data, value:"0x0"};
             if (info.current_identity) {
-              emit("already_registered", "Already registered as Agent #" + info.current_identity.agent_id);
+              emit("already_registered", "Already registered as Agent #" + info.current_identity.agent_id, undefined, info.current_identity.agent_id);
               continue;
             }
             const previous = journal.get(key);

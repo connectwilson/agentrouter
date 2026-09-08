@@ -1773,7 +1773,9 @@ export function accountHtml({ auth = {} } = {}) {
                     row.select.checked = false;
                     row.button.textContent = update.message;
                     // Server-verified result; refresh from server on next page load.
-                    vendorItems.find(v => v.provider_id === update.provider_id).agent_id = "verified";
+                    const vendor = vendorItems.find(v => v.provider_id === update.provider_id);
+                    vendor.agent_id = update.agent_id;
+                    row.detail.textContent = vendor.service_count + " service(s) · Agent #" + update.agent_id;
                   }
                 }
               });
