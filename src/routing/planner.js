@@ -134,6 +134,17 @@ export function inferRoutePlan(task, context = {}) {
 
   const registered = hasExplicitExternalConstraint ? null : inferRegisteredServiceRoute(text);
   if (registered) {
+    if (registered.capability === "token_smart_money_activity" && !registered.params?.chain) {
+      return finalizePlan(routePlan({
+        taskFamily: "clarification",
+        dataFamily: "onchain_activity",
+        capability: registered.capability,
+        confidence: 0.96,
+        abstainReason: "needs_clarification",
+        mustNotFallback: true,
+        budget
+      }), context);
+    }
     return finalizePlan(routePlan({
       taskFamily: registered.task_family,
       dataFamily: registered.data_family,

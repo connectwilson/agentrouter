@@ -44,7 +44,7 @@ function decisionFromPlan(entry, plan, entrypoint) {
   ].includes(plan.abstain_reason);
   const action = blocked
     ? "no_match"
-    : plan.abstain_reason === "insufficient_context"
+    : ["insufficient_context", "needs_clarification"].includes(plan.abstain_reason)
       ? "clarify"
       : plan.route_family === "none"
         ? "no_match"

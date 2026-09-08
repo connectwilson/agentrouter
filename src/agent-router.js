@@ -230,9 +230,11 @@ export async function askAgentRouter(store, {
 
 function plannedNaturalLanguageRoute(task, plan) {
   if (!plan || typeof plan !== "object") return null;
-  if (plan.capability === "token_holders" && ["needs_clarification", "invalid_request"].includes(plan.abstain_reason)) return {
+  if (["token_holders", "token_smart_money_activity"].includes(plan.capability) && ["needs_clarification", "invalid_request"].includes(plan.abstain_reason)) return {
     ok: false, status: plan.abstain_reason, task, validation: plan.validation,
-    message: "Specify one supported chain and a token contract (or unambiguous symbol), with a holder count from 1 to 100.",
+    message: plan.capability === "token_smart_money_activity"
+      ? "Specify the chain for the token smart-money request. A token ticker alone is not enough to select a contract safely."
+      : "Specify one supported chain and a token contract (or unambiguous symbol), with a holder count from 1 to 100.",
     must_not_execute: true, must_not_request_payment_authorization: true
   };
   if (plan.abstain_reason === "capability_not_available") {
@@ -490,7 +492,10 @@ export function inferIntent(task) {
     delete input.limit;
     delete input.offset;
     input.token_symbol = token;
-    input.chain = chain || chainForAsset(token) || "ethereum";
+    // A token ticker is not a chain identifier. Only infer the network for
+    // assets with an unambiguous native chain (for example ETH or HYPE); every
+    // other token must be scoped before it can reach a paid resolver.
+    input.chain = chain || chainForAsset(token) || undefined;
     input.window = window || "24h";
     input.timeframe = windowToTimeframe(input.window);
     input.date = windowToDateRange(input.window);

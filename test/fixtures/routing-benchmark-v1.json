@@ -136,7 +136,7 @@
       "provenance": "original_30",
       "slices": ["onchain", "specialist_service", "migration", "cjk_english"],
       "context": { "account_state": "connected", "source_state": "connected" },
-      "expected": { "action": "route", "route_family": "service_marketplace", "capability": "token_smart_money_activity", "acceptable_sources": [], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": true, "max_price_usdc": null }
+      "expected": { "action": "clarify", "route_family": "clarification", "capability": "token_smart_money_activity", "acceptable_sources": [], "forbidden_sources": ["exa", "openalex"], "authorization_kind": "none", "paid_allowed": false, "max_price_usdc": "0" }
     },
     {
       "id": "AR-ROUTE-016",
