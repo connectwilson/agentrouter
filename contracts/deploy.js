@@ -11,7 +11,8 @@
 //   PRIVATE_KEY=0x... \
 //   node contracts/deploy.js
 //
-// --dry-run compiles and estimates gas without broadcasting, and needs no key.
+// --dry-run compiles and checks the RPC without broadcasting. Supplying a key
+// additionally enables a gas estimate; the key is never logged.
 //
 // The chain is read from the RPC rather than configured, so this works against
 // any EVM network without a table to keep in sync.
@@ -67,13 +68,17 @@ const chain = defineChain({
   rpcUrls: { default: { http: [rpcUrl] } }
 });
 const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
-console.log(`Target: chain ${chainId} via ${rpcUrl}`);
+console.log(`Target: chain ${chainId}`);
 
 const key = process.env.PRIVATE_KEY || "";
 if (!key) {
+  if (dryRun) {
+    console.log("\n--dry-run: no signer supplied, so gas estimation was skipped. Nothing was broadcast.");
+    process.exit(0);
+  }
   console.error("\nSet PRIVATE_KEY to the deploying wallet's key and run again.");
   console.error("Deploying costs gas on the target chain.");
-  process.exit(dryRun ? 0 : 1);
+  process.exit(1);
 }
 
 const account = privateKeyToAccount(key.startsWith("0x") ? key : `0x${key}`);
