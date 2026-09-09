@@ -34,6 +34,20 @@ test("release CI runs tests, package smoke checks, and dependency audit", async 
   assert.match(workflow, /git diff --check/);
 });
 
+test("public mirrors reject generic environment files, SSH identities, and known secret literals", async () => {
+  const ignore = await fs.readFile(".gitignore", "utf8");
+  const workflow = await fs.readFile(".github/workflows/ci.yml", "utf8");
+  const scanner = await fs.readFile("scripts/public-repo-secret-scan.js", "utf8");
+  assert.match(ignore, /^\.env$/m);
+  assert.match(ignore, /^\.env\.\*$/m);
+  assert.match(ignore, /^!\.env\.example$/m);
+  assert.match(ignore, /^id_rsa$/m);
+  assert.match(ignore, /^id_ed25519$/m);
+  assert.match(workflow, /node scripts\/public-repo-secret-scan\.js/);
+  assert.match(scanner, /git\s+log/);
+  assert.match(scanner, /PRIVATE KEY/);
+});
+
 test("publishable MCP behavior ships under one new consistent version", async () => {
   const manifest = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package.json", "utf8"));
   const lock = JSON.parse(await fs.readFile("packages/agentrouter-mcp/package-lock.json", "utf8"));
