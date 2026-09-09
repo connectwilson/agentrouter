@@ -44,7 +44,7 @@ test("public mirrors reject generic environment files, SSH identities, and known
   assert.match(ignore, /^id_rsa$/m);
   assert.match(ignore, /^id_ed25519$/m);
   assert.match(workflow, /node scripts\/public-repo-secret-scan\.js/);
-  assert.match(scanner, /git\s+log/);
+  assert.match(scanner, /\["log", "--format=%H", "HEAD", "-G"/);
   assert.match(scanner, /PRIVATE KEY/);
 });
 

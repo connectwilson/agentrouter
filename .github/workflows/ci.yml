@@ -18,6 +18,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git diff --check "${{ github.event.pull_request.base.sha || github.event.before }}" HEAD
+      - run: node scripts/public-repo-secret-scan.js
       - run: npm test
       - run: npm run mcp:npm:pack
       - run: npm run mcp-package-smoke
