@@ -112,7 +112,9 @@ RPC_URL=<your rpc> node contracts/deploy.js --dry-run
 ```
 
 See [contracts/README.md](contracts/README.md) for deploying and for checking a
-deployed address against this source.
+deployed address against this source. [On-chain reference](docs/ONCHAIN_REFERENCE.md)
+explains the public boundary and the separation between evidence anchoring and
+ERC-8004 identity/reputation.
 
 ## Updating
 
