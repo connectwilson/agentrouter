@@ -17,8 +17,9 @@ npm install
 RPC_URL=https://bsc-dataseed.binance.org node contracts/deploy.js --dry-run
 ```
 
-The dry run compiles, reports the bytecode size, reads the chain id from the
-RPC, and estimates gas. Nothing is broadcast and no key is needed.
+The dry run compiles, reports the bytecode size, and reads the chain ID from the
+RPC. Nothing is broadcast and no key is needed. Provide `PRIVATE_KEY` as well
+if you also want a deployer-specific gas estimate; it is never printed.
 
 To deploy, add a key and drop the flag:
 
@@ -30,6 +31,10 @@ The key is read from the environment and never written anywhere. The chain comes
 from the RPC rather than a configuration table, so this works on any EVM network.
 
 Point the server at the result with `ADN_ARC_ANCHOR_CONTRACT`.
+
+This repository deliberately does not contain a production contract address,
+wallet, RPC endpoint, provider configuration, or call evidence. Operators own
+their deployment and configure its address in their own environment.
 
 ## Verifying a deployment
 
